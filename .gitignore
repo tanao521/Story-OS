@@ -1,0 +1,32 @@
+# 环境变量（含敏感信息）
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Local project data
+data/
+chroma/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 项目数据（运行时生成）
+data/
+.pytest_tmp/
+.pytest_cache/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db

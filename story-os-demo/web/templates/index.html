@@ -1,0 +1,110 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Story OS Web Console</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand-block">
+        <div class="brand-mark">SO</div>
+        <div>
+          <h1>Story OS Web Console</h1>
+          <p id="project-line">正在读取项目状态...</p>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <span class="system-pill">多 Agent 创作控制台</span>
+        <button class="btn btn-secondary" type="button" onclick="refreshAll()">刷新状态</button>
+      </div>
+    </header>
+
+    <main id="setup-view" class="setup-view hidden">
+      <section class="panel setup-panel">
+        <div class="setup-intro">
+          <span class="eyebrow">First Run Setup</span>
+          <h2>新建小说项目</h2>
+          <p>填写基础设定后，Story OS 会创建项目档案、初始状态和项目说明。下一步再生成故事蓝图。</p>
+        </div>
+        <form id="setup-form" class="setup-form" onsubmit="event.preventDefault(); createStoryProject();">
+          <label>小说标题<input id="setup-title" type="text" required placeholder="例如：长夜避难所"></label>
+          <label>小说类型<select id="setup-genre"><option>末世</option><option>玄幻</option><option>修仙</option><option>都市</option><option>悬疑</option><option>科幻</option><option>奇幻</option><option>其他</option></select></label>
+          <label>自定义类型<input id="setup-custom-genre" type="text" placeholder="选择其他时填写"></label>
+          <label>篇幅<select id="setup-length"><option>短篇</option><option>中篇</option><option selected>长篇</option><option>超长篇</option></select></label>
+          <label>目标字数<input id="setup-word-count" type="number" min="1" value="300000"></label>
+          <label>叙事视角<select id="setup-narration"><option>第三人称有限视角</option><option>第一人称</option><option>第三人称全知视角</option><option>多视角切换</option></select></label>
+          <label>人物结构<select id="setup-character-structure"><option>单男主</option><option>单女主</option><option>男女双主角</option><option>群像文</option><option>无固定主角</option><option>其他</option></select></label>
+          <label>感情线强度<select id="setup-romance"><option>无</option><option>很弱</option><option selected>轻微</option><option>中等</option><option>重要主线</option><option>后宫/多感情线</option></select></label>
+          <label class="wide">世界观风格<textarea id="setup-world-style" rows="3" placeholder="秩序崩坏后的城市、避难所、资源规则、超自然或科技要素..."></textarea></label>
+          <label>整体基调<select id="setup-tone"><option>灰暗但不绝望</option><option>压抑</option><option>轻松</option><option>热血</option><option>荒诞</option><option>黑色幽默</option><option>治愈</option><option>冷峻</option><option>史诗</option></select></label>
+          <label>文笔风格<select id="setup-writing-style"><option>电影感</option><option>克制冷淡</option><option>细腻文学</option><option>网文爽文</option><option>轻小说</option><option>黑色幽默</option><option>群像剧</option><option>强剧情弱描写</option><option>强氛围感</option></select></label>
+          <label class="wide">剧情重点<textarea id="setup-focus" rows="3" placeholder="用逗号或换行分隔，例如：生存压力、资源争夺、避难所秘密"></textarea></label>
+          <label class="wide">禁止内容<textarea id="setup-avoid" rows="3" placeholder="用逗号或换行分隔，例如：无意义后宫、降智反派、过度解释"></textarea></label>
+          <label class="wide">AI 味限制<textarea id="setup-anti-ai" rows="3">减少“不是A，而是B”句式
+减少破折号
+避免总结式表达
+避免过度解释人物情绪
+用动作和细节代替情绪直述</textarea></label>
+          <div class="setup-options wide">
+            <label class="check-row"><input id="setup-need-outline" type="checkbox" checked><span>创建后建议生成故事蓝图</span></label>
+            <label class="check-row"><input id="setup-use-deepseek" type="checkbox"><span>创建阶段使用 DeepSeek（默认关闭）</span></label>
+          </div>
+          <div class="setup-actions wide">
+            <button class="btn btn-primary" type="submit">创建小说项目</button>
+            <span id="setup-error" class="setup-error"></span>
+          </div>
+        </form>
+      </section>
+    </main>
+
+    <main id="dashboard-view" class="workspace hidden">
+      <aside class="left-column">
+        <section class="panel status-panel"><div class="panel-heading"><div><span class="eyebrow">Project State</span><h2>状态总览</h2></div></div><div class="metrics" id="status-metrics"></div><div class="next-action" id="next-action"></div></section>
+        <section class="panel operations-panel"><div class="panel-heading"><div><span class="eyebrow">Pipeline</span><h2>创作操作</h2></div></div><div class="button-grid"><button class="btn btn-primary" type="button" onclick="runChapter()">生成下一章到待审核</button><button class="btn btn-secondary" type="button" onclick="qualityCheck()">生成/刷新质量评估</button><button class="btn btn-secondary" type="button" onclick="syncObsidian()">同步 Obsidian</button><button class="btn btn-secondary" type="button" onclick="indexVault()">更新向量库</button></div></section>
+        <section class="panel versions-panel"><div class="panel-heading"><div><span class="eyebrow">Versions</span><h2>版本列表</h2></div><div id="selected-version" class="selected-chip">Selected: 无</div></div><div class="version-section"><h3>Draft</h3><div id="draft-list" class="version-list"></div></div><div class="version-section"><h3>Edited</h3><div id="edited-list" class="version-list"></div></div><div class="version-section"><h3>Manual</h3><div id="manual-list" class="version-list"></div></div></section>
+        <section class="panel todo-panel"><div class="panel-heading"><div><span class="eyebrow">Revision Queue</span><h2>Todo</h2></div></div><form class="todo-form" onsubmit="event.preventDefault(); addTodo();"><input id="todo-title" type="text" placeholder="任务标题" required><select id="todo-type"><option value="revision">revision</option><option value="continuity">continuity</option><option value="character">character</option><option value="worldbuilding">worldbuilding</option><option value="quality">quality</option><option value="other">other</option></select><select id="todo-priority"><option value="medium">medium</option><option value="high">high</option><option value="urgent">urgent</option><option value="low">low</option></select><input id="todo-chapter" type="number" min="1" placeholder="章节"><button class="btn btn-compact btn-secondary" type="submit">添加</button></form><div id="todo-list" class="todo-list"></div></section>
+      </aside>
+      <section class="right-column">
+        <section class="panel preview-panel"><div class="panel-heading"><div><span class="eyebrow">Manuscript</span><h2>正文预览</h2></div><div class="preview-actions"><button class="btn btn-secondary" type="button" onclick="copyCurrentText()">复制正文</button><button class="btn btn-secondary" type="button" onclick="qualityCheck()">刷新质量</button><button class="btn btn-primary" type="button" onclick="selectCurrentVersion()">选择此版本</button></div></div><div id="preview-meta" class="preview-meta empty-state">请选择一个版本查看正文。</div><pre id="text-preview" class="text-preview"></pre></section>
+        
+        <section class="panel manual-editor-panel">
+          <div class="panel-heading">
+            <div><span class="eyebrow">Manual Edit</span><h2>手动改稿</h2></div>
+            <div class="word-count" id="manual-word-count">0 字</div>
+          </div>
+          <div class="manual-editor-toolbar">
+            <select id="manual-source-select"></select>
+            <button class="btn btn-secondary" type="button" onclick="loadManualSource()">载入正文</button>
+            <button class="btn btn-secondary" type="button" onclick="loadManualSource()">重新载入来源版本</button>
+            <button class="btn btn-secondary" type="button" onclick="clearManualEditor()">清空改动</button>
+            <button class="btn btn-primary save-manual-button" type="button" onclick="saveManualVersion()">保存为 manual 新版本</button>
+          </div>
+          <div class="manual-meta" id="manual-source-meta">请选择来源版本后载入正文。</div>
+          <textarea id="manualEditor" class="manual-editor" placeholder="在这里进行人工改稿。保存 manual 不会提交正史，也不会推进 current_chapter。"></textarea>
+          <p class="manual-safety-note">手动保存不会提交正史。只有审核通过后，manual 版本才会进入正式章节。</p>
+        </section>
+        <section id="memoryHealthPanel" class="panel health-panel tab-panel">
+          <div class="panel-heading">
+            <div><span class="eyebrow">Memory Health</span><h2>记忆健康检查</h2></div>
+            <div class="health-actions">
+              <button class="btn btn-secondary" type="button" onclick="runMemoryHealth(false)">运行检查</button>
+              <button class="btn btn-primary" type="button" onclick="runMemoryHealth(true)">完整检查</button>
+            </div>
+          </div>
+          <p class="health-description">检查 state、章节、摘要、版本、质量报告、Todo、向量索引等是否一致。</p>
+          <div id="memoryHealthOutput" class="health-output empty-state">
+            <p>尚未运行记忆健康检查。</p>
+            <p>点击“运行检查”开始。</p>
+          </div>
+        </section>        <div class="detail-grid"><section class="panel diff-panel"><div class="panel-heading"><div><span class="eyebrow">Compare</span><h2>Diff 对比</h2></div></div><div id="diff-summary" class="preview-meta empty-state">请选择版本进行对比。</div><div id="diff-output" class="diff-output"></div></section><section class="panel quality-panel"><div class="panel-heading"><div><span class="eyebrow">Quality Gate</span><h2>质量报告</h2></div></div><div id="quality-output" class="quality-output empty-state">请选择版本查看质量报告。</div></section></div>
+        <div class="detail-grid secondary-grid"><section class="panel review-panel"><div class="panel-heading"><div><span class="eyebrow">Human Review</span><h2>审核</h2></div></div><p id="review-status" class="review-line"></p><p id="review-version" class="review-line"></p><div class="button-grid review-actions"><button class="btn btn-primary" type="button" onclick="approveReview(false)">审核通过</button><button class="btn btn-danger" type="button" onclick="rejectReview()">拒绝</button><button class="btn btn-secondary" type="button" onclick="laterReview()">稍后审核</button></div></section><section class="panel ask-panel"><div class="panel-heading"><div><span class="eyebrow">Story Memory</span><h2>Ask Story</h2></div></div><div class="ask-controls"><select id="ask-mode"><option value="state">ask-state</option><option value="memory">ask-memory</option><option value="story" selected>ask-story</option></select><label class="check-row"><input id="ask-vector" type="checkbox" checked><span>向量检索</span></label><label class="check-row"><input id="ask-llm" type="checkbox"><span>DeepSeek 综合</span></label></div><textarea id="ask-question" rows="4" placeholder="问当前状态、记忆线索或下一章注意事项..."></textarea><button class="btn btn-primary ask-submit" type="button" onclick="askStory()">提问</button><pre id="ask-answer"></pre></section></div>
+      </section>
+    </main>
+    <section id="logs-view" class="panel logs-panel hidden"><div class="panel-heading"><div><span class="eyebrow">Activity</span><h2>操作日志</h2></div></div><div id="log-output"></div></section>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+{
+  "obsidian_vault_dir": "D:/嵌入式开发/novel_agent",
+  "obsidian_project_dir_name": "StoryOS",
+  "web": {
+    "host": "127.0.0.1",
+    "port": 7860,
+    "open_browser": true
+  }
+}
