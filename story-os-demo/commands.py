@@ -6,12 +6,21 @@ from typing import Any
 
 import config
 from config import DATA_DIR
+from core.blueprint_generator import generate_blueprint, render_blueprint_markdown
 from core.chapter_committer import commit_chapter, render_committed_chapter_markdown
+from core.character_builder import generate_characters, render_characters_markdown
 from core.draft_editor import edit_draft, render_edited_markdown
 from core.draft_writer import render_draft_markdown, write_chapter_draft
 from core.next_chapter_planner import plan_next_chapter, render_next_chapter_plan_markdown
 from core.project import ensure_project_structure, resolve_current_project_root
 from core.setup_wizard import build_initial_state
+from core.world_builder import generate_world_bible, render_world_bible_markdown
+from llm.planning_service import (
+    create_deepseek_client,
+    generate_blueprint_with_deepseek,
+    plan_next_chapter_with_deepseek,
+    should_use_deepseek_for_planning,
+)
 from system.context_builder import build_working_context, save_current_context
 from system.file_store import load_json, save_json, save_markdown
 from system.memory_health import (
@@ -28,6 +37,7 @@ from system.quality_checker import (
     quality_summary_from_report,
     save_quality_report,
 )
+from system.validators import validate_story_spec
 from system.version_manager import (
     build_versioned_paths,
     get_next_version_number,
@@ -76,42 +86,160 @@ def build_context_command() -> dict[str, Any]:
     )
 
 
+
+def generate_blueprint_command(force: bool = False) -> dict[str, Any]:
+    """Generate the high-level story blueprint and persist its planning metadata."""
+    project_root = resolve_current_project_root()
+    structure = ensure_project_structure(project_root)
+    paths = _paths(project_root)
+    if not paths["story_spec"].exists():
+        return _failed("generate-blueprint", "缺少 data/story_spec.json，请先创建小说项目。")
+    story_spec = load_json(str(paths["story_spec"]))
+    errors = validate_story_spec(story_spec)
+    if errors:
+        return _failed("generate-blueprint", "项目设定校验失败：" + "；".join(errors))
+    if paths["blueprint"].exists() and not force:
+        existing = load_json(str(paths["blueprint"]))
+        if _blueprint_is_ready(existing):
+            return _success(
+                "generate-blueprint",
+                "故事蓝图已存在，未覆盖现有内容。",
+                outputs={"path": "data/story_blueprint.json", "mode": existing.get("generation_meta", {}).get("mode", "stored")},
+            )
+    blueprint = generate_blueprint(story_spec)
+    client, warnings = _planning_client_for_web(story_spec)
+    mode = "local_template"
+    if client is not None:
+        blueprint, planning_warnings = generate_blueprint_with_deepseek(story_spec, blueprint, client)
+        warnings.extend(planning_warnings)
+        mode = "deepseek"
+    blueprint["generation_meta"] = {"mode": mode, "generated_at": _now(), "source": "web" if mode == "deepseek" else "local_fallback"}
+    state = load_json(str(paths["state"])) if paths["state"].exists() else build_initial_state(story_spec)
+    state["current_stage"] = "blueprint_created"
+    state["blueprint"] = {"created": True, "path": "data/story_blueprint.json", "mode": "chapter_by_chapter"}
+    save_json(str(paths["blueprint"]), blueprint)
+    save_markdown(str(project_root / "data" / "story_blueprint.md"), render_blueprint_markdown(blueprint))
+    save_json(str(paths["state"]), state)
+    warnings.extend(str(item) for item in structure.get("events", []) if "loaded" not in str(item))
+    return _success(
+        "generate-blueprint",
+        "故事蓝图已生成。" if mode == "deepseek" else "故事蓝图已生成（当前使用本地规划模板，可在配置 DeepSeek 后重新生成）。",
+        outputs={"path": "data/story_blueprint.json", "mode": mode, "phase_count": len(blueprint.get("story_phases", []))},
+        warnings=warnings,
+    )
+
+
+def build_assets_command(force: bool = False) -> dict[str, Any]:
+    """Build character profiles and world bible from the current blueprint."""
+    project_root = resolve_current_project_root()
+    ensure_project_structure(project_root)
+    paths = _paths(project_root)
+    if not paths["story_spec"].exists() or not paths["blueprint"].exists():
+        return _failed("build-assets", "请先生成故事蓝图。")
+    story_spec = load_json(str(paths["story_spec"]))
+    blueprint = load_json(str(paths["blueprint"]))
+    existing_characters = load_json(str(paths["characters"])) if paths["characters"].exists() else {}
+    existing_world_bible = load_json(str(paths["world_bible"])) if paths["world_bible"].exists() else {}
+    if not force and _characters_are_ready(existing_characters) and _world_bible_is_ready(existing_world_bible):
+        return _success("build-assets", "角色档案已存在，未覆盖现有内容。", outputs={"characters_path": "data/characters.json"})
+    state = load_json(str(paths["state"])) if paths["state"].exists() else build_initial_state(story_spec)
+    characters = generate_characters(story_spec, blueprint, state)
+    world_bible = generate_world_bible(story_spec, blueprint, state)
+    state["current_stage"] = "assets_created"
+    state["assets"] = {"characters_created": True, "world_bible_created": True, "characters_path": "data/characters.json", "world_bible_path": "data/world_bible.json"}
+    state["characters"] = {
+        character.get("name", character.get("id", "")): {
+            "physical": character.get("current_state", {}).get("physical", ""),
+            "mental": character.get("current_state", {}).get("mental", ""),
+            "goal": character.get("external_goal", ""),
+        }
+        for character in characters.get("main_characters", [])
+        if isinstance(character, dict)
+    }
+    blueprint["character_bible"] = {
+        "protagonist": characters.get("main_characters", [{}])[0] if characters.get("main_characters") else {},
+        "key_characters": characters.get("supporting_characters", []),
+        "relationship_map": characters.get("relationship_map", []),
+    }
+    save_json(str(paths["characters"]), characters)
+    save_markdown(str(project_root / "data" / "characters.md"), render_characters_markdown(characters))
+    save_json(str(paths["world_bible"]), world_bible)
+    save_markdown(str(project_root / "data" / "world_bible.md"), render_world_bible_markdown(world_bible))
+    save_json(str(paths["blueprint"]), blueprint)
+    save_markdown(str(project_root / "data" / "story_blueprint.md"), render_blueprint_markdown(blueprint))
+    save_json(str(paths["state"]), state)
+    return _success(
+        "build-assets",
+        "角色档案和世界观设定已生成。",
+        outputs={"characters_path": "data/characters.json", "world_bible_path": "data/world_bible.json", "main_characters": len(characters.get("main_characters", [])), "supporting_characters": len(characters.get("supporting_characters", []))},
+    )
+
+
+def _planning_client_for_web(story_spec: dict[str, Any]) -> tuple[Any | None, list[str]]:
+    local_config = load_local_config()
+    enabled = bool(local_config.get("use_deepseek_for_planning", False))
+    if not enabled:
+        return None, ["DeepSeek 规划层未启用，已使用本地规划模板。"]
+    if not config.DEEPSEEK_API_KEY:
+        return None, ["已启用 DeepSeek 规划层，但未检测到 DEEPSEEK_API_KEY，已使用本地规划模板。"]
+    if not should_use_deepseek_for_planning({**local_config, "use_deepseek_for_planning": True}):
+        return None, ["DeepSeek 规划层配置不完整，已使用本地规划模板。"]
+    return create_deepseek_client(), []
+
+
+def _blueprint_is_ready(blueprint: Any) -> bool:
+    return isinstance(blueprint, dict) and bool(blueprint.get("main_arc") and blueprint.get("story_phases"))
+
+
+def _characters_are_ready(characters: Any) -> bool:
+    return isinstance(characters, dict) and bool(characters.get("main_characters"))
+
+def _world_bible_is_ready(world_bible: Any) -> bool:
+    return isinstance(world_bible, dict) and bool(world_bible.get("core_rules"))
+
+
 def plan_next_command() -> dict[str, Any]:
     project_root = resolve_current_project_root()
     structure = ensure_project_structure(project_root)
     paths = _paths(project_root)
-    missing = _missing_plan_next_inputs(paths)
-    if missing:
-        return _failed("plan-next", missing)
-
-    print(f"[plan-next] project_root = {project_root}")
-    print(f"[plan-next] blueprint_path = {structure['blueprint_path']}")
+    warnings: list[str] = []
+    if not paths["story_spec"].exists():
+        return _failed("plan-next", "缺少 data/story_spec.json，请先创建小说项目。")
     story_spec = load_json(str(paths["story_spec"]))
+    if not paths["blueprint"].exists() or not _blueprint_is_ready(load_json(str(paths["blueprint"]))):
+        blueprint_result = generate_blueprint_command(force=True)
+        warnings.extend(blueprint_result.get("warnings", []))
+        if blueprint_result.get("status") == "failed":
+            return blueprint_result
+    if not paths["characters"].exists() or not _characters_are_ready(load_json(str(paths["characters"]))) or not paths["world_bible"].exists() or not _world_bible_is_ready(load_json(str(paths["world_bible"]))):
+        assets_result = build_assets_command(force=True)
+        warnings.extend(assets_result.get("warnings", []))
+        if assets_result.get("status") == "failed":
+            return assets_result
+
     blueprint = load_json(str(paths["blueprint"]))
     characters = load_json(str(paths["characters"]))
     world_bible = load_json(str(paths["world_bible"]))
     state = load_json(str(paths["state"])) if paths["state"].exists() else build_initial_state(story_spec)
     working_context = _load_optional_context(paths)
     plan = plan_next_chapter(story_spec, blueprint, characters, world_bible, state, working_context)
+    client, planning_warnings = _planning_client_for_web(story_spec)
+    warnings.extend(planning_warnings)
+    if client is not None:
+        plan, deepseek_warnings = plan_next_chapter_with_deepseek(story_spec, blueprint, characters, world_bible, state, working_context, plan, client)
+        warnings.extend(deepseek_warnings)
+        plan["generation_meta"] = {"mode": "deepseek", "generated_at": _now()}
+    else:
+        plan["generation_meta"] = {"mode": "local_template", "generated_at": _now()}
     state["current_stage"] = "next_chapter_planned"
-    state["next_chapter_plan"] = {
-        "created": True,
-        "chapter_id": plan.get("chapter_id", 1),
-        "path": "data/next_chapter_plan.json",
-    }
+    state["next_chapter_plan"] = {"created": True, "chapter_id": plan.get("chapter_id", 1), "path": "data/next_chapter_plan.json"}
     save_json(str(paths["next_chapter_plan"]), plan)
     save_markdown(str(project_root / "data" / "next_chapter_plan.md"), render_next_chapter_plan_markdown(plan))
     save_json(str(paths["state"]), state)
-    warnings = [str(item) for item in structure.get("events", [])]
     return _success(
         "plan-next",
-        "下一章计划已生成。",
-        outputs={
-            "chapter_id": plan.get("chapter_id", 1),
-            "path": "data/next_chapter_plan.json",
-            "project_root": str(project_root),
-            "blueprint_path": structure["blueprint_path"].as_posix(),
-        },
+        "下一章计划已生成，后续正文将以该计划和故事蓝图为约束。",
+        outputs={"chapter_id": plan.get("chapter_id", 1), "path": "data/next_chapter_plan.json", "project_root": str(project_root), "blueprint_path": structure["blueprint_path"].as_posix(), "mode": plan["generation_meta"]["mode"]},
         warnings=warnings,
     )
 

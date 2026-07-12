@@ -196,6 +196,61 @@ def api_memory_health(full: bool = False) -> JSONResponse:
 
     return guarded(action)
 
+
+
+@router.post("/api/planning/blueprint")
+async def api_generate_blueprint(request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    return guarded(lambda: command_response(commands.generate_blueprint_command(force=bool(isinstance(payload, dict) and payload.get("force")))))
+
+
+@router.post("/api/planning/assets")
+async def api_build_assets(request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    return guarded(lambda: command_response(commands.build_assets_command(force=bool(isinstance(payload, dict) and payload.get("force")))))
+
+
+@router.get("/api/planning/next-chapter")
+def api_get_next_chapter_plan() -> JSONResponse:
+    def action() -> dict[str, Any]:
+        path = Path("data/next_chapter_plan.json")
+        if not path.exists():
+            return api_ok(result={"plan": {}})
+        try:
+            plan = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            return api_error("章节计划 JSON 无法解析。", [str(exc)])
+        return api_ok(result={"plan": plan if isinstance(plan, dict) else {}})
+    return guarded(action)
+
+
+@router.post("/api/planning/next-chapter")
+async def api_save_or_plan_next_chapter(request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict) or not payload:
+        return guarded(lambda: command_response(commands.plan_next_command()))
+    def action() -> dict[str, Any]:
+        path = Path("data/next_chapter_plan.json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        Path("data/next_chapter_plan.md").write_text(commands.render_next_chapter_plan_markdown(payload), encoding="utf-8")
+        state_path = Path("data/state.json")
+        state = _load_json_safe(state_path, {})
+        state["current_stage"] = "next_chapter_planned"
+        state["next_chapter_plan"] = {"created": True, "chapter_id": payload.get("chapter_id", 1), "path": "data/next_chapter_plan.json"}
+        state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return api_ok("章节规划已保存。", {"plan": payload, "path": "data/next_chapter_plan.json"})
+    return guarded(action)
+
 
 @router.post("/api/run-chapter")
 def api_run_chapter() -> JSONResponse:
@@ -430,6 +485,16 @@ def api_sync_obsidian() -> JSONResponse:
 @router.post("/api/index-vault")
 def api_index_vault() -> JSONResponse:
     return guarded(lambda: command_response(commands.index_vault_command()))
+
+
+def _load_json_safe(path: Path, default: Any) -> Any:
+    if not path.exists():
+        return default
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return default
+    return value if isinstance(value, dict) else default
 
 
 def build_version_content(source_type: str, version: int) -> dict[str, Any]:

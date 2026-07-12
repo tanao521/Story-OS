@@ -1446,9 +1446,14 @@ renderProjectAsset = function renderProjectAssetWithBlueprint(assetId) {
   const asset = projectAssets.find((item) => item.id === assetId);
   if (!panel || !workspace) return;
   const isBlueprint = assetId === "story_blueprint";
+  const isCharacters = assetId === "characters";
+  const charactersWorkspace = document.getElementById("characters-workspace");
   panel.classList.toggle("is-blueprint", isBlueprint);
+  panel.classList.toggle("is-characters", isCharacters);
   workspace.classList.toggle("hidden", !isBlueprint);
+  if (charactersWorkspace) charactersWorkspace.classList.toggle("hidden", !isCharacters);
   if (isBlueprint) renderBlueprintWorkspace(asset || null);
+  if (isCharacters && typeof window.renderCharactersWorkspace === "function") window.renderCharactersWorkspace(asset || null);
 };
 
 function renderBlueprintWorkspace(asset) {
