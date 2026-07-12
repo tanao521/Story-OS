@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-HEALTH_VERSION = "2.4-A"
+HEALTH_VERSION = "2.5"
 VALID_LEVELS = {"error", "warning", "info"}
 VALID_CATEGORIES = {"project", "state", "chapter", "summary", "version", "quality", "todo", "vector"}
 VALID_SOURCE_TYPES = {"draft", "edited", "manual"}
@@ -52,19 +52,19 @@ def check_project_initialization(data_dir: Path) -> dict[str, Any]:
     state_path = data_dir / "state.json"
     project_path = data_dir / "project.md"
     if not story_spec_path.exists():
-        issues.append(_issue("missing_story_spec", "error", "project", "Missing data/story_spec.json.", story_spec_path, "Create the story project first."))
+        issues.append(_issue("missing_story_spec", "error", "project", "缺少 data/story_spec.json。", story_spec_path, "请先创建小说项目。"))
     if not state_path.exists():
-        issues.append(_issue("missing_state", "error", "state", "Missing data/state.json.", state_path, "Create or restore project state."))
+        issues.append(_issue("missing_state", "error", "state", "缺少 data/state.json。", state_path, "创建或恢复项目状态。"))
     if not project_path.exists():
-        issues.append(_issue("missing_project_md", "warning", "project", "Missing data/project.md.", project_path, "Regenerate the project markdown summary."))
+        issues.append(_issue("missing_project_md", "warning", "project", "缺少 data/project.md。", project_path, "重新生成项目 Markdown 摘要。"))
     if state_path.exists():
         state, error = _read_json(state_path)
         if error:
-            issues.append(_issue("invalid_state_json", "error", "state", "data/state.json cannot be parsed as JSON.", state_path, "Repair state.json syntax."))
+            issues.append(_issue("invalid_state_json", "error", "state", "data/state.json 无法解析为 JSON。", state_path, "修复 state.json 语法。"))
         elif "current_chapter" not in state:
-            issues.append(_issue("missing_current_chapter", "error", "state", "state.current_chapter is missing.", state_path, "Add current_chapter as an integer."))
+            issues.append(_issue("missing_current_chapter", "error", "state", "state.current_chapter 字段缺失。", state_path, "添加 current_chapter 整数字段。"))
         elif not isinstance(state.get("current_chapter"), int):
-            issues.append(_issue("invalid_current_chapter", "error", "state", "state.current_chapter must be an integer.", state_path, "Set current_chapter to an integer."))
+            issues.append(_issue("invalid_current_chapter", "error", "state", "state.current_chapter 必须是整数。", state_path, "将 current_chapter 设置为整数。"))
     return _section("project_initialization", issues, checked=5)
 
 
@@ -75,9 +75,9 @@ def check_state_consistency(data_dir: Path) -> dict[str, Any]:
     chapter_count = len(_official_chapter_files(data_dir))
     if isinstance(current_chapter, int):
         if current_chapter > chapter_count:
-            issues.append(_issue("state_ahead_of_chapters", "error", "state", "state.current_chapter is greater than official chapter count.", data_dir / "state.json", "Check whether chapter files are missing.", [data_dir / "chapters"]))
+            issues.append(_issue("state_ahead_of_chapters", "error", "state", "state.current_chapter 大于正式章节数量。", data_dir / "state.json", "检查章节文件是否缺失。", [data_dir / "chapters"]))
         if chapter_count > current_chapter:
-            issues.append(_issue("chapters_ahead_of_state", "error", "chapter", "Official chapter count is greater than state.current_chapter.", data_dir / "chapters", "Check whether state.json was not updated after commit.", [data_dir / "state.json"]))
+            issues.append(_issue("chapters_ahead_of_state", "error", "chapter", "正式章节数量大于 state.current_chapter。", data_dir / "chapters", "检查 state.json 是否在提交后未更新。", [data_dir / "state.json"]))
     return _section("state_consistency", issues, checked=2, details={"current_chapter": current_chapter, "official_chapter_count": chapter_count})
 
 
@@ -85,7 +85,7 @@ def check_chapter_files(data_dir: Path) -> dict[str, Any]:
     issues: list[dict[str, Any]] = []
     chapter_dir = data_dir / "chapters"
     if not chapter_dir.exists():
-        issues.append(_issue("chapters_dir_missing", "info", "chapter", "data/chapters does not exist yet.", chapter_dir, "No action needed before the first committed chapter."))
+        issues.append(_issue("chapters_dir_missing", "info", "chapter", "data/chapters 目录还不存在。", chapter_dir, "提交第一章前无需操作。"))
         return _section("chapter_files", issues, checked=1)
     matched_ids: list[int] = []
     checked = 1
@@ -93,21 +93,21 @@ def check_chapter_files(data_dir: Path) -> dict[str, Any]:
         checked += 1
         match = CHAPTER_FILE_RE.match(path.name)
         if not match:
-            issues.append(_issue("invalid_chapter_filename", "error", "chapter", f"Invalid official chapter filename: {path.name}.", path, "Rename official chapters as chapter_001.md."))
+            issues.append(_issue("invalid_chapter_filename", "error", "chapter", f"无效的正式章节文件名：{path.name}。", path, "将正式章节重命名为 chapter_001.md 格式。"))
             continue
         chapter_id = int(match.group(1))
         matched_ids.append(chapter_id)
         try:
             text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
-            issues.append(_issue("chapter_decode_failed", "error", "chapter", f"Chapter file is not valid UTF-8: {path.name}.", path, "Save the chapter file as UTF-8."))
+            issues.append(_issue("chapter_decode_failed", "error", "chapter", f"章节文件不是有效的 UTF-8 编码：{path.name}。", path, "将章节文件保存为 UTF-8 编码。"))
             continue
         if not text.strip():
-            issues.append(_issue("empty_chapter_file", "error", "chapter", f"Chapter file is empty: {path.name}.", path, "Restore or remove the empty official chapter."))
+            issues.append(_issue("empty_chapter_file", "error", "chapter", f"章节文件为空：{path.name}。", path, "恢复或删除空的正式章节。"))
         elif len(text.strip()) < 200:
-            issues.append(_issue("short_chapter_file", "warning", "chapter", f"Official chapter is shorter than 200 characters: {path.name}.", path, "Confirm this committed chapter is complete."))
+            issues.append(_issue("short_chapter_file", "warning", "chapter", f"正式章节短于 200 字符：{path.name}。", path, "确认此已提交章节是完整的。"))
     for missing_id in _missing_numbers(matched_ids):
-        issues.append(_issue("chapter_number_gap", "error", "chapter", f"Missing official chapter number: chapter_{missing_id:03d}.md.", chapter_dir, "Check for skipped or misnamed chapter files."))
+        issues.append(_issue("chapter_number_gap", "error", "chapter", f"缺少正式章节编号：chapter_{missing_id:03d}.md。", chapter_dir, "检查跳号或命名错误的章节文件。"))
     return _section("chapter_files", issues, checked=checked, details={"chapter_ids": matched_ids})
 
 
@@ -119,16 +119,16 @@ def check_summary_files(data_dir: Path) -> dict[str, Any]:
         chapter_id = _chapter_id_from_path(chapter_path)
         summary_path = data_dir / "summaries" / f"chapter_{chapter_id:03d}_summary.json"
         if not summary_path.exists():
-            issues.append(_issue("missing_summary", "warning", "summary", f"Missing summary for chapter_{chapter_id:03d}.", summary_path, "Generate or restore the chapter summary."))
+            issues.append(_issue("missing_summary", "warning", "summary", f"缺少第 {chapter_id} 章摘要。", summary_path, "生成或恢复章节摘要。"))
             continue
         summary, error = _read_json(summary_path)
         if error:
-            issues.append(_issue("invalid_summary_json", "error", "summary", f"Summary JSON cannot be parsed: {summary_path.name}.", summary_path, "Repair summary JSON syntax."))
+            issues.append(_issue("invalid_summary_json", "error", "summary", f"摘要 JSON 无法解析：{summary_path.name}。", summary_path, "修复摘要 JSON 语法。"))
             continue
         if "chapter_id" not in summary:
-            issues.append(_issue("summary_missing_chapter_id", "warning", "summary", f"Summary is missing chapter_id: {summary_path.name}.", summary_path, "Add chapter_id to the summary."))
-        if "summary" not in summary:
-            issues.append(_issue("summary_missing_text", "warning", "summary", f"Summary is missing summary text: {summary_path.name}.", summary_path, "Add summary text."))
+            issues.append(_issue("summary_missing_chapter_id", "warning", "summary", f"摘要缺少 chapter_id：{summary_path.name}。", summary_path, "在摘要中添加 chapter_id。"))
+        if "short_summary" not in summary and "summary" not in summary:
+            issues.append(_issue("summary_missing_text", "warning", "summary", f"摘要缺少正文内容：{summary_path.name}。", summary_path, "添加摘要正文。"))
     return _section("summary_files", issues, checked=checked)
 
 
@@ -136,14 +136,14 @@ def check_version_integrity(data_dir: Path) -> dict[str, Any]:
     issues: list[dict[str, Any]] = []
     versions_dir = data_dir / "versions"
     if not versions_dir.exists():
-        issues.append(_issue("versions_dir_missing", "info", "version", "data/versions does not exist yet.", versions_dir, "No action needed before draft versions exist."))
+        issues.append(_issue("versions_dir_missing", "info", "version", "data/versions 目录还不存在。", versions_dir, "有草稿版本前无需操作。"))
         return _section("version_integrity", issues, checked=1)
     checked = 1
     for index_path in sorted(versions_dir.glob("chapter_*_versions.json")):
         checked += 1
         index, error = _read_json(index_path)
         if error:
-            issues.append(_issue("invalid_version_index_json", "error", "version", f"Version index JSON cannot be parsed: {index_path.name}.", index_path, "Repair version index JSON syntax."))
+            issues.append(_issue("invalid_version_index_json", "error", "version", f"版本索引 JSON 无法解析：{index_path.name}。", index_path, "修复版本索引 JSON 语法。"))
             continue
         selected = index.get("selected")
         if isinstance(selected, dict) and selected:
@@ -168,18 +168,18 @@ def check_quality_reports(data_dir: Path) -> dict[str, Any]:
         version = int(selected.get("version", 0) or 0)
         report_path = quality_dir / f"chapter_{chapter_id:03d}_{source_type}_v{version:03d}_quality.json"
         if not report_path.exists():
-            issues.append(_issue("missing_quality_report", "warning", "quality", f"Missing quality report for selected {source_type}_v{version:03d}.", report_path, "Run quality-check for the selected version."))
+            issues.append(_issue("missing_quality_report", "warning", "quality", f"缺少选中版本 {source_type}_v{version:03d} 的质量报告。", report_path, "对选中版本运行质量检查。"))
     if quality_dir.exists():
         for report_path in sorted(quality_dir.glob("*_quality.json")):
             checked += 1
             report, error = _read_json(report_path)
             if error:
-                issues.append(_issue("invalid_quality_report_json", "error", "quality", f"Quality report JSON cannot be parsed: {report_path.name}.", report_path, "Repair quality report JSON syntax."))
+                issues.append(_issue("invalid_quality_report_json", "error", "quality", f"质量报告 JSON 无法解析：{report_path.name}。", report_path, "修复质量报告 JSON 语法。"))
                 continue
             if "overall_score" not in report:
-                issues.append(_issue("quality_missing_overall_score", "warning", "quality", f"Quality report is missing overall_score: {report_path.name}.", report_path, "Regenerate or repair the quality report."))
+                issues.append(_issue("quality_missing_overall_score", "warning", "quality", f"质量报告缺少 overall_score：{report_path.name}。", report_path, "重新生成或修复质量报告。"))
     elif not selected_versions:
-        issues.append(_issue("quality_reports_missing", "info", "quality", "data/quality_reports does not exist yet.", quality_dir, "No action needed before quality-check."))
+        issues.append(_issue("quality_reports_missing", "info", "quality", "data/quality_reports 目录还不存在。", quality_dir, "运行质量检查前无需操作。"))
     return _section("quality_reports", issues, checked=max(checked, 1))
 
 
@@ -187,20 +187,20 @@ def check_todos(data_dir: Path) -> dict[str, Any]:
     issues: list[dict[str, Any]] = []
     todos_path = data_dir / "todos" / "todos.json"
     if not todos_path.exists():
-        issues.append(_issue("todos_missing", "info", "todo", "data/todos/todos.json does not exist yet.", todos_path, "No action needed until todos are used."))
+        issues.append(_issue("todos_missing", "info", "todo", "data/todos/todos.json 还不存在。", todos_path, "使用 Todos 前无需操作。"))
         return _section("todos", issues, checked=1)
     payload, error = _read_json(todos_path)
     if error:
-        issues.append(_issue("invalid_todos_json", "error", "todo", "Todos JSON cannot be parsed.", todos_path, "Repair todos JSON syntax."))
+        issues.append(_issue("invalid_todos_json", "error", "todo", "Todos JSON 无法解析。", todos_path, "修复 Todos JSON 语法。"))
         return _section("todos", issues, checked=1)
     todos = payload.get("todos", payload if isinstance(payload, list) else [])
     todos = todos if isinstance(todos, list) else []
     open_todos = [todo for todo in todos if isinstance(todo, dict) and str(todo.get("status", "open")) in {"open", "todo", "doing"}]
     high_todos = [todo for todo in open_todos if str(todo.get("priority", "")).lower() == "high"]
     if len(open_todos) > 20:
-        issues.append(_issue("too_many_open_todos", "warning", "todo", f"Open todos exceed 20: {len(open_todos)}.", todos_path, "Review and close stale todos."))
+        issues.append(_issue("too_many_open_todos", "warning", "todo", f"未完成的 Todo 超过 20 条：{len(open_todos)}。", todos_path, "检查并关闭过期的 Todo。"))
     if len(high_todos) > 5:
-        issues.append(_issue("too_many_high_priority_todos", "warning", "todo", f"High priority open todos exceed 5: {len(high_todos)}.", todos_path, "Reprioritize high priority todos."))
+        issues.append(_issue("too_many_high_priority_todos", "warning", "todo", f"高优先级未完成 Todo 超过 5 条：{len(high_todos)}。", todos_path, "重新调整高优先级 Todo。"))
     return _section("todos", issues, checked=len(todos) + 1, details={"open_todos": len(open_todos), "high_priority_open_todos": len(high_todos)})
 
 
@@ -208,17 +208,56 @@ def check_vector_index(data_dir: Path) -> dict[str, Any]:
     issues: list[dict[str, Any]] = []
     index_path = data_dir / "memory" / "memory_index.json"
     chapter_count = len(_official_chapter_files(data_dir))
+    report_path = data_dir / "memory" / "vector_index_report.json"
+
     if not index_path.exists():
-        issues.append(_issue("memory_index_missing", "info", "vector", "data/memory/memory_index.json does not exist yet.", index_path, "No action needed before indexing memory."))
+        issues.append(_issue("memory_index_missing", "info", "vector", "data/memory/memory_index.json 还不存在。", index_path, "索引记忆前无需操作。"))
         return _section("vector_index", issues, checked=1, details={"official_chapter_count": chapter_count, "indexed_chapter_count": 0})
+
     payload, error = _read_json(index_path)
     if error:
-        issues.append(_issue("invalid_memory_index_json", "error", "vector", "memory_index JSON cannot be parsed.", index_path, "Repair memory_index JSON syntax."))
+        issues.append(_issue("invalid_memory_index_json", "error", "vector", "memory_index JSON 无法解析。", index_path, "修复 memory_index JSON 语法。"))
         return _section("vector_index", issues, checked=1)
+
     indexed_count = _memory_index_chapter_count(payload)
     if indexed_count < chapter_count:
-        issues.append(_issue("memory_index_behind_chapters", "warning", "vector", "memory_index covers fewer chapters than official chapter files.", index_path, "Run index-vault when ready.", [data_dir / "chapters"]))
-    return _section("vector_index", issues, checked=1, details={"official_chapter_count": chapter_count, "indexed_chapter_count": indexed_count})
+        issues.append(_issue("memory_index_behind_chapters", "warning", "vector", "memory_index 覆盖的章节少于正式章节文件。", index_path, "准备好后运行 index-vault。", [data_dir / "chapters"]))
+
+    chroma_stats: dict[str, Any] = {}
+    try:
+        from system.vector_memory import is_available, collection_stats
+
+        if is_available(data_dir):
+            chroma_stats = collection_stats(data_dir)
+            vc = chroma_stats.get("chapters_indexed", 0)
+            if vc < chapter_count:
+                issues.append(_issue(
+                    "vector_index_behind_chapters", "warning", "vector",
+                    f"ChromaDB 向量索引覆盖 {vc} 章，但正式章节有 {chapter_count} 章。",
+                    report_path, "运行 index-vault 重建向量索引。",
+                ))
+        else:
+            if chapter_count > 0:
+                issues.append(_issue(
+                    "vector_index_not_built", "info", "vector",
+                    f"已有 {chapter_count} 章正文，但尚未构建 ChromaDB 向量索引。",
+                    report_path, "点击'更新向量库'或运行 index-vault。",
+                ))
+    except Exception:
+        pass
+
+    return _section(
+        "vector_index",
+        issues,
+        checked=2,
+        details={
+            "official_chapter_count": chapter_count,
+            "indexed_chapter_count": indexed_count,
+            "vector_chapters_indexed": chroma_stats.get("chapters_indexed", 0),
+            "vector_chunks": chroma_stats.get("chunks_indexed", 0),
+            "vector_indexed_at": chroma_stats.get("indexed_at", ""),
+        },
+    )
 
 
 def render_memory_health_markdown(report: dict[str, Any]) -> str:
@@ -232,14 +271,14 @@ def render_memory_health_markdown(report: dict[str, Any]) -> str:
     ]
     suggestion_lines = [f"- {item}" for item in suggestions]
     return "\n".join([
-        "# Story OS Memory Health Report",
+        "# Story OS 记忆健康报告",
         "",
         f"- 检查时间：{report.get('checked_at', '')}",
         f"- 总体状态：{report.get('overall_status', '')}",
         f"- 健康分：{report.get('overall_score', 0)}",
-        f"- Errors：{summary.get('errors', 0)}",
-        f"- Warnings：{summary.get('warnings', 0)}",
-        f"- Infos：{summary.get('infos', 0)}",
+        f"- 错误：{summary.get('errors', 0)}",
+        f"- 警告：{summary.get('warnings', 0)}",
+        f"- 信息：{summary.get('infos', 0)}",
         "",
         "## 问题列表",
         "",
@@ -310,7 +349,7 @@ def _load_state(data_dir: Path, issues: list[dict[str, Any]]) -> dict[str, Any]:
         return {}
     state, error = _read_json(state_path)
     if error:
-        issues.append(_issue("invalid_state_json", "error", "state", "data/state.json cannot be parsed as JSON.", state_path, "Repair state.json syntax."))
+        issues.append(_issue("invalid_state_json", "error", "state", "data/state.json 无法解析为 JSON。", state_path, "修复 state.json 语法。"))
     return state
 
 
@@ -336,10 +375,10 @@ def _missing_numbers(values: list[int]) -> list[int]:
 def _check_selected_version(selected: dict[str, Any], index_path: Path, issues: list[dict[str, Any]]) -> None:
     source_type = str(selected.get("source_type", ""))
     if source_type not in VALID_SOURCE_TYPES:
-        issues.append(_issue("selected_invalid_source_type", "error", "version", "Selected version source_type must be draft, edited, or manual.", index_path, "Select a valid version source type."))
+        issues.append(_issue("selected_invalid_source_type", "error", "version", "选中版本的 source_type 必须是 draft、edited 或 manual。", index_path, "选择有效的版本来源类型。"))
     json_path = Path(str(selected.get("json_path", "")))
     if not json_path.exists():
-        issues.append(_issue("selected_version_missing", "error", "version", "Selected version json_path does not exist.", json_path if str(json_path) else index_path, "Select an existing version or restore the missing file.", [index_path]))
+        issues.append(_issue("selected_version_missing", "error", "version", "选中版本的 json_path 指向的文件不存在。", json_path if str(json_path) else index_path, "选择现有版本或恢复缺失文件。", [index_path]))
 
 
 def _check_version_payload(source_type: str, item: dict[str, Any], issues: list[dict[str, Any]]) -> None:
@@ -348,11 +387,11 @@ def _check_version_payload(source_type: str, item: dict[str, Any], issues: list[
         return
     payload, error = _read_json(json_path)
     if error:
-        issues.append(_issue("invalid_version_payload_json", "error", "version", f"Version payload JSON cannot be parsed: {json_path.name}.", json_path, "Repair version payload JSON syntax."))
+        issues.append(_issue("invalid_version_payload_json", "error", "version", f"版本文件 JSON 无法解析：{json_path.name}。", json_path, "修复版本文件 JSON 语法。"))
         return
     required_text_key = {"draft": "draft_text", "edited": "edited_text", "manual": "manual_text"}[source_type]
     if required_text_key not in payload:
-        issues.append(_issue(f"{source_type}_missing_text", "warning", "version", f"{source_type} version is missing {required_text_key}: {json_path.name}.", json_path, f"Add {required_text_key} or regenerate the version."))
+        issues.append(_issue(f"{source_type}_missing_text", "warning", "version", f"版本缺少 {required_text_key} 字段：{json_path.name}。", json_path, f"添加 {required_text_key} 或重新生成版本。"))
 
 
 def _selected_versions(data_dir: Path) -> list[dict[str, Any]]:

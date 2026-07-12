@@ -18,15 +18,22 @@ class VersionSelectRequest(BaseModel):
     version: int
 
 
+class VersionArchiveRequest(BaseModel):
+    source_type: Literal["draft", "edited", "manual"]
+    version: int
+    chapter_id: int | None = None
+
+
 class ManualSaveRequest(BaseModel):
     chapter_id: int
-    source_type: Literal["draft", "edited", "manual"]
+    source_type: Literal["draft", "edited", "manual", "committed"]
     source_version: int
     text: str
 
 
 class ReviewApproveRequest(BaseModel):
     force: bool = False
+    polish: bool | None = None
 
 
 class TodoCreateRequest(BaseModel):
@@ -41,7 +48,6 @@ class AskRequest(BaseModel):
     question: str
     use_llm: bool = False
     use_vector: bool = True
-
 
 
 class ProjectCreateRequest(BaseModel):

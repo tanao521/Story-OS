@@ -37,12 +37,26 @@ def plan_next_chapter(
     selected_rules = _select_world_rules(world_bible)
     genre_tendency = _genre_tendency(str(story_spec.get("genre", "")))
     climax_design = _climax_design(chapter_id)
+    word_min, word_max = _chapter_word_bounds(story_spec)
+
+    # Build recent-chapter summaries for the plan context
+    recent_chapter_summaries: list[dict[str, Any]] = []
+    if working_context:
+        for ch in working_context.get("recent_chapters", [])[:3]:
+            if isinstance(ch, dict):
+                text = str(ch.get("text", ""))
+                recent_chapter_summaries.append({
+                    "chapter_id": ch.get("chapter_id"),
+                    "title": ch.get("title", ""),
+                    "preview": text[:500] if text else "(正文缺失)",
+                })
 
     return {
-        "plan_version": "0.4",
+        "plan_version": "0.5",
         "chapter_id": chapter_id,
         "chapter_title": _chapter_title(chapter_id, phase, genre_tendency),
         "estimated_word_count": _estimated_word_count(story_spec),
+        "word_count_constraints": {"min": word_min, "max": word_max},
         "chapter_goal": _chapter_goal(chapter_id, phase, genre_tendency),
         "phase_position": {
             "phase_id": phase.get("phase_id", 1),
@@ -50,7 +64,7 @@ def plan_next_chapter(
             "reason": _phase_reason(current_chapter, phase),
         },
         "required_context": {
-            "recent_chapters": [],
+            "recent_chapters": recent_chapter_summaries,
             "state_snapshot": _state_snapshot(state),
             "characters_to_use": selected_characters,
             "world_rules_to_use": selected_rules,
@@ -341,7 +355,7 @@ def _genre_tendency(genre: str) -> dict[str, str]:
 def _chapter_title(chapter_id: int, phase: dict[str, Any], tendency: dict[str, str]) -> str:
     if chapter_id == 1:
         return "醒来的压力"
-    return f"{phase.get('title', '下一阶段')}中的新问题"
+    return f"第{chapter_id}章"
 
 
 def _chapter_goal(chapter_id: int, phase: dict[str, Any], tendency: dict[str, str]) -> str:
@@ -355,14 +369,41 @@ def _phase_reason(current_chapter: int, phase: dict[str, Any]) -> str:
 
 
 def _estimated_word_count(story_spec: dict[str, Any]) -> int:
-    length_type = str(story_spec.get("length_type", "长篇"))
-    if length_type == "短篇":
+    minimum, maximum = _chapter_word_bounds(story_spec)
+    if minimum > 0 and maximum > 0:
+        return max(minimum, (minimum + maximum) // 2)
+    length_type = str(story_spec.get("length_type", ""))
+    if "短" in length_type:
         return 2000
-    if length_type == "中篇":
+    if "中" in length_type:
         return 2500
     return 3000
 
 
+def _chapter_word_bounds(story_spec: dict[str, Any]) -> tuple[int, int]:
+    constraints = story_spec.get("writing_constraints", {})
+    if not isinstance(constraints, dict):
+        constraints = {}
+    chapter = constraints.get("chapter_word_count", {})
+    if not isinstance(chapter, dict):
+        chapter = {}
+    minimum = _positive_int(chapter.get("min"), 0)
+    maximum = _positive_int(chapter.get("max"), 0)
+    if minimum <= 0 and maximum <= 0:
+        return 0, 0
+    if minimum <= 0:
+        minimum = maximum
+    if maximum <= 0 or maximum < minimum:
+        maximum = minimum
+    return minimum, maximum
+
+
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
 def _scene_purpose(index: int, title: str) -> str:
     purposes = {
         1: "建立本章初始状态和行动压力",

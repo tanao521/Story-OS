@@ -10,7 +10,9 @@ from fastapi.templating import Jinja2Templates
 
 import commands
 from core.setup_wizard import create_story_project
+from system.chapter_archive import ChapterArchiveError, archive_chapter
 from system.manual_editor import create_manual_version
+from system.llm_health import build_llm_health_report
 from system.memory_health import run_memory_health_check
 from system.quality_checker import load_quality_report, quality_report_paths, quality_summary_from_report
 from system.review_gate import prepare_review_record, save_review_markdown, update_review_status
@@ -18,13 +20,22 @@ from system.status_dashboard import build_status_dashboard
 from system.story_qa import answer_from_memory, answer_from_state, answer_from_story
 from system.text_diff import build_text_diff
 from system.todo_manager import create_todo, list_todos, update_todo_status
-from system.version_manager import list_versions, read_version_payload
-from web.schemas import AskRequest, ManualSaveRequest, ProjectCreateRequest, ReviewApproveRequest, TodoCreateRequest, VersionSelectRequest
+from system.version_manager import VersionArchiveError, archive_version, list_versions, read_version_payload
+from web.schemas import AskRequest, ManualSaveRequest, ProjectCreateRequest, ReviewApproveRequest, TodoCreateRequest, VersionArchiveRequest, VersionSelectRequest
 from web.view_models import api_error, api_ok
 
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
+
+PROJECT_ASSETS: dict[str, dict[str, str]] = {
+    "story_spec": {"label": "项目设定", "path": "data/story_spec.json", "format": "json"},
+    "story_blueprint": {"label": "故事蓝图", "path": "data/story_blueprint.json", "format": "json"},
+    "characters": {"label": "角色档案", "path": "data/characters.json", "format": "json"},
+    "world_bible": {"label": "世界观圣经", "path": "data/world_bible.json", "format": "json"},
+    "world_rules": {"label": "世界规则", "path": "data/world_rules.json", "format": "json"},
+    "project_md": {"label": "项目说明", "path": "data/project.md", "format": "markdown"},
+}
 
 
 def api_response(
@@ -102,6 +113,81 @@ def api_status() -> dict[str, Any]:
     return build_status_dashboard(full=True)
 
 
+
+
+@router.get("/api/project-assets")
+def api_project_assets() -> JSONResponse:
+    def action() -> dict[str, Any]:
+        return api_ok(result={"assets": [_read_project_asset(asset_id) for asset_id in PROJECT_ASSETS]})
+
+    return guarded(action)
+
+
+@router.post("/api/project-assets/{asset_id}")
+async def api_save_project_asset(asset_id: str, request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    def action() -> dict[str, Any]:
+        if asset_id not in PROJECT_ASSETS:
+            return api_error("未知项目档案。", ["unknown project asset"])
+        if not isinstance(payload, dict) or not isinstance(payload.get("content"), str):
+            return api_error("项目档案内容无效。", ["content must be a string"])
+        asset = PROJECT_ASSETS[asset_id]
+        path = Path(asset["path"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        content = payload["content"]
+        if asset["format"] == "json":
+            try:
+                parsed = json.loads(content or "{}")
+            except json.JSONDecodeError as exc:
+                return api_error("JSON 格式无效，未保存。", [f"line {exc.lineno}, column {exc.colno}: {exc.msg}"])
+            path.write_text(json.dumps(parsed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        else:
+            path.write_text(content, encoding="utf-8")
+        return api_ok("项目档案已保存。", {"asset": _read_project_asset(asset_id)})
+
+    return guarded(action)
+
+@router.get("/api/writing-constraints")
+def api_writing_constraints() -> JSONResponse:
+    def action() -> dict[str, Any]:
+        story_spec = _load_json_safe(Path("data/story_spec.json"), {})
+        constraints = _normalize_writing_constraints(story_spec)
+        return api_ok(result=constraints)
+
+    return guarded(action)
+
+
+@router.post("/api/writing-constraints")
+async def api_save_writing_constraints(request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    def action() -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            return api_error("写作约束格式无效。", ["payload must be an object"])
+        story_spec_path = Path("data/story_spec.json")
+        story_spec = _load_json_safe(story_spec_path, {})
+        if not isinstance(story_spec, dict) or not story_spec:
+            return api_error("尚未创建小说项目。", ["data/story_spec.json not found"])
+        constraints = _normalize_writing_constraints({"writing_constraints": payload, **payload})
+        story_spec["writing_constraints"] = constraints
+        story_spec["anti_ai_style_rules"] = constraints.get("ai_style_limits", [])
+        story_spec_path.write_text(json.dumps(story_spec, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return api_ok("写作约束已保存。", constraints)
+
+    return guarded(action)
+
+@router.get("/api/llm/health")
+def api_llm_health() -> dict[str, Any]:
+    return build_llm_health_report()
+
+
 @router.get("/api/memory-health")
 def api_memory_health(full: bool = False) -> JSONResponse:
     def action() -> dict[str, Any]:
@@ -113,29 +199,80 @@ def api_memory_health(full: bool = False) -> JSONResponse:
 
 @router.post("/api/run-chapter")
 def api_run_chapter() -> JSONResponse:
-    return guarded(lambda: command_response(commands.run_chapter_command(auto_commit=False)))
+    return guarded(lambda: command_response(commands.run_chapter_command(auto_commit=False, require_model=True)))
 
 
+
+@router.post("/api/chapters/{chapter_number}/archive")
+def api_archive_chapter(chapter_number: int) -> JSONResponse:
+    def action() -> dict[str, Any]:
+        try:
+            result = archive_chapter(chapter_number, "data")
+        except ChapterArchiveError as exc:
+            return api_error("章节归档失败。", [str(exc)])
+        return api_ok("章节已归档。", result, result.get("warnings", []))
+
+    return guarded(action)
 @router.post("/api/quality-check")
-def api_quality_check() -> JSONResponse:
-    return guarded(lambda: command_response(commands.quality_check_command()))
+async def api_quality_check(request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    def action() -> dict[str, Any]:
+        if not isinstance(payload, dict) or not payload.get("source_type") or not payload.get("version"):
+            return command_response(commands.quality_check_command())
+        source_type = str(payload.get("source_type", ""))
+        version = int(payload.get("version", 0) or 0)
+        kwargs: dict[str, Any] = {}
+        if source_type == "draft":
+            kwargs["draft_version"] = version
+        elif source_type == "edited":
+            kwargs["edited_version"] = version
+        elif source_type == "manual":
+            kwargs["manual_version"] = version
+        else:
+            return api_error("\u672a\u77e5\u7248\u672c\u7c7b\u578b\u3002", ["source_type must be draft, edited, or manual"])
+        return command_response(commands.quality_check_command(**kwargs))
+
+    return guarded(action)
 
 
 @router.get("/api/versions")
 def api_versions() -> dict[str, Any]:
-    result = commands.compare_drafts_command()
-    outputs = result.get("outputs", {}) if result.get("status") != "failed" else {}
+    warnings: list[str] = []
+    errors: list[str] = []
+    try:
+        result = commands.compare_drafts_command()
+        outputs = result.get("outputs", {}) if result.get("status") != "failed" else {}
+        warnings.extend(str(item) for item in result.get("warnings", []) or [])
+    except (PermissionError, FileNotFoundError, json.JSONDecodeError, OSError) as exc:
+        versions = list_versions(current_target_chapter(), "data")
+        outputs = {
+            "drafts": versions.get("drafts", []),
+            "edited": versions.get("edited", []),
+            "manual": versions.get("manual", []),
+            "committed": commands._scan_committed_chapters(Path("data")),
+            "selected": versions.get("selected", {}),
+        }
+        message = f"Version command skipped unreadable file: {exc}"
+        warnings.append(message)
+        errors.append(str(exc))
     return {
         "drafts": outputs.get("drafts", []),
         "edited": outputs.get("edited", []),
         "manual": outputs.get("manual", []),
+        "committed": outputs.get("committed", []),
         "selected": outputs.get("selected") or None,
+        "warnings": warnings,
+        "errors": errors,
     }
 
 
 @router.get("/api/versions/content")
 def api_version_content(
-    source_type: str = Query(..., pattern="^(draft|edited|manual)$"),
+    source_type: str = Query(..., pattern="^(draft|edited|manual|committed)$"),
     version: int = Query(..., ge=1),
 ) -> JSONResponse:
     return guarded(lambda: api_ok(result=build_version_content(source_type, version)))
@@ -143,9 +280,9 @@ def api_version_content(
 
 @router.get("/api/versions/diff")
 def api_version_diff(
-    left_type: str = Query(..., pattern="^(draft|edited|manual)$"),
+    left_type: str = Query(..., pattern="^(draft|edited|manual|committed)$"),
     left_version: int = Query(..., ge=1),
-    right_type: str = Query(..., pattern="^(draft|edited|manual)$"),
+    right_type: str = Query(..., pattern="^(draft|edited|manual|committed)$"),
     right_version: int = Query(..., ge=1),
 ) -> JSONResponse:
     def action() -> dict[str, Any]:
@@ -164,7 +301,7 @@ def api_version_diff(
 
 @router.get("/api/quality-report")
 def api_quality_report(
-    source_type: str = Query(..., pattern="^(draft|edited|manual)$"),
+    source_type: str = Query(..., pattern="^(draft|edited|manual|committed)$"),
     version: int = Query(..., ge=1),
 ) -> JSONResponse:
     return guarded(lambda: api_ok(*quality_report_response(source_type, version)))
@@ -175,6 +312,18 @@ def api_select_version(request: VersionSelectRequest) -> JSONResponse:
     def action() -> dict[str, Any]:
         select_spec = f"{request.source_type}:{request.version}"
         return command_response(commands.compare_drafts_command(select_spec=select_spec))
+
+    return guarded(action)
+
+
+@router.post("/api/versions/archive")
+def api_archive_version(request: VersionArchiveRequest) -> JSONResponse:
+    def action() -> dict[str, Any]:
+        try:
+            result = archive_version(current_target_chapter(), request.source_type, request.version, "data")
+        except VersionArchiveError as exc:
+            return api_error("版本归档失败。", [str(exc)])
+        return api_ok("版本已归档。", result)
 
     return guarded(action)
 
@@ -208,7 +357,7 @@ def api_manual_save(request: ManualSaveRequest) -> JSONResponse:
 
 @router.post("/api/review/approve")
 def api_review_approve(request: ReviewApproveRequest) -> JSONResponse:
-    return guarded(lambda: approve_review(force=request.force))
+    return guarded(lambda: approve_review(force=request.force, polish=request.polish))
 
 
 @router.post("/api/review/reject")
@@ -284,6 +433,26 @@ def api_index_vault() -> JSONResponse:
 
 
 def build_version_content(source_type: str, version: int) -> dict[str, Any]:
+    if source_type == "committed":
+        chapter_path = Path("data") / "chapters" / f"chapter_{version:03d}.md"
+        if not chapter_path.exists():
+            raise FileNotFoundError(f"committed:{version} not found")
+        text = chapter_path.read_text(encoding="utf-8")
+        first_line = text.strip().splitlines()[0].strip() if text.strip() else ""
+        title = first_line.lstrip("#").strip() if first_line.startswith("#") else ""
+        return {
+            "chapter_id": version,
+            "source_type": "committed",
+            "version": version,
+            "version_label": f"chapter_{version:03d}",
+            "title": title,
+            "text": text,
+            "word_count": len([char for char in text if not char.isspace()]),
+            "json_path": chapter_path.as_posix(),
+            "markdown_path": chapter_path.as_posix(),
+            "generation": {"mode": "committed", "model": "", "fallback_used": False},
+            "quality": {},
+        }
     chapter_id = current_target_chapter()
     versions = list_versions(chapter_id, "data")
     match = find_version_info(versions, source_type, version)
@@ -396,7 +565,7 @@ def risk_level(score: Any) -> str:
     return "high"
 
 
-def approve_review(force: bool = False) -> dict[str, Any]:
+def approve_review(force: bool = False, polish: bool | None = None) -> dict[str, Any]:
     prepared = prepare_review_record("data")
     target = prepared["target"]
     quality_summary_data = commands.quality_summary_for_target(target)
@@ -411,11 +580,23 @@ def approve_review(force: bool = False) -> dict[str, Any]:
 
     record = update_review_status(int(target["chapter_id"]), "approved", decision="approve")
     save_review_markdown(record, target, "data")
+
+    if polish is None:
+        return api_response(True, "", {"review": record}, extra={"polish_available": True})
+
+    if polish:
+        edit_result = commands.edit_draft_command()
+        if edit_result.get("status") != "success":
+            return api_response(False, "AI polish failed.", {"review": record})
     commit_result = commands.commit_chapter_command()
     response = command_response(commit_result)
     response["message"] = "审核通过，章节已提交。" if response["ok"] else response["message"]
     if not response["ok"]:
         return response
+
+    archived_versions, archive_warnings = _archive_versions_after_commit(int(target["chapter_id"]))
+    response["result"]["archived_versions"] = archived_versions
+    response["warnings"].extend(archive_warnings)
 
     for followup in [commands.sync_obsidian_command, commands.index_vault_command]:
         followup_result = followup()
@@ -435,3 +616,70 @@ def update_review(status: str, decision: str, message: str) -> dict[str, Any]:
 def todo_status_response(todo_id: int, status: str, message: str) -> dict[str, Any]:
     item = update_todo_status(todo_id, status)
     return api_ok(message, {"todo": item})
+
+
+def _read_project_asset(asset_id: str) -> dict[str, Any]:
+    asset = PROJECT_ASSETS[asset_id]
+    path = Path(asset["path"])
+    content = ""
+    exists = path.exists()
+    if exists:
+        if asset["format"] == "json":
+            data = _load_json_safe(path, {})
+            content = json.dumps(data, ensure_ascii=False, indent=2) if isinstance(data, (dict, list)) else str(data)
+        else:
+            content = path.read_text(encoding="utf-8")
+    return {
+        "id": asset_id,
+        "label": asset["label"],
+        "path": asset["path"],
+        "format": asset["format"],
+        "exists": exists,
+        "content": content,
+    }
+
+def _load_json_safe(path: Path, default: Any) -> Any:
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return default
+
+
+def _normalize_writing_constraints(source: dict[str, Any]) -> dict[str, Any]:
+    constraints = source.get("writing_constraints", {})
+    if not isinstance(constraints, dict):
+        constraints = {}
+    chapter = constraints.get("chapter_word_count", {})
+    if not isinstance(chapter, dict):
+        chapter = {}
+    min_words = _int_or_default(chapter.get("min") or source.get("chapter_word_min"), 2500)
+    max_words = _int_or_default(chapter.get("max") or source.get("chapter_word_max"), 4500)
+    if max_words < min_words:
+        max_words = min_words
+    return {
+        "chapter_word_count": {"min": min_words, "max": max_words},
+        "pacing": str(constraints.get("pacing") or source.get("pacing") or "").strip(),
+        "chapter_structure": str(constraints.get("chapter_structure") or source.get("chapter_structure") or "").strip(),
+        "must_follow": _list_from_any(constraints.get("must_follow") or source.get("must_follow") or source.get("focus")),
+        "must_avoid": _list_from_any(constraints.get("must_avoid") or source.get("must_avoid") or source.get("avoid")),
+        "ai_style_limits": _list_from_any(constraints.get("ai_style_limits") or source.get("ai_style_limits") or source.get("anti_ai_style_rules")),
+    }
+
+
+def _int_or_default(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _list_from_any(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    normalized = str(value).replace("，", ",").replace("\n", ",")
+    return [item.strip() for item in normalized.split(",") if item.strip()]

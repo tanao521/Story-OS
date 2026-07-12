@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from system.chapter_archive import active_chapter_entries
 from system.quality_checker import load_quality_report, quality_report_paths
 from system.version_manager import list_versions
 from system.todo_manager import format_todo_for_cli, summarize_todos
@@ -20,7 +21,10 @@ def load_json_if_exists(path: str | Path, default: Any = None) -> Any:
     try:
         return json.loads(target.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
-        LOAD_WARNINGS.append(f"JSON 损坏，已跳过：{target.as_posix()}")
+        LOAD_WARNINGS.append(f"Invalid JSON skipped: {target.as_posix()}")
+        return default
+    except (PermissionError, FileNotFoundError, OSError) as exc:
+        LOAD_WARNINGS.append(f"Unreadable JSON skipped: {target.as_posix()} ({exc.__class__.__name__})")
         return default
 
 
@@ -40,15 +44,14 @@ def collect_progress_info(data_dir: str | Path = "data") -> dict[str, Any]:
     root = Path(data_dir)
     state = load_json_if_exists(root / "state.json", {}) or {}
     current_chapter = int(state.get("current_chapter", 0) or 0)
-    memory_index = load_json_if_exists(root / "memory" / "memory_index.json", {}) or {}
-    chapters = memory_index.get("chapters", [])
-    committed_count = len(chapters) if isinstance(chapters, list) else len(list((root / "chapters").glob("chapter_*.md")))
+    active_chapters = active_chapter_entries(root)
     return {
         "current_chapter": current_chapter,
         "next_chapter": current_chapter + 1,
         "current_stage": str(state.get("current_stage", "")),
-        "committed_chapters_count": committed_count,
+        "committed_chapters_count": len(active_chapters),
         "estimated_total_chapters": None,
+        "active_chapters": active_chapters,
     }
 
 
@@ -76,10 +79,22 @@ def collect_memory_status(data_dir: str | Path = "data") -> dict[str, Any]:
     root = Path(data_dir)
     state = load_json_if_exists(root / "state.json", {}) or {}
     vector_report = root / "memory" / "vector_index_report.json"
+    vector_available = False
+    vector_stats: dict[str, Any] = {}
+    try:
+        from system.vector_memory import is_available, collection_stats
+
+        if is_available(data_dir):
+            vector_available = True
+            vector_stats = collection_stats(data_dir)
+    except Exception:
+        pass
     return {
         "context_exists": (root / "context" / "current_context.json").exists(),
         "obsidian_synced": bool(state.get("obsidian", {}).get("synced")) if isinstance(state.get("obsidian"), dict) else False,
-        "vector_memory_enabled": vector_report.exists(),
+        "vector_memory_enabled": vector_available or vector_report.exists(),
+        "vector_indexed_chapters": vector_stats.get("chapters_indexed", 0),
+        "vector_chunks": vector_stats.get("chunks_indexed", 0),
         "last_vector_index_report": vector_report.as_posix() if vector_report.exists() else "",
         "memory_index_exists": (root / "memory" / "memory_index.json").exists(),
     }
@@ -320,7 +335,7 @@ def render_status_text(status: dict[str, Any], full: bool = False) -> str:
         "记忆系统：",
         f"- current_context：{'已生成' if memory.get('context_exists') else '未生成'}",
         f"- Obsidian 同步：{'已同步' if memory.get('obsidian_synced') else '未同步'}",
-        f"- 向量库：{'已启用' if memory.get('vector_memory_enabled') else '未启用'}",
+        f"- 向量库：{'已启用' if memory.get('vector_memory_enabled') else '未启用'}（{memory.get('vector_indexed_chapters', 0)} 章 {memory.get('vector_chunks', 0)} 片段）",
         f"- memory_index：{'存在' if memory.get('memory_index_exists') else '不存在'}",
         "",
         "质量风险：",
@@ -387,7 +402,7 @@ def save_status_report(status: dict[str, Any], data_dir: str | Path = "data") ->
 
 def collect_full_details(data_dir: str | Path = "data") -> dict[str, Any]:
     root = Path(data_dir)
-    pipeline_runs = sorted((root / "pipeline_runs").glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
+    pipeline_runs = _safe_recent_pipeline_runs(root / "pipeline_runs")
     return {
         "recent_chapters": [path.as_posix() for path in sorted((root / "chapters").glob("chapter_*.md"))[-5:]],
         "quality_reports": [path.as_posix() for path in sorted((root / "quality_reports").glob("*.json"))],
@@ -395,6 +410,17 @@ def collect_full_details(data_dir: str | Path = "data") -> dict[str, Any]:
         "config_summary": load_json_if_exists(".story_os/config.json", {}) or {},
     }
 
+
+def _safe_recent_pipeline_runs(directory: Path) -> list[Path]:
+    runs: list[tuple[float, Path]] = []
+    if not directory.exists():
+        return []
+    for path in directory.glob("*.json"):
+        try:
+            runs.append((path.stat().st_mtime, path))
+        except (PermissionError, FileNotFoundError, OSError) as exc:
+            LOAD_WARNINGS.append(f"Unreadable pipeline run skipped: {path.as_posix()} ({exc.__class__.__name__})")
+    return [path for _, path in sorted(runs, key=lambda item: item[0], reverse=True)]
 
 
 def _render_memory_health_lines(memory_health: dict[str, Any]) -> list[str]:

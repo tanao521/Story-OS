@@ -2,6 +2,8 @@
 
 from typing import Any
 
+from core.project import ensure_project_structure, resolve_current_project_root
+
 
 ANTI_AI_STYLE_RULES = [
     "减少‘不是A，而是B’句式",
@@ -181,7 +183,9 @@ def create_story_project(raw_answers: dict[str, Any], data_dir: str = "data") ->
 
     story_spec = build_story_spec_from_answers(raw_answers)
     state = build_initial_state(story_spec)
-    root = Path(data_dir)
+    data_path = Path(data_dir)
+    project_root = resolve_current_project_root(project_root=data_path.parent if data_path.name == "data" else Path.cwd())
+    root = project_root / data_path.name if data_path.name == "data" else data_path
     root.mkdir(parents=True, exist_ok=True)
     story_spec_path = root / "story_spec.json"
     state_path = root / "state.json"
@@ -189,12 +193,19 @@ def create_story_project(raw_answers: dict[str, Any], data_dir: str = "data") ->
     story_spec_path.write_text(json.dumps(story_spec, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     project_path.write_text(render_project_markdown(story_spec), encoding="utf-8")
+    paths = ensure_project_structure(project_root, form_data={**raw_answers, **story_spec})
     return {
+        "project_root": str(project_root),
         "story_spec_path": story_spec_path.as_posix(),
         "state_path": state_path.as_posix(),
         "project_path": project_path.as_posix(),
+        "story_blueprint_path": paths["blueprint_path"].as_posix(),
+        "plot_state_path": paths["plot_state_path"].as_posix(),
+        "chapter_index_path": paths["chapter_index_path"].as_posix(),
+        "characters_path": paths["characters_path"].as_posix(),
+        "world_rules_path": paths["world_rules_path"].as_posix(),
+        "world_bible_path": paths["world_bible_path"].as_posix(),
     }
-
 
 def _normalize_target_word_count(value: Any, length_type: str) -> int:
     default = DEFAULT_WORD_COUNTS.get(length_type, 300000)

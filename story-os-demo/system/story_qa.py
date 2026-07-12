@@ -104,7 +104,6 @@ def search_vector_memory_if_available(
     data_dir: str | Path = "data",
     max_results: int = 5,
 ) -> list[dict[str, Any]]:
-    del question, max_results
     sources = load_story_sources(data_dir)
     state = sources.get("state", {})
     vector_config = state.get("vector_memory", {}) if isinstance(state, dict) else {}
@@ -113,13 +112,23 @@ def search_vector_memory_if_available(
     report_path = Path(data_dir) / "memory" / "vector_index_report.json"
     if not report_path.exists():
         return []
+
+    from system.vector_memory import search_similar
+
+    try:
+        results = search_similar(question, data_dir, max_results)
+        if results:
+            return results
+    except Exception:
+        pass
+
     report = _read_json(report_path)
     return [{
         "type": "vector",
         "path": report_path.as_posix(),
         "label": "vector_memory",
         "score": 0.3,
-        "snippet": str(report.get("summary", "向量记忆已启用，但当前 Demo 未执行真实 Chroma 检索。")),
+        "snippet": str(report.get("summary", "向量索引已存在，但语义检索未返回结果。")),
         "matched_fields": ["vector_index_report"],
     }]
 

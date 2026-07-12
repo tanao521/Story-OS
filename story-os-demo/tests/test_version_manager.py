@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from system.version_manager import (
+    archive_version,
     build_versioned_paths,
     format_chapter_id,
     get_next_version_number,
@@ -90,3 +91,43 @@ def test_load_versions_index_falls_back_to_latest_edited(tmp_path: Path) -> None
 
     assert index["edited"]
     assert selected["source_type"] == "edited"
+
+
+def test_list_versions_ignores_pipeline_runs_and_invalid_version_json(tmp_path: Path) -> None:
+    pipeline_dir = tmp_path / "pipeline_runs"
+    pipeline_dir.mkdir(parents=True, exist_ok=True)
+    (pipeline_dir / "run_chapter_001.json").write_text("{not valid json", encoding="utf-8")
+    invalid_draft = tmp_path / "drafts" / "chapter_001_draft_v001.json"
+    invalid_draft.parent.mkdir(parents=True, exist_ok=True)
+    invalid_draft.write_text("{not valid json", encoding="utf-8")
+    write_json(
+        tmp_path / "manual" / "chapter_001_manual_v001.json",
+        {"chapter_id": 1, "version": 1, "manual_text": "manual", "source_type": "edited", "source_version": 1},
+    )
+
+    versions = list_versions(1, tmp_path)
+
+    assert versions["drafts"] == []
+    assert len(versions["manual"]) == 1
+    assert all("pipeline_runs" not in item["json_path"] for item in versions["manual"])
+
+
+def test_archive_version_moves_files_and_hides_from_list(tmp_path: Path) -> None:
+    json_path = tmp_path / "drafts" / "chapter_001_draft_v001.json"
+    md_path = tmp_path / "drafts" / "chapter_001_draft_v001.md"
+    quality_path = tmp_path / "quality_reports" / "chapter_001_draft_v001_quality.json"
+    write_json(json_path, {"chapter_id": 1, "version": 1, "version_label": "draft_v001", "draft_text": "draft one"})
+    md_path.write_text("draft one", encoding="utf-8")
+    write_json(quality_path, {"chapter_id": 1, "source_type": "draft", "source_version": 1})
+    select_version(1, "draft", 1, tmp_path)
+
+    result = archive_version(1, "draft", 1, tmp_path)
+    versions = list_versions(1, tmp_path)
+
+    assert versions["drafts"] == []
+    assert versions["selected"] == {}
+    assert result["source_type"] == "draft"
+    assert not json_path.exists()
+    assert (tmp_path / "archive" / "versions" / "chapter_001" / "draft_v001" / "drafts" / "chapter_001_draft_v001.json").exists()
+    assert (tmp_path / "archive" / "versions" / "chapter_001" / "draft_v001" / "quality_reports" / "chapter_001_draft_v001_quality.json").exists()
+    assert (tmp_path / "archive" / "versions" / "chapter_001" / "draft_v001" / "archive_meta.json").exists()

@@ -6,3 +6,5 @@ uvicorn
 jinja2
 python-multipart
 httpx2
+chromadb
+sentence-transformers

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
@@ -10,6 +10,7 @@ from core.chapter_committer import commit_chapter, render_committed_chapter_mark
 from core.draft_editor import edit_draft, render_edited_markdown
 from core.draft_writer import render_draft_markdown, write_chapter_draft
 from core.next_chapter_planner import plan_next_chapter, render_next_chapter_plan_markdown
+from core.project import ensure_project_structure, resolve_current_project_root
 from core.setup_wizard import build_initial_state
 from system.context_builder import build_working_context, save_current_context
 from system.file_store import load_json, save_json, save_markdown
@@ -52,8 +53,11 @@ def build_context_command() -> dict[str, Any]:
         return _failed("build-context", "缺少 data/memory/memory_index.json。")
 
     memory_index = load_json(str(paths["memory_index"]))
+    story_spec = load_json(str(paths["story_spec"])) if paths["story_spec"].exists() else {}
+    characters = load_json(str(paths["characters"])) if paths["characters"].exists() else {}
+    world_bible = load_json(str(paths["world_bible"])) if paths["world_bible"].exists() else {}
     query = _build_context_query(state, paths)
-    context = build_working_context(state, memory_index, query)
+    context = build_working_context(state, memory_index, query, story_spec, characters, world_bible)
     json_path, markdown_path = save_current_context(context)
     state["current_stage"] = "context_built"
     state["context"] = {
@@ -73,16 +77,20 @@ def build_context_command() -> dict[str, Any]:
 
 
 def plan_next_command() -> dict[str, Any]:
-    paths = _paths()
+    project_root = resolve_current_project_root()
+    structure = ensure_project_structure(project_root)
+    paths = _paths(project_root)
     missing = _missing_plan_next_inputs(paths)
     if missing:
         return _failed("plan-next", missing)
 
+    print(f"[plan-next] project_root = {project_root}")
+    print(f"[plan-next] blueprint_path = {structure['blueprint_path']}")
     story_spec = load_json(str(paths["story_spec"]))
     blueprint = load_json(str(paths["blueprint"]))
     characters = load_json(str(paths["characters"]))
     world_bible = load_json(str(paths["world_bible"]))
-    state = _load_or_create_state(story_spec)
+    state = load_json(str(paths["state"])) if paths["state"].exists() else build_initial_state(story_spec)
     working_context = _load_optional_context(paths)
     plan = plan_next_chapter(story_spec, blueprint, characters, world_bible, state, working_context)
     state["current_stage"] = "next_chapter_planned"
@@ -91,21 +99,31 @@ def plan_next_command() -> dict[str, Any]:
         "chapter_id": plan.get("chapter_id", 1),
         "path": "data/next_chapter_plan.json",
     }
-    save_json("data/next_chapter_plan.json", plan)
-    save_markdown("data/next_chapter_plan.md", render_next_chapter_plan_markdown(plan))
-    save_json("data/state.json", state)
+    save_json(str(paths["next_chapter_plan"]), plan)
+    save_markdown(str(project_root / "data" / "next_chapter_plan.md"), render_next_chapter_plan_markdown(plan))
+    save_json(str(paths["state"]), state)
+    warnings = [str(item) for item in structure.get("events", [])]
     return _success(
         "plan-next",
         "下一章计划已生成。",
-        outputs={"chapter_id": plan.get("chapter_id", 1), "path": "data/next_chapter_plan.json"},
+        outputs={
+            "chapter_id": plan.get("chapter_id", 1),
+            "path": "data/next_chapter_plan.json",
+            "project_root": str(project_root),
+            "blueprint_path": structure["blueprint_path"].as_posix(),
+        },
+        warnings=warnings,
     )
 
 
-def write_draft_command() -> dict[str, Any]:
+def write_draft_command(require_model: bool = False) -> dict[str, Any]:
     paths = _paths()
     missing = _missing_write_draft_inputs(paths)
     if missing:
         return _failed("write-draft", missing)
+    config_error = _write_model_config_error() if require_model else ""
+    if config_error:
+        return _failed("write-draft", config_error)
 
     story_spec = load_json(str(paths["story_spec"]))
     blueprint = load_json(str(paths["blueprint"]))
@@ -123,6 +141,14 @@ def write_draft_command() -> dict[str, Any]:
         chapter_plan,
         working_context,
     )
+    generation = draft.get("generation", {}) if isinstance(draft.get("generation", {}), dict) else {}
+    if generation.get("mode") not in {"api_model", "ollama_cloud"}:
+        warnings = generation.get("warnings", []) if isinstance(generation.get("warnings", []), list) else []
+        detail = "; ".join(str(item) for item in warnings if item)
+        message = "云端模型没有成功生成正文，已拒绝保存 mock 草稿。"
+        if detail:
+            message = f"{message} {detail}"
+        return _failed("write-draft", message)
     return _save_draft_payload(draft, state, command_name="write-draft", message="当前章草稿已生成。")
 
 
@@ -174,24 +200,45 @@ def reedit_draft_command(draft_version: int | None = None) -> dict[str, Any]:
 
 def compare_drafts_command(select_spec: str | None = None) -> dict[str, Any]:
     paths = _paths()
-    if not paths["next_chapter_plan"].exists():
-        return _failed("compare-drafts", "缺少 data/next_chapter_plan.json，请先运行 python main.py plan-next。")
-    chapter_plan = load_json(str(paths["next_chapter_plan"]))
-    chapter_id = int(chapter_plan.get("chapter_id", 1) or 1)
-    selected: dict[str, Any] = {}
     warnings: list[str] = []
+    versions: dict[str, Any] = {}
+    chapter_id = 1
+
+    # Resolve chapter_id from next_chapter_plan or state
+    if paths["next_chapter_plan"].exists():
+        chapter_plan = load_json(str(paths["next_chapter_plan"]))
+        chapter_id = int(chapter_plan.get("chapter_id", 1) or 1)
+    elif paths["state"].exists():
+        state = load_json(str(paths["state"]))
+        chapter_id = int(state.get("current_chapter", 0) or 0)
+
+    # Try to load version index even without a plan file
+    try:
+        versions = load_versions_index(chapter_id)
+        _attach_quality_metadata(versions)
+    except Exception:
+        pass
+
+    committed = _scan_committed_chapters(data_dir=Path("data"))
+    if chapter_id > 0 and not versions.get("drafts") and not versions.get("edited") and not versions.get("manual"):
+        try:
+            versions = load_versions_index(chapter_id - 1)
+            _attach_quality_metadata(versions)
+            warnings.append(f"当前章无版本数据，已回退到第 {chapter_id - 1} 章。")
+        except Exception:
+            pass
+
+    selected: dict[str, Any] = {}
     if select_spec:
         try:
             source_type, version = _parse_select_spec(select_spec)
             selected = select_version(chapter_id, source_type, version)
         except Exception as exc:
             return _failed("compare-drafts", f"选择版本失败：{exc}")
-
-    versions = load_versions_index(chapter_id)
-    _attach_quality_metadata(versions)
     if not selected and isinstance(versions.get("selected"), dict):
         selected = versions.get("selected", {})
-    if not versions.get("drafts") and not versions.get("edited") and not versions.get("manual"):
+
+    if not versions.get("drafts") and not versions.get("edited") and not versions.get("manual") and not committed:
         warnings.append("当前章还没有可比较的草稿或编辑版本。")
     return _success(
         "compare-drafts",
@@ -201,6 +248,7 @@ def compare_drafts_command(select_spec: str | None = None) -> dict[str, Any]:
             "drafts": versions.get("drafts", []),
             "edited": versions.get("edited", []),
             "manual": versions.get("manual", []),
+            "committed": committed,
             "selected": selected,
             "versions_path": f"data/versions/chapter_{chapter_id:03d}_versions.json",
         },
@@ -229,6 +277,7 @@ def quality_check_command(
     world_bible = load_json(str(paths["world_bible"])) if paths["world_bible"].exists() else {}
     state = load_json(str(paths["state"])) if paths["state"].exists() else {}
     reports: list[dict[str, Any]] = []
+    refinements: list[dict[str, Any]] = []
     for source_info in source_infos:
         source = read_version_payload(source_info) if source_info.get("version") else load_json(str(source_info["json_path"]))
         source_type = str(source_info.get("source_type", ""))
@@ -247,6 +296,99 @@ def quality_check_command(
             use_llm=bool(getattr(config, "USE_DEEPSEEK_FOR_QUALITY_CHECK", False)),
         )
         json_path, markdown_path = save_quality_report(report)
+
+        # ── quality-driven LLM refinement ──────────────────────────
+        refinement: dict[str, Any] | None = None
+        flags = report.get("flags", [])
+        suggestions = report.get("suggestions", [])
+        if (flags or suggestions) and report.get("overall_score", 1.0) is not None:
+            try:
+                from core.draft_editor_refine import refine_draft_with_quality_report
+                from core.draft_writer import _extract_title_from_text
+
+                working_ctx = _load_optional_context(paths)
+
+                refined = refine_draft_with_quality_report(
+                    draft=source,
+                    chapter_plan=chapter_plan,
+                    story_spec=story_spec,
+                    blueprint=load_json(str(paths["blueprint"])) if paths["blueprint"].exists() else {},
+                    characters=characters,
+                    world_bible=world_bible,
+                    state=state,
+                    quality_report=report,
+                    working_context=working_ctx,
+                )
+                # Extract real title from refined text
+                refined_text = refined.get("edited_text", "")
+                real_title = _extract_title_from_text(refined_text)
+                if real_title:
+                    refined["chapter_title"] = real_title
+                # Save the refined text as a new edited version
+                from system.version_manager import (
+                    build_versioned_paths,
+                    get_next_version_number,
+                    load_versions_index,
+                    save_versions_index,
+                )
+                from core.draft_editor import render_edited_markdown
+
+                refined["source_draft_version"] = source_version
+                edit_version = get_next_version_number(chapter_id, "edited")
+                vp = build_versioned_paths(chapter_id, "edited", edit_version)
+                refined["version"] = edit_version
+                refined["version_label"] = f"edited_v{edit_version:03d}"
+                save_json(vp["json_path"], refined)
+                save_markdown(vp["markdown_path"], render_edited_markdown(refined))
+                versions = load_versions_index(chapter_id)
+                versions.setdefault("edited", [])
+                versions["edited"].append({
+                    "source_type": "edited",
+                    "version": edit_version,
+                    "version_label": f"edited_v{edit_version:03d}",
+                    "json_path": vp["json_path"],
+                    "markdown_path": vp["markdown_path"],
+                    "actual_word_count": refined.get("actual_word_count", 0),
+                    "mode": "api_model",
+                    "quality_score": None,
+                })
+                save_versions_index(chapter_id, versions)
+
+                # Re-run quality check on the refined version
+                refined_report = build_quality_report(
+                    refined,
+                    "edited",
+                    edit_version,
+                    vp["json_path"],
+                    chapter_plan,
+                    story_spec,
+                    characters,
+                    world_bible,
+                    state,
+                    use_llm=bool(getattr(config, "USE_DEEPSEEK_FOR_QUALITY_CHECK", False)),
+                )
+                rj, rm = save_quality_report(refined_report)
+                # Update the versions index with the new score
+                for ev in versions.get("edited", []):
+                    if ev.get("version") == edit_version:
+                        ev["quality_score"] = refined_report.get("overall_score")
+                        break
+                save_versions_index(chapter_id, versions)
+
+                refinement = {
+                    "source_type": "edited",
+                    "version": edit_version,
+                    "version_label": f"edited_v{edit_version:03d}",
+                    "issues_fixed": len(flags),
+                    "suggestions_applied": len(suggestions),
+                    "new_quality_score": refined_report.get("overall_score"),
+                    "new_flags": len(refined_report.get("flags", [])),
+                    "quality_report_path": rm,
+                }
+                refinements.append(refinement)
+            except Exception as exc:
+                refinements.append({"error": _error_text(exc)})
+
         reports.append({
             "chapter_id": report["chapter_id"],
             "source_type": source_type,
@@ -258,14 +400,18 @@ def quality_check_command(
             "flags": report.get("flags", []),
         })
     first = reports[0]
+    refinement_msg = ""
+    if refinements and not any("error" in r for r in refinements):
+        refinement_msg = f"；已根据质量报告生成 {len(refinements)} 个修复版本"
     return _success(
         "quality-check",
-        "质量评估完成。",
+        f"质量评估完成{refinement_msg}。",
         outputs={
             "chapter_id": chapter_id,
             "reports": reports,
             "report": first,
             "report_count": len(reports),
+            "refinements": refinements,
         },
     )
 
@@ -350,18 +496,17 @@ def sync_obsidian_command() -> dict[str, Any]:
 
 
 def index_vault_command() -> dict[str, Any]:
-    paths = _paths()
-    local_config = load_local_config()
-    index_data = {
-        "index_version": "1.5",
-        "mode": "lightweight_placeholder",
-        "obsidian_vault_dir": local_config.get("obsidian_vault_dir", ""),
-        "obsidian_project_dir_name": local_config.get("obsidian_project_dir_name", "StoryOS"),
-        "memory_index_exists": paths["memory_index"].exists(),
-        "versions_supported": True,
-    }
-    save_json("data/vault_index.json", index_data)
-    return _success("index-vault", "Vault 轻量索引已更新。", outputs={"path": "data/vault_index.json"})
+    from system.vector_memory import build_or_update_index
+
+    result = build_or_update_index(DATA_DIR)
+    if result.get("status") == "failed":
+        return _failed("index-vault", result.get("message", "向量索引构建失败。"))
+    return _success(
+        "index-vault",
+        result.get("message", "向量索引已更新。"),
+        outputs=result.get("outputs", {}),
+        warnings=result.get("warnings", []),
+    )
 
 
 
@@ -411,10 +556,10 @@ def memory_health_command(json_output: bool = False, full: bool = False) -> dict
     return report
 
 
-def run_chapter_command(auto_commit: bool = False) -> dict[str, Any]:
+def run_chapter_command(auto_commit: bool = False, require_model: bool = False) -> dict[str, Any]:
     from system.pipeline_runner import run_single_chapter_pipeline
 
-    report = run_single_chapter_pipeline(auto_commit=auto_commit)
+    report = run_single_chapter_pipeline(auto_commit=auto_commit, require_model=require_model)
     status = str(report.get("status", ""))
     if status == "failed":
         errors = report.get("errors", [])
@@ -428,6 +573,39 @@ def run_chapter_command(auto_commit: bool = False) -> dict[str, Any]:
         warnings=list(report.get("warnings", []) or []),
     )
 
+def _write_model_config_error() -> str:
+    provider = str(getattr(config, "LLM_PROVIDER", "") or "").strip().lower()
+    if provider in {"mock", "local", "ollama", "ollama_cloud"}:
+        return "?????????? API ?????? .env ??? LLM_PROVIDER=api?"
+    api_key = str(
+        getattr(config, "WRITE_MODEL_API_KEY", "")
+        or getattr(config, "MODEL_API_KEY", "")
+        or getattr(config, "OPENAI_API_KEY", "")
+        or getattr(config, "DEEPSEEK_API_KEY", "")
+        or ""
+    ).strip()
+    base_url = str(
+        getattr(config, "WRITE_MODEL_BASE_URL", "")
+        or getattr(config, "MODEL_BASE_URL", "")
+        or getattr(config, "OPENAI_API_BASE", "")
+        or getattr(config, "OPENAI_BASE_URL", "")
+        or getattr(config, "DEEPSEEK_BASE_URL", "")
+        or ""
+    ).strip()
+    model = str(
+        getattr(config, "WRITE_MODEL_NAME", "")
+        or getattr(config, "MODEL_NAME", "")
+        or getattr(config, "OPENAI_MODEL", "")
+        or getattr(config, "DEEPSEEK_MODEL", "")
+        or ""
+    ).strip()
+    if not api_key:
+        return "?? WRITE_MODEL_API_KEY??? .env ?????????? API Key?"
+    if not base_url:
+        return "?? WRITE_MODEL_BASE_URL??? .env ???????????????"
+    if not model:
+        return "?? WRITE_MODEL_NAME??? .env ??????????????"
+    return ""
 def draft_paths(chapter_id: int) -> tuple[Path, Path]:
     file_stem = f"chapter_{chapter_id:03d}_draft"
     return Path("data/drafts") / f"{file_stem}.json", Path("data/drafts") / f"{file_stem}.md"
@@ -561,15 +739,11 @@ def _resolve_quality_sources(
         return [_find_version_info(versions, "edited", edited_version)] if _find_version_info(versions, "edited", edited_version) else []
     if manual_version is not None:
         return [_find_version_info(versions, "manual", manual_version)] if _find_version_info(versions, "manual", manual_version) else []
-    selected = versions.get("selected", {})
-    if isinstance(selected, dict) and selected.get("source_type") and selected.get("version"):
-        found = _find_version_info(versions, str(selected["source_type"]), int(selected["version"]))
-        if found:
-            return [found]
-    if versions.get("manual"):
-        return [versions["manual"][-1]]
+    # Default: always prefer Edited (AI-polished) version
     if versions.get("edited"):
         return [versions["edited"][-1]]
+    if versions.get("manual"):
+        return [versions["manual"][-1]]
     if versions.get("drafts"):
         return [versions["drafts"][-1]]
     return []
@@ -629,8 +803,11 @@ def _resolve_draft_for_edit(chapter_id: int, draft_version: int | None) -> tuple
 
 def _resolve_commit_source(chapter_id: int) -> tuple[dict[str, Any], list[str]]:
     warnings: list[str] = []
+    raw_selected = _raw_selected_version(chapter_id)
     versions = load_versions_index(chapter_id)
     selected = versions.get("selected", {})
+    if raw_selected and not selected:
+        warnings.append("选中版本不存在，已回退到最新可用版本。")
     if isinstance(selected, dict) and selected.get("source_type") and selected.get("version"):
         source_type = str(selected["source_type"])
         selected_version = int(selected["version"])
@@ -671,6 +848,18 @@ def _resolve_commit_source(chapter_id: int) -> tuple[dict[str, Any], list[str]]:
     return {}, warnings
 
 
+def _raw_selected_version(chapter_id: int) -> dict[str, Any]:
+    path = Path("data") / "versions" / f"chapter_{chapter_id:03d}_versions.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = load_json(str(path))
+    except (PermissionError, FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    selected = payload.get("selected", {}) if isinstance(payload, dict) else {}
+    return selected if isinstance(selected, dict) else {}
+
+
 def _parse_select_spec(select_spec: str) -> tuple[str, int]:
     if ":" not in select_spec:
         raise ValueError("格式应为 edited:1 或 draft:2")
@@ -684,16 +873,17 @@ def _parse_select_spec(select_spec: str) -> tuple[str, int]:
     return source_type, version
 
 
-def _paths() -> dict[str, Path]:
+def _paths(project_root: Path | None = None) -> dict[str, Path]:
+    root = project_root or Path.cwd()
     return {
-        "story_spec": Path("data/story_spec.json"),
-        "state": Path("data/state.json"),
-        "blueprint": Path("data/story_blueprint.json"),
-        "characters": Path("data/characters.json"),
-        "world_bible": Path("data/world_bible.json"),
-        "next_chapter_plan": Path("data/next_chapter_plan.json"),
-        "memory_index": Path("data/memory/memory_index.json"),
-        "current_context": Path("data/context/current_context.json"),
+        "story_spec": root / "data" / "story_spec.json",
+        "state": root / "data" / "state.json",
+        "blueprint": root / "data" / "story_blueprint.json",
+        "characters": root / "data" / "characters.json",
+        "world_bible": root / "data" / "world_bible.json",
+        "next_chapter_plan": root / "data" / "next_chapter_plan.json",
+        "memory_index": root / "data" / "memory" / "memory_index.json",
+        "current_context": root / "data" / "context" / "current_context.json",
     }
 
 
@@ -701,7 +891,7 @@ def _missing_plan_next_inputs(paths: dict[str, Path]) -> str:
     if not paths["story_spec"].exists():
         return "缺少 data/story_spec.json。"
     if not paths["blueprint"].exists():
-        return "缺少 data/story_blueprint.json。"
+        return "story_blueprint.json 自动修复失败，请检查 logs/generation.log。"
     if not paths["characters"].exists() or not paths["world_bible"].exists():
         return "缺少角色卡或世界观设定，请先运行 python main.py build-assets。"
     return ""
@@ -771,6 +961,11 @@ def _success(
     }
 
 
+def _error_text(exc: BaseException) -> str:
+    msg = str(exc).strip()
+    return msg[:300] if msg else exc.__class__.__name__
+
+
 def _failed(name: str, message: str) -> dict[str, Any]:
     return {
         "name": name,
@@ -779,3 +974,33 @@ def _failed(name: str, message: str) -> dict[str, Any]:
         "outputs": {},
         "warnings": [],
     }
+
+
+def _scan_committed_chapters(data_dir: Path) -> list[dict[str, Any]]:
+    """Return metadata for all committed chapter files under *data_dir*/chapters/."""
+    chapters_dir = data_dir / "chapters"
+    if not chapters_dir.exists():
+        return []
+    entries: list[dict[str, Any]] = []
+    for md_path in sorted(chapters_dir.glob("chapter_*.md")):
+        import re
+
+        m = re.search(r"chapter_(\d+)", md_path.stem)
+        chapter_id = int(m.group(1)) if m else 0
+        text = md_path.read_text(encoding="utf-8")
+        word_count = len([c for c in text if not c.isspace()])
+        from core.draft_writer import _extract_title_from_text
+        title = _extract_title_from_text(text)
+        entries.append({
+            "source_type": "committed",
+            "version": chapter_id,
+            "version_label": f"chapter_{chapter_id:03d}",
+            "chapter_id": chapter_id,
+            "chapter_title": title,
+            "json_path": md_path.as_posix(),
+            "markdown_path": md_path.as_posix(),
+            "actual_word_count": word_count,
+            "mode": "committed",
+            "quality_score": None,
+        })
+    return entries

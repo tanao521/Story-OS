@@ -1,20 +1,20 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import re
 from typing import Any
 
 import config
-from llm.local_model_service import (
-    create_local_model_client,
-    generate_draft_with_local_model,
-    local_model_draft_warnings,
-    should_use_local_model_for_draft,
+from core.llm_api_model import (
+    generate_with_api_model,
+    load_api_model_settings,
+    should_use_api_model_for_draft,
 )
 
 
 FORBIDDEN_SUMMARY_WORDS = ["显然", "总之", "可以看出"]
 INVALID_DRAFT_PHRASES = ["以下是大纲", "作为AI", "作为 AI", "我无法"]
+CHAPTER_WORD_OVERFLOW_TOLERANCE = 1500
 
 
 def write_chapter_draft(
@@ -35,28 +35,79 @@ def write_chapter_draft(
         chapter_plan,
         working_context,
     )
+    min_chars, max_chars = _chapter_word_bounds(story_spec, chapter_plan)
     mock_text = _build_draft_text(story_spec, world_bible, chapter_plan)
     draft_text = mock_text
-    generation = _mock_generation(fallback_used=False, warnings=[])
+    generation = _mock_generation(
+        fallback_used=True,
+        warnings=["\u672c\u5730\u6a21\u578b\u672a\u542f\u7528\uff0c\u5df2\u4f7f\u7528 mock \u793a\u4f8b\u6587\u672c\u3002"],
+    )
 
-    if should_use_local_model_for_draft():
-        local_text, warnings = generate_draft_with_local_model(prompt, create_local_model_client())
-        invalid_reason = _invalid_draft_reason(local_text)
-        if invalid_reason is None:
-            draft_text = local_text
-            generation = {
-                "mode": "local_model",
-                "model": config.LOCAL_MODEL_NAME,
-                "fallback_used": False,
-                "warnings": warnings,
-            }
+    if should_use_api_model_for_draft():
+        cloud_text, warnings = _generate_api_model_draft(prompt, min_chars)
+        cloud_text = clean_ai_style(cloud_text)
+        if not cloud_text.strip():
+            if not warnings:
+                warnings = ["API ??? 云端模型没有返回正文。"]
+            generation = _mock_generation(fallback_used=True, warnings=warnings)
         else:
-            warnings.append(f"本地模型输出无效，已回退 mock：{invalid_reason}")
-            generation = _mock_generation(fallback_used=True, warnings=warnings)
+            invalid_reason = _invalid_draft_reason(cloud_text, min_chars=min_chars)
+            constraint_violations = _draft_constraint_violations(cloud_text, story_spec, chapter_plan)
+            if invalid_reason is None and not constraint_violations:
+                draft_text = cloud_text
+                settings = load_api_model_settings()
+                generation = {
+                    "mode": "api_model",
+                    "model": settings["model"],
+                    "fallback_used": False,
+                    "warnings": warnings,
+                }
+            else:
+                first_reasons = _merge_reasons(invalid_reason, constraint_violations)
+                repair_prompt = _build_constraint_repair_prompt(
+                    prompt,
+                    cloud_text,
+                    first_reasons,
+                    story_spec,
+                    chapter_plan,
+                    min_chars,
+                    max_chars,
+                )
+                repaired_text, repair_warnings = _generate_api_model_draft(repair_prompt, max_chars)
+                warnings.extend(repair_warnings)
+                repaired_text = clean_ai_style(repaired_text)
+                if not repaired_text.strip():
+                    final_reasons = _merge_reasons("API ??? 云端模型重写后仍未返回正文", []) or first_reasons
+                    warnings.append(
+                        "API ??? 云端模型生成失败，已回退 mock："
+                        + "；".join(final_reasons[:4])
+                    )
+                    generation = _mock_generation(fallback_used=True, warnings=warnings)
+                else:
+                    repair_invalid_reason = _invalid_draft_reason(repaired_text, min_chars=min_chars)
+                    repair_violations = _draft_constraint_violations(repaired_text, story_spec, chapter_plan)
+                    if repair_invalid_reason is None and not repair_violations:
+                        draft_text = repaired_text
+                        settings = load_api_model_settings()
+                        warnings.append("初稿未通过写作约束，已调用 API ??? 云端模型重写。")
+                        generation = {
+                            "mode": "api_model",
+                            "model": settings["model"],
+                            "fallback_used": False,
+                            "warnings": warnings,
+                            "constraint_repair_used": True,
+                            "rejected_cloud_reasons": first_reasons,
+                        }
+                    else:
+                        final_reasons = _merge_reasons(repair_invalid_reason, repair_violations) or first_reasons
+                        warnings.append(
+                            "API ??? 云端模型生成失败，已回退 mock："
+                            + "；".join(final_reasons[:4])
+                        )
+                        generation = _mock_generation(fallback_used=True, warnings=warnings)
     else:
-        warnings = local_model_draft_warnings()
-        if warnings:
-            generation = _mock_generation(fallback_used=True, warnings=warnings)
+        warnings = ["LLM_PROVIDER 未配置为 api_model，已使用 mock 示例文本。"]
+        generation = _mock_generation(fallback_used=True, warnings=warnings)
 
     draft_text = clean_ai_style(draft_text)
     actual_word_count = _count_chinese_like_chars(draft_text)
@@ -64,10 +115,12 @@ def write_chapter_draft(
     if working_context is None:
         self_check.setdefault("warnings", []).append("未使用 current_context.json，建议先运行 python main.py build-context。")
 
+    # Extract the real title from the generated text (e.g. "# 第2章 还原后的空白")
+    actual_title = _extract_title_from_text(draft_text) or str(chapter_plan.get("chapter_title", ""))
     return {
         "draft_version": "1.1",
         "chapter_id": int(chapter_plan.get("chapter_id", 1)),
-        "chapter_title": str(chapter_plan.get("chapter_title", "")),
+        "chapter_title": actual_title,
         "status": "draft",
         "estimated_word_count": int(chapter_plan.get("estimated_word_count", 3000) or 3000),
         "actual_word_count": actual_word_count,
@@ -77,6 +130,7 @@ def write_chapter_draft(
         "memory_context_used": _memory_context_used(working_context),
         "used_context": {
             "story_spec_summary": _story_spec_summary(story_spec),
+            "writing_constraints": _writing_constraints_summary(story_spec),
             "characters_used": chapter_plan.get("required_context", {}).get("characters_to_use", []),
             "world_rules_used": chapter_plan.get("required_context", {}).get("world_rules_to_use", []),
             "continuity_constraints_used": chapter_plan.get("continuity_constraints", []),
@@ -94,8 +148,10 @@ def build_draft_prompt(
     chapter_plan: dict[str, Any],
     working_context: dict[str, Any] | None = None,
 ) -> str:
+    min_chars, max_chars = _chapter_word_bounds(story_spec, chapter_plan)
     payload = {
         "story_spec_summary": _story_spec_summary(story_spec),
+        "writing_constraints": _writing_constraints_summary(story_spec),
         "blueprint_summary": _blueprint_summary(blueprint),
         "chapter_plan": chapter_plan,
         "characters_for_this_chapter": _characters_for_chapter(characters, chapter_plan),
@@ -122,18 +178,64 @@ def build_draft_prompt(
         "- 用动作、环境和细节表达人物状态\n\n"
         "输出要求：\n"
         "直接输出小说正文。\n"
+        "第一行必须是章节标题，格式：# 第X章 标题名\n"
+        "标题名根据本章核心情节自拟，4-8个汉字。\n"
         "不要输出 JSON。\n"
         "不要输出说明。\n"
-        "正文长度控制在 1200~1800 中文字左右。\n\n"
+        "\u5fc5\u987b\u4f7f\u7528\u4e2d\u6587\uff0c\u4e0d\u8981\u7528\u82f1\u6587\u5199\u6b63\u6587\u3002\n"
+        f"\u6b63\u6587\u957f\u5ea6\u4f18\u5148\u63a7\u5236\u5728 {min_chars}~{max_chars} \u4e2a\u975e\u7a7a\u767d\u5b57\u7b26\u5185\uff1b\u5982\u679c\u7565\u8d85\u4e0a\u9650\uff0c\u6700\u591a\u5141\u8bb8\u8d85\u51fa {CHAPTER_WORD_OVERFLOW_TOLERANCE} \u4e2a\u5b57\u7b26\uff0c\u4f46\u4e0d\u8981\u660e\u663e\u8d85\u5f97\u592a\u591a\u3002\n"
+        f"\u5982\u679c\u7565\u8d85\u4e0a\u9650\uff0c\u6700\u591a\u5bb9\u8bb8\u8d85\u51fa CHAPTER_WORD_OVERFLOW_TOLERANCE \u4e2a\u5b57\u7b26\uff0c\u4f46\u4e0d\u8981\u660e\u663e\u8d85\u5f97\u592a\u591a\u3002\n"
+        "\u5fc5\u987b\u9075\u5b88\u8f93\u5165\u8d44\u6599\u4e2d writing_constraints \u7684 must_follow / must_avoid / ai_style_limits\u3002\n\n"
         "输入资料：\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
+
+
+def _constraint_prompt_block(story_spec: dict[str, Any], min_chars: int, max_chars: int) -> str:
+    constraints = _writing_constraints_summary(story_spec)
+    must_follow = _constraint_items(constraints.get("must_follow"))
+    must_avoid = _constraint_items(constraints.get("must_avoid"))
+    ai_limits = _constraint_items(constraints.get("ai_style_limits"))
+    pacing = str(constraints.get("pacing", "") or "").strip()
+    structure = str(constraints.get("chapter_structure", "") or "").strip()
+    lines = [
+        "最高优先级写作约束（用于引导生成，不要求在正文中原样出现）：",
+        "- 下面这些是写作规则与设定要求，模型需要遵守，不要直接把它们当成正文内容输出。",
+        f"- 正文长度必须在 {min_chars}~{max_chars} 个非空白字符内；少于 {min_chars} 或多于 {max_chars} 都视为失败。",
+    ]
+    if pacing:
+        lines.append(f"- ?????{pacing}")
+    if structure:
+        lines.append(f"- ?????{structure}")
+    if must_follow:
+        lines.append("- 写作/设定指令")
+        lines.extend(f"  - {item}" for item in must_follow[:20])
+    if must_avoid:
+        lines.append("- ?????")
+        lines.extend(f"  - {item}" for item in must_avoid[:20])
+    if ai_limits:
+        lines.append("- AI ????")
+        lines.extend(f"  - {item}" for item in ai_limits[:20])
+    lines.append("- ??????????????????????????????????????")
+    return "\n".join(lines)
 
 
 def is_valid_draft_text(text: str, min_chars: int = 500) -> bool:
     return _invalid_draft_reason(text, min_chars=min_chars) is None
 
 
+def _generate_api_model_draft(prompt: str, target_chars: int) -> tuple[str, list[str]]:
+    try:
+        text = generate_with_api_model([
+            {
+                "role": "system",
+                "content": f"?? Story OS ????????????????????????? writing_constraints ?? must_follow / must_avoid / ai_style_limits?????????????????????????????????????????? {target_chars} ???????",
+            },
+            {"role": "user", "content": prompt},
+        ])
+        return text, []
+    except Exception as exc:
+        return "", [f"API ??? ?????????{exc}"]
 def render_draft_markdown(draft: dict[str, Any]) -> str:
     warnings = draft.get("self_check", {}).get("warnings", [])
     generation = draft.get("generation", {})
@@ -195,6 +297,9 @@ def self_check_draft(draft_text: str, chapter_plan: dict[str, Any]) -> dict[str,
         warnings.append("“不是，而是”句式出现过多")
     if _count_chinese_like_chars(draft_text) < 500:
         warnings.append("正文长度过短")
+    min_chars, _ = _chapter_word_bounds({}, chapter_plan)
+    if _count_chinese_like_chars(draft_text) < min_chars:
+        warnings.append(f"\u6b63\u6587\u957f\u5ea6\u4f4e\u4e8e\u7ea6\u675f\u4e0b\u9650 {min_chars}")
     if not included_ending_hook:
         warnings.append("未检测到结尾钩子")
     if not included_required_events:
@@ -223,6 +328,139 @@ def _invalid_draft_reason(text: str, min_chars: int = 500) -> str | None:
     if _count_chinese_like_chars(stripped) < min_chars:
         return f"正文少于 {min_chars} 字"
     return None
+
+
+def _draft_constraint_violations(
+    text: str,
+    story_spec: dict[str, Any],
+    chapter_plan: dict[str, Any],
+) -> list[str]:
+    stripped = text.strip()
+    if not stripped:
+        return []
+    min_chars, max_chars = _chapter_word_bounds(story_spec, chapter_plan)
+    actual_chars = _count_chinese_like_chars(stripped)
+    violations: list[str] = []
+    if actual_chars < min_chars:
+        violations.append(f"\u6b63\u6587\u5c11\u4e8e\u7ea6\u675f\u4e0b\u9650 {min_chars}\uff0c\u5f53\u524d {actual_chars}")
+    soft_max_chars = max_chars + CHAPTER_WORD_OVERFLOW_TOLERANCE
+    if actual_chars > soft_max_chars:
+        violations.append(
+            f"\u6b63\u6587\u8d85\u8fc7\u7ea6\u675f\u4e0a\u9650 {max_chars}\uff0c"
+            f"\u5f53\u524d {actual_chars}\uff0c\u5bb9\u8bb8\u6700\u5927\u504f\u5dee {CHAPTER_WORD_OVERFLOW_TOLERANCE}"
+        )
+    if _cjk_ratio(stripped) < 0.55:
+        violations.append("\u4e2d\u6587\u5360\u6bd4\u8fc7\u4f4e\uff0c\u7591\u4f3c\u82f1\u6587\u6216\u975e\u4e2d\u6587\u6b63\u6587")
+
+    constraints = _writing_constraints_summary(story_spec)
+    avoid_items = [
+        *_constraint_items(story_spec.get("avoid")),
+        *_constraint_items(constraints.get("must_avoid")),
+        *_constraint_items(constraints.get("ai_style_limits")),
+    ]
+    for item in _unique_items(avoid_items):
+        if item and item in stripped:
+            violations.append(f"\u5305\u542b\u7528\u6237\u7981\u7528\u5185\u5bb9\uff1a{item[:40]}")
+
+    return violations
+
+
+def _build_constraint_repair_prompt(
+    original_prompt: str,
+    rejected_text: str,
+    violations: list[str],
+    story_spec: dict[str, Any],
+    chapter_plan: dict[str, Any],
+    min_chars: int,
+    max_chars: int,
+) -> str:
+    constraints = _writing_constraints_summary(story_spec)
+    rejected_excerpt = rejected_text[:1600]
+    return (
+        "\u4e0a\u4e00\u6b21\u672c\u5730\u6a21\u578b\u751f\u6210\u7684\u8349\u7a3f\u672a\u901a\u8fc7\u9a8c\u6536\uff0c\u4e0d\u5141\u8bb8\u76f4\u63a5\u4fee\u8865\u6216\u7eed\u5199\u3002\n"
+        "\u8bf7\u5b8c\u5168\u91cd\u5199\u5f53\u524d\u7ae0\u7684\u4e2d\u6587\u5c0f\u8bf4\u6b63\u6587\uff0c\u53ea\u8f93\u51fa\u6b63\u6587\u3002\n\n"
+        "\u9a8c\u6536\u5931\u8d25\u539f\u56e0\uff1a\n"
+        f"{json.dumps(violations, ensure_ascii=False, indent=2)}\n\n"
+        "\u672c\u6b21\u5fc5\u987b\u540c\u65f6\u6ee1\u8db3\uff1a\n"
+        "- \u5168\u6587\u4f7f\u7528\u4e2d\u6587\u53d9\u4e8b\uff0c\u4e0d\u8981\u5199\u82f1\u6587\u6b63\u6587\u3002\n"
+        f"- \u6b63\u6587\u957f\u5ea6\u4f18\u5148\u63a7\u5236\u5728 {min_chars}~{max_chars} \u4e2a\u975e\u7a7a\u767d\u5b57\u7b26\u5185\uff0c\u5982\u679c\u8d85\u51fa\u4e0a\u9650\uff0c\u6700\u591a\u5141\u8bb8\u8d85\u51fa {CHAPTER_WORD_OVERFLOW_TOLERANCE} \u4e2a\u5b57\u7b26\uff0c\u4f46\u4e0d\u8981\u660e\u663e\u8d85\u5f97\u592a\u591a\u3002\n"
+        "- \u5fc5\u987b\u9075\u5b88\u7528\u6237\u5728 Web \u7ea6\u675f\u9762\u677f\u4e2d\u63d0\u4ea4\u7684\u8865\u5145\u7ea6\u675f\u3002\n"
+        "- \u4e0d\u8981\u8f93\u51fa JSON\u3001\u5206\u6790\u3001\u63d0\u7eb2\u3001\u89e3\u91ca\u6216\u4f5c\u8005\u8bf4\u660e\u3002\n\n"
+        "Web \u7ea6\u675f\uff1a\n"
+        f"{json.dumps(constraints, ensure_ascii=False, indent=2)}\n\n"
+        "\u88ab\u62d2\u7edd\u7684\u7247\u6bb5\uff08\u4ec5\u7528\u4e8e\u907f\u514d\u91cd\u590d\u9519\u8bef\uff09\uff1a\n"
+        f"{rejected_excerpt}\n\n"
+        "\u539f\u59cb\u5199\u4f5c\u8f93\u5165\uff1a\n"
+        f"{original_prompt}"
+    )
+
+
+def _merge_reasons(reason: str | None, violations: list[str]) -> list[str]:
+    reasons = []
+    if reason:
+        reasons.append(reason)
+    reasons.extend(violations)
+    return reasons
+
+
+def _constraint_items(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    normalized = str(value).replace("\uff1b", "\n").replace(";", "\n").replace(",", "\n")
+    return [item.strip() for item in normalized.splitlines() if item.strip()]
+
+
+def _required_terms_from_must_follow(value: Any) -> list[str]:
+    terms: list[str] = []
+    for item in _constraint_items(value):
+        normalized = item.strip()
+        if not normalized:
+            continue
+        terms.extend(
+            match.group(0).strip()
+            for match in re.finditer(r"[A-Za-z][A-Za-z0-9]*(?:[ -][A-Za-z0-9]+){0,6}", normalized)
+        )
+        chunks = [chunk.strip() for chunk in re.split(r"[???;?,/\n\t\s]+", normalized) if chunk.strip()]
+        if not chunks:
+            chunks = [normalized]
+        for chunk in chunks:
+            if 2 <= len(chunk) <= 40:
+                if any(_is_cjk(char) for char in chunk) or re.search(r"[A-Za-z]", chunk):
+                    terms.append(chunk)
+        if 2 <= len(normalized) <= 40:
+            terms.append(normalized)
+    return _unique_items(terms)
+
+
+def _unique_items(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        normalized = item.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
+
+
+def _cjk_ratio(text: str) -> float:
+    total = _count_chinese_like_chars(text)
+    if total <= 0:
+        return 0.0
+    cjk = sum(1 for char in text if _is_cjk(char))
+    return cjk / total
+
+
+def _is_cjk(char: str) -> bool:
+    return (
+        "\u4e00" <= char <= "\u9fff"
+        or "\u3400" <= char <= "\u4dbf"
+        or "\u3000" <= char <= "\u303f"
+        or "\uff00" <= char <= "\uffef"
+    )
 
 
 def _looks_like_json(text: str) -> bool:
@@ -262,7 +500,7 @@ def _build_draft_text(
         _ending_hook_paragraph(first_character, ending_hook),
     ])
     draft_text = "\n\n".join(paragraph for paragraph in paragraphs if paragraph.strip())
-    return _pad_to_demo_length(draft_text, genre, first_character, chapter_plan)
+    return _pad_to_demo_length(draft_text, genre, first_character, story_spec, chapter_plan)
 
 
 def _opening_paragraph(genre: str, first_character: str, chapter_goal: str, main_conflict: str) -> str:
@@ -323,8 +561,14 @@ def _ending_hook_paragraph(first_character: str, ending_hook: str) -> str:
     )
 
 
-def _pad_to_demo_length(draft_text: str, genre: str, first_character: str, chapter_plan: dict[str, Any]) -> str:
-    target = 900 if int(chapter_plan.get("estimated_word_count", 3000) or 3000) <= 1500 else 1300
+def _pad_to_demo_length(
+    draft_text: str,
+    genre: str,
+    first_character: str,
+    story_spec: dict[str, Any],
+    chapter_plan: dict[str, Any],
+) -> str:
+    target, _ = _chapter_word_bounds(story_spec, chapter_plan)
     additions = []
     while _count_chinese_like_chars(draft_text + "\n\n".join(additions)) < target:
         additions.append(
@@ -333,6 +577,40 @@ def _pad_to_demo_length(draft_text: str, genre: str, first_character: str, chapt
             "身边人的反应也慢慢露出差别。每一处差别都可能变成下一次选择的代价。"
         )
     return "\n\n".join([draft_text, *additions])
+
+
+def _chapter_word_bounds(story_spec: dict[str, Any], chapter_plan: dict[str, Any]) -> tuple[int, int]:
+    constraints = story_spec.get("writing_constraints", {}) if isinstance(story_spec, dict) else {}
+    if not isinstance(constraints, dict):
+        constraints = {}
+    chapter = constraints.get("chapter_word_count", {})
+    if not isinstance(chapter, dict):
+        chapter = {}
+    plan_limits = chapter_plan.get("word_count_constraints", {}) if isinstance(chapter_plan, dict) else {}
+    if not isinstance(plan_limits, dict):
+        plan_limits = {}
+    minimum = _positive_int(chapter.get("min"), 0) or _positive_int(plan_limits.get("min"), 0)
+    maximum = _positive_int(chapter.get("max"), 0) or _positive_int(plan_limits.get("max"), 0)
+    if minimum <= 0:
+        minimum = 1200
+    if maximum <= 0:
+        maximum = max(minimum, 1800)
+    if maximum < minimum:
+        maximum = minimum
+    return minimum, maximum
+
+
+def _writing_constraints_summary(story_spec: dict[str, Any]) -> dict[str, Any]:
+    constraints = story_spec.get("writing_constraints", {}) if isinstance(story_spec, dict) else {}
+    return constraints if isinstance(constraints, dict) else {}
+
+
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
 
 
 def _mock_generation(fallback_used: bool, warnings: list[str]) -> dict[str, Any]:
@@ -407,20 +685,54 @@ def _state_snapshot(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _working_context_summary(working_context: dict[str, Any] | None) -> dict[str, Any]:
+    """Extract the 3-tier memory from the working context for the LLM prompt.
+
+    Layer 1 (global_memory)   — always included, compact
+    Layer 2 (recent_memory)   — 1 full prev chapter + 3 summaries
+    Layer 3 (retrieval_memory)— vector + keyword results, only when relevant
+    """
     if working_context is None:
         return {
-            "recent_chapters": [],
-            "retrieved_summaries": [],
-            "vector_retrieved_memories": [],
+            "global_memory": {},
+            "recent_memory": {},
+            "retrieval_memory": {},
         }
+
+    recent = working_context.get("recent_memory", {})
+    retrieval = working_context.get("retrieval_memory", {})
+
+    prev_full = recent.get("previous_chapter_full")
     return {
-        "mode": working_context.get("mode", ""),
-        "recent_chapters": [_compact_context_item(item) for item in working_context.get("recent_chapters", [])[:3]],
-        "retrieved_summaries": [_compact_context_item(item) for item in working_context.get("retrieved_summaries", [])[:5]],
-        "vector_retrieved_memories": [
-            _compact_context_item(item)
-            for item in working_context.get("vector_retrieved_memories", [])[:5]
-        ],
+        "global_memory": working_context.get("global_memory", {}),
+        "recent_memory": {
+            "previous_chapter_full": _compact_prev_chapter(prev_full) if prev_full else None,
+            "recent_summaries": [
+                _compact_context_item(s) for s in recent.get("recent_summaries", [])[:3]
+            ],
+        },
+        "retrieval_memory": {
+            "vector_results": [
+                _compact_context_item(r)
+                for r in retrieval.get("vector_results", [])[:5]
+            ],
+            "keyword_results": [
+                _compact_context_item(r)
+                for r in retrieval.get("keyword_results", [])[:3]
+            ],
+        },
+    }
+
+
+def _compact_prev_chapter(ch: dict[str, Any]) -> dict[str, Any]:
+    """Keep the previous chapter text. If over 8000 chars, keep the TAIL
+    (the ending is what connects to the current chapter)."""
+    text = str(ch.get("text", ""))
+    if len(text) > 8000:
+        text = text[-8000:]
+    return {
+        "chapter_id": ch.get("chapter_id"),
+        "title": ch.get("title", ""),
+        "text": text,
     }
 
 
@@ -431,7 +743,16 @@ def _compact_context_item(item: Any) -> Any:
     for key in ["chapter_id", "title", "chapter_title", "short_summary", "summary", "text", "content"]:
         if key in item:
             value = item[key]
-            compact[key] = value[:800] if isinstance(value, str) else value
+            if not isinstance(value, str):
+                compact[key] = value
+            elif key in ("text", "content"):
+                # Full chapter body for continuity — cap at 6000 chars
+                # to keep the prompt from exploding on very long chapters.
+                compact[key] = value[:6000]
+            elif key == "short_summary":
+                compact[key] = value[:400]
+            else:
+                compact[key] = value[:200]
     return compact
 
 
@@ -540,3 +861,20 @@ def _memory_context_used(working_context: dict[str, Any] | None) -> dict[str, An
         "retrieved_summaries_count": budget.get("retrieved_summaries_count", 0),
         "mode": working_context.get("mode", "sliding_window_plus_summary_retrieval"),
     }
+
+def _extract_title_from_text(text: str) -> str:
+    """Extract chapter title from the first heading line in draft text."""
+    import re as _re
+    for line in text.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        m = _re.match(r"^#\s*第[一二三四五六七八九十\d]+章\s*(.+)", line)
+        if m:
+            return m.group(1).strip()
+        m = _re.match(r"^#\s*(.+)", line)
+        if m:
+            return m.group(1).strip()
+        # If first non-empty line isn't a heading, use it as title
+        return line[:40]
+    return ""

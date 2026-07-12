@@ -19,6 +19,7 @@ from core.next_chapter_planner import (
     plan_next_chapter,
     render_next_chapter_plan_markdown,
 )
+from core.project import ensure_project_structure, resolve_current_project_root
 from core.setup_wizard import (
     build_initial_state,
     render_project_markdown,
@@ -479,12 +480,15 @@ def run_setup_command() -> None:
         return
 
     state = build_initial_state(story_spec)
+    project_root = resolve_current_project_root()
     ensure_data_dir()
     save_json("data/story_spec.json", story_spec)
     save_json("data/state.json", state)
     save_markdown("data/project.md", render_project_markdown(story_spec))
+    structure = ensure_project_structure(project_root, form_data=story_spec)
+    print(f"[project] project_root = {project_root}")
+    print(f"[project] blueprint_path = {structure['blueprint_path']}")
     print("小说项目已初始化完成。")
-
 
 def run_blueprint_command() -> None:
     paths = _required_project_paths()
@@ -543,17 +547,21 @@ def run_build_assets_command() -> None:
 
 
 def run_plan_next_command() -> None:
-    paths = _required_project_paths()
+    project_root = resolve_current_project_root()
+    structure = ensure_project_structure(project_root)
+    paths = _required_project_paths(project_root)
     missing_message = _missing_plan_next_input_message(paths)
     if missing_message:
         print(missing_message)
         return
 
+    print(f"[plan-next] project_root = {project_root}")
+    print(f"[plan-next] blueprint_path = {structure['blueprint_path']}")
     story_spec = load_json(str(paths["story_spec"]))
     blueprint = load_json(str(paths["blueprint"]))
     characters = load_json(str(paths["characters"]))
     world_bible = load_json(str(paths["world_bible"]))
-    state = _load_or_create_state(story_spec)
+    state = load_json(str(paths["state"])) if paths["state"].exists() else build_initial_state(story_spec)
     working_context = _load_optional_context(paths)
     plan = plan_next_chapter(story_spec, blueprint, characters, world_bible, state, working_context)
     client, config_warnings = _planning_client_or_none()
@@ -572,11 +580,10 @@ def run_plan_next_command() -> None:
     else:
         _print_warnings(config_warnings)
     _apply_next_chapter_plan_state_update(state, plan)
-    save_json("data/next_chapter_plan.json", plan)
-    save_markdown("data/next_chapter_plan.md", render_next_chapter_plan_markdown(plan))
-    save_json("data/state.json", state)
+    save_json(str(paths["next_chapter_plan"]), plan)
+    save_markdown(str(project_root / "data" / "next_chapter_plan.md"), render_next_chapter_plan_markdown(plan))
+    save_json(str(paths["state"]), state)
     print("下一章计划已生成。")
-
 
 def run_write_draft_command() -> None:
     _print_command_result(command_api.write_draft_command())
@@ -949,41 +956,50 @@ def _print_warnings(warnings: list[str]) -> None:
 
 def run_check_llm_command(ping: bool = False) -> None:
     result = check_llm_config()
+    write_model = result["write_model"]
     deepseek = result["deepseek"]
-    local_model = result["local_model"]
 
-    print("LLM 配置检查：")
+    from core.llm_api_model import generate_with_api_model, load_api_model_settings
+
+    print("LLM ???")
     print()
-    print("DeepSeek:")
+    print("?????? API ???")
+    print(f"- API Key: {write_model['api_key_masked']}")
+    print(f"- Model: {write_model['model']}")
+    print(f"- Base URL: {write_model['base_url']}")
+    print(f"- ??: {'??' if write_model['api_key_present'] and write_model['model'] and write_model['base_url'] else '?????'}")
+    print()
+    print("DeepSeek?")
     print(f"- API Key: {deepseek['api_key_masked']}")
     print(f"- Model: {deepseek['model']}")
     print(f"- Base URL: {deepseek['base_url']}")
-    print(f"- 状态: {'已配置' if deepseek['api_key_present'] and deepseek['model'] and deepseek['base_url'] else '未完整配置'}")
-    print()
-    print("本地模型:")
-    print(f"- API Key: {local_model['api_key_masked']}")
-    print(f"- Model: {local_model['model'] or '未配置'}")
-    print(f"- Base URL: {local_model['base_url'] or '未配置'}")
-    print(f"- 状态: {'已配置' if local_model['model'] and local_model['base_url'] else '未完整配置'}")
+    print(f"- ??: {'??' if deepseek['api_key_present'] and deepseek['model'] and deepseek['base_url'] else '?????'}")
 
     if result["warnings"]:
         print()
-        print("警告：")
+        print("???")
         for warning in result["warnings"]:
             print(f"- {warning}")
 
     if not ping:
         print()
-        print("提示：")
-        print("- 当前不会自动写正文")
-        print("- 如需测试连通性，请运行 python main.py check-llm --ping")
+        print("????? `python main.py check-llm --ping` ??????????")
         return
 
     print()
-    print("Ping 测试：")
-    _ping_model("DeepSeek", config.DEEPSEEK_API_KEY, config.DEEPSEEK_BASE_URL, config.DEEPSEEK_MODEL)
-    _ping_model("本地模型", config.LOCAL_MODEL_API_KEY, config.LOCAL_MODEL_BASE_URL, config.LOCAL_MODEL_NAME)
+    print("Ping?")
+    try:
+        settings = load_api_model_settings()
+        reply = generate_with_api_model([
+            {"role": "system", "content": "????? Story OS ????? API ??????????????????"},
+            {"role": "user", "content": "??? OK?"},
+        ])
+        print(f"- API ???: ??????{reply.strip()[:80]}")
+    except Exception as exc:
+        print(f"- API ???: ???{exc}")
 
+    if deepseek["api_key_present"] and deepseek["model"] and deepseek["base_url"]:
+        _ping_model("DeepSeek", config.DEEPSEEK_API_KEY, config.DEEPSEEK_BASE_URL, config.DEEPSEEK_MODEL)
 
 def _ping_model(name: str, api_key: str, base_url: str, model: str) -> None:
     if not base_url or not model:
@@ -998,17 +1014,18 @@ def _ping_model(name: str, api_key: str, base_url: str, model: str) -> None:
     print(f"- {name}: 成功，回复：{reply.strip()[:80]}")
 
 
-def _required_project_paths() -> dict[str, Path]:
+def _required_project_paths(project_root: Path | None = None) -> dict[str, Path]:
+    root = project_root or Path.cwd()
     return {
-        "story_spec": Path("data/story_spec.json"),
-        "state": Path("data/state.json"),
-        "blueprint": Path("data/story_blueprint.json"),
-        "characters": Path("data/characters.json"),
-        "world_bible": Path("data/world_bible.json"),
-        "next_chapter_plan": Path("data/next_chapter_plan.json"),
-        "memory_index": Path("data/memory/memory_index.json"),
-        "current_context": Path("data/context/current_context.json"),
-        "edited_dir": Path("data/edited"),
+        "story_spec": root / "data" / "story_spec.json",
+        "state": root / "data" / "state.json",
+        "blueprint": root / "data" / "story_blueprint.json",
+        "characters": root / "data" / "characters.json",
+        "world_bible": root / "data" / "world_bible.json",
+        "next_chapter_plan": root / "data" / "next_chapter_plan.json",
+        "memory_index": root / "data" / "memory" / "memory_index.json",
+        "current_context": root / "data" / "context" / "current_context.json",
+        "edited_dir": root / "data" / "edited",
     }
 
 
@@ -1016,7 +1033,7 @@ def _missing_plan_next_input_message(paths: dict[str, Path]) -> str:
     if not paths["story_spec"].exists():
         return "请先运行 python main.py setup 创建小说项目。"
     if not paths["blueprint"].exists():
-        return "请先运行 python main.py blueprint 创建故事蓝图。"
+        return "story_blueprint.json 自动修复失败，请检查 logs/generation.log。"
     if not paths["characters"].exists() or not paths["world_bible"].exists():
         return "请先运行 python main.py build-assets 创建角色卡和世界观设定。"
     return ""

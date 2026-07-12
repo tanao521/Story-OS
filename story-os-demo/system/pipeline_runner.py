@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -12,7 +14,7 @@ from system.review_gate import prepare_review_record
 StepFunction = Callable[[], dict[str, Any]]
 
 
-def run_single_chapter_pipeline(auto_commit: bool = False) -> dict[str, Any]:
+def run_single_chapter_pipeline(auto_commit: bool = False, require_model: bool = False) -> dict[str, Any]:
     current_chapter_before = _read_current_chapter(default=0)
     chapter_id = current_chapter_before + 1
     report: dict[str, Any] = {
@@ -29,10 +31,15 @@ def run_single_chapter_pipeline(auto_commit: bool = False) -> dict[str, Any]:
         "errors": [],
     }
 
+    write_draft_step: StepFunction = (
+        (lambda: commands.write_draft_command(require_model=True))
+        if require_model
+        else commands.write_draft_command
+    )
     required_steps: list[tuple[str, StepFunction]] = [
         ("build-context", commands.build_context_command),
         ("plan-next", commands.plan_next_command),
-        ("write-draft", commands.write_draft_command),
+        ("write-draft", write_draft_step),
     ]
     for name, function in required_steps:
         step = _run_step(name, function)
@@ -41,12 +48,6 @@ def run_single_chapter_pipeline(auto_commit: bool = False) -> dict[str, Any]:
             _fail(report, name, step["message"])
             save_pipeline_report(report)
             return report
-
-    edit_step = _run_step("edit-draft", commands.edit_draft_command)
-    _append_step(report, edit_step)
-    if edit_step["status"] == "failed":
-        warning = "edit-draft 失败，已进入未编辑草稿审核。"
-        report["warnings"].append(f"{warning} {edit_step['message']}".strip())
 
     if _review_gate_enabled():
         if not auto_commit:
@@ -60,6 +61,12 @@ def run_single_chapter_pipeline(auto_commit: bool = False) -> dict[str, Any]:
             _wait_for_review(report)
             save_pipeline_report(report)
             return report
+
+    edit_step = _run_step("edit-draft", commands.edit_draft_command)
+    _append_step(report, edit_step)
+    if edit_step["status"] == "failed":
+        warning = "edit-draft (AI润色) 失败，将使用原始草稿提交。"
+        report["warnings"].append(f"{warning} {edit_step['message']}".strip())
 
     commit_step = _run_step("commit-chapter", commands.commit_chapter_command)
     _append_step(report, commit_step)
@@ -101,15 +108,29 @@ def save_pipeline_report(report: dict[str, Any]) -> tuple[str, str]:
     chapter_id = int(report.get("chapter_id", 1) or 1)
     directory = Path("data/pipeline_runs")
     directory.mkdir(parents=True, exist_ok=True)
-    json_path = directory / f"run_chapter_{chapter_id:03d}.json"
-    markdown_path = directory / f"run_chapter_{chapter_id:03d}.md"
+    run_id = str(report.get("run_id") or datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
+    report["run_id"] = run_id
+    stem = f"run_chapter_{chapter_id:03d}_{_safe_filename_part(run_id)}"
+    json_path = directory / f"{stem}.json"
+    markdown_path = directory / f"{stem}.md"
     report["report_paths"] = {
         "json_path": json_path.as_posix(),
         "markdown_path": markdown_path.as_posix(),
     }
-    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    markdown_path.write_text(render_pipeline_report_markdown(report), encoding="utf-8")
+    _write_text_atomic(json_path, json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+    _write_text_atomic(markdown_path, render_pipeline_report_markdown(report))
     return json_path.as_posix(), markdown_path.as_posix()
+
+
+def _safe_filename_part(value: str) -> str:
+    cleaned = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in value)
+    return cleaned or datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
+
+def _write_text_atomic(path: Path, content: str) -> None:
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temp_path.write_text(content, encoding="utf-8")
+    temp_path.replace(path)
 
 
 def render_pipeline_report_markdown(report: dict[str, Any]) -> str:

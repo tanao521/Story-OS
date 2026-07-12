@@ -5,6 +5,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+import config
+
 
 QUALITY_VERSION = "1.6"
 SCORE_KEYS = [
@@ -154,13 +156,31 @@ def build_quality_report(
 ) -> dict[str, Any]:
     text = str(source.get("manual_text") or source.get("edited_text") or source.get("draft_text", ""))
     evaluated = evaluate_text_by_rules(text, chapter_plan, story_spec, characters, world_bible, state)
-    warnings = ["DeepSeek 质量评估未启用或不可用，已使用本地规则评估。"] if use_llm else []
-    generation = {
+    generation: dict[str, Any] = {
         "mode": "local_rule",
         "model": "local_rule",
-        "fallback_used": bool(use_llm),
-        "warnings": warnings,
+        "fallback_used": False,
+        "warnings": [],
     }
+
+    # ── LLM-based quality evaluation ──────────────────────────────────
+    if use_llm:
+        llm_evaluated = _llm_quality_evaluate(text, chapter_plan, story_spec)
+        if llm_evaluated is not None:
+            evaluated = llm_evaluated
+            generation = {
+                "mode": "api_model",
+                "model": str(getattr(config, "DEEPSEEK_MODEL", "deepseek-chat")),
+                "fallback_used": False,
+                "warnings": [],
+            }
+        else:
+            generation["warnings"] = [
+                "DeepSeek 质量评估未启用或不可用，已使用本地规则评估。"
+            ]
+            generation["fallback_used"] = True
+
+    evaluated = _apply_source_quality_penalties(evaluated, source, text)
     return {
         "quality_version": QUALITY_VERSION,
         "chapter_id": int(source.get("chapter_id", chapter_plan.get("chapter_id", 1)) or 1),
@@ -175,6 +195,69 @@ def build_quality_report(
         "checks": evaluated["checks"],
         "generation": generation,
     }
+
+
+def _apply_source_quality_penalties(evaluated: dict[str, Any], source: dict[str, Any], text: str) -> dict[str, Any]:
+    result = {**evaluated}
+    scores = dict(result.get("scores", {}))
+    flags = list(result.get("flags", []))
+    suggestions = list(result.get("suggestions", []))
+    checks = dict(result.get("checks", {}))
+    generation = source.get("generation", {}) if isinstance(source.get("generation", {}), dict) else {}
+    is_mock = str(generation.get("mode", "")) == "mock"
+    repeated_ratio = _repeated_paragraph_ratio(text)
+
+    if is_mock:
+        for key, value in scores.items():
+            scores[key] = min(float(value), 0.35)
+        flags.append({
+            "type": "mock_generation",
+            "severity": "high",
+            "message": "\u8be5\u7248\u672c\u6765\u81ea mock \u793a\u4f8b\u6587\u672c\uff0c\u4e0d\u5e94\u4f5c\u4e3a\u6b63\u5f0f\u8349\u7a3f\u6216\u5ba1\u6838\u7248\u672c\u3002",
+            "evidence": list(generation.get("warnings", []) or []),
+        })
+        suggestions.insert(0, "\u542f\u7528\u672c\u5730\u6a21\u578b\u6216\u91cd\u65b0\u914d\u7f6e LOCAL_MODEL_BASE_URL / LOCAL_MODEL_NAME \u540e\u518d\u751f\u6210\u8349\u7a3f\u3002")
+
+    if repeated_ratio >= 0.25:
+        for key, value in scores.items():
+            scores[key] = min(float(value), 0.45)
+        flags.append({
+            "type": "repetition",
+            "severity": "high" if repeated_ratio >= 0.5 else "medium",
+            "message": "\u6b63\u6587\u5b58\u5728\u5927\u91cf\u91cd\u590d\u6bb5\u843d\u6216\u586b\u5145\u5f0f\u8868\u8fbe\u3002",
+            "evidence": [f"repeated_paragraph_ratio={repeated_ratio:.2f}"],
+        })
+        suggestions.insert(0, "\u5f03\u7528\u8be5\u7248\u672c\uff0c\u91cd\u65b0\u751f\u6210\u6216\u6539\u7528\u4eba\u5de5\u7a3f\uff1b\u4e0d\u8981\u628a\u91cd\u590d\u586b\u5145\u6587\u672c\u63d0\u4ea4\u4e3a\u6b63\u5f0f\u7ae0\u8282\u3002")
+
+    overall_score = _clamp(sum(scores.values()) / len(scores)) if scores else float(result.get("overall_score", 0) or 0)
+    if is_mock:
+        overall_score = min(overall_score, 0.35)
+    if repeated_ratio >= 0.25:
+        overall_score = min(overall_score, 0.45)
+    checks["mock_generation"] = is_mock
+    checks["repeated_paragraph_ratio"] = repeated_ratio
+    reader = dict(result.get("reader_simulation", {}))
+    reader["retention_risk"] = _clamp(max(float(reader.get("retention_risk", 0) or 0), 1 - overall_score))
+    reader["likely_reaction"] = _likely_reaction(overall_score)
+
+    result.update({
+        "overall_score": _clamp(overall_score),
+        "scores": scores,
+        "flags": flags,
+        "suggestions": list(dict.fromkeys(suggestions)),
+        "checks": checks,
+        "reader_simulation": reader,
+    })
+    return result
+
+
+def _repeated_paragraph_ratio(text: str) -> float:
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
+    if len(paragraphs) < 4:
+        return 0.0
+    normalized = [re.sub(r"\s+", "", part) for part in paragraphs]
+    repeated = len(normalized) - len(set(normalized))
+    return repeated / len(normalized)
 
 
 def render_quality_report_markdown(report: dict[str, Any]) -> str:
@@ -264,7 +347,10 @@ def load_quality_report(
     json_path, _ = quality_report_paths(chapter_id, source_type, source_version, data_dir)
     if not json_path.exists():
         return {}
-    return json.loads(json_path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(json_path.read_text(encoding="utf-8"))
+    except (PermissionError, FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
 
 
 def quality_summary_from_report(report: dict[str, Any]) -> dict[str, Any]:
@@ -472,3 +558,72 @@ def _hook_label(report: dict[str, Any]) -> str:
 
 def _clamp(value: float) -> float:
     return round(max(0.0, min(1.0, value)), 2)
+
+def _llm_quality_evaluate(
+    text: str,
+    chapter_plan: dict[str, Any],
+    story_spec: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Use DeepSeek to evaluate draft quality.  Returns None on failure."""
+    import config as _cfg
+
+    api_key = str(getattr(_cfg, "DEEPSEEK_API_KEY", "") or "").strip()
+    if not api_key:
+        return None
+    try:
+        from llm.deepseek_client import DeepSeekClient
+    except ImportError:
+        return None
+
+    chapter_goal = str(chapter_plan.get("chapter_goal", ""))
+    ending_hook = str(chapter_plan.get("pacing_design", {}).get("ending_hook", ""))
+    genre = str(story_spec.get("genre", ""))
+    tone = str(story_spec.get("tone", ""))
+    preview = text
+
+    prompt = (
+        "You are a fiction quality evaluator for a Chinese web-novel.\n"
+        "Evaluate the chapter draft below on these dimensions (0.0 to 1.0):\n"
+        "- story_goal_alignment\n- continuity\n- character_voice\n"
+        "- style_naturalness\n- anti_ai_style\n- pacing\n"
+        "- hook_strength\n- readability\n\n"
+        "Also list specific problems as flags and concrete suggestions.\n\n"
+        "Respond with ONLY a JSON object, no markdown, no explanation:\n"
+        '{"overall_score":0.0,"scores":{...},'
+        '"flags":[{"severity":"low|medium|high","type":"cat","message":"..."}],'
+        '"suggestions":["..."]}\n\n'
+        + "Chapter goal: " + chapter_goal + "\n"
+        + "Ending hook: " + ending_hook + "\n"
+        + "Genre: " + genre + "  Tone: " + tone + "\n\n"
+        + "DRAFT TEXT:\n" + preview + "\n"
+    )
+
+    try:
+        client = DeepSeekClient(
+            api_key=api_key,
+            model=str(getattr(_cfg, "DEEPSEEK_MODEL", "deepseek-chat")),
+            base_url=str(getattr(_cfg, "DEEPSEEK_BASE_URL", "https://api.deepseek.com")),
+        )
+        response = client.chat_text(prompt, temperature=0.1).strip()
+        import re as _re
+        m = _re.search(r"\{[\s\S]*\}", response)
+        if not m:
+            return None
+        result = json.loads(m.group(0))
+        if not isinstance(result, dict) or "overall_score" not in result:
+            return None
+        scores = result.get("scores", {})
+        if not isinstance(scores, dict):
+            scores = {}
+        for k in SCORE_KEYS:
+            scores.setdefault(k, 0.5)
+        return {
+            "overall_score": float(result["overall_score"]),
+            "scores": {k: scores.get(k, 0.5) for k in SCORE_KEYS},
+            "flags": result.get("flags", []) if isinstance(result.get("flags"), list) else [],
+            "suggestions": result.get("suggestions", []) if isinstance(result.get("suggestions"), list) else [],
+            "reader_simulation": {"retention_risk": 0.3, "likely_reaction": "curious"},
+            "checks": {"llm_evaluated": True},
+        }
+    except Exception:
+        return None

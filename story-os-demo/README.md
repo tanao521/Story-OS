@@ -1,6 +1,34 @@
-﻿# Story OS Demo
+# Story OS Demo
 
 Story OS Demo 是一个个人用的轻量级 AI 小说工作流系统 Demo。
+
+## v1.5: API ??? draft generation
+
+Formal draft generation now uses the API-based large model configured in `.env`.
+It does not rely on the local localhost:11434 endpoint.
+
+### Required config
+
+```env
+LLM_PROVIDER=api
+WRITE_MODEL_BASE_URL=https://api.openai.com/v1
+WRITE_MODEL_NAME=gpt-4o
+WRITE_MODEL_API_KEY=your_api_key
+WRITE_MODEL_TIMEOUT_SECONDS=180
+# Optional aliases also supported: MODEL_* / OPENAI_* / DEEPSEEK_*
+```
+
+### Health check
+
+```bash
+GET /api/llm/health
+python main.py check-llm
+python main.py check-llm --ping
+```
+
+`GET /api/llm/health` returns the active provider, key presence, and a no-write test generation result.
+`check-llm --ping` verifies the API write path before formal `write-draft` runs.
+
 
 ## 核心原则
 
@@ -443,6 +471,7 @@ Web 控制台功能：
 - Ask State / Memory / Story
 - 同步 Obsidian
 - 更新向量库索引
+- 章节安全归档
 
 限制：
 
@@ -460,6 +489,30 @@ pip install -r requirements.txt
 ```
 
 
+
+## Web 章节安全归档
+
+Web 控制台提供章节归档功能，默认不是永久删除。
+
+API：
+
+```text
+POST /api/chapters/{chapter_number}/archive
+```
+
+归档会把本地相关章节文件移动到：
+
+```text
+data/archive/chapters/chapter_XXX/
+```
+
+并写入：
+
+```text
+data/archive/chapters/chapter_XXX/archive_meta.json
+```
+
+归档后的章节不会参与普通章节列表、版本列表和后续上下文构建。Obsidian 与向量记忆不会被静默删除；如已经同步或索引，需要后续单独清理或重建。
 ## v2.2：Web 正文预览、版本 Diff 与质量报告
 
 Web 控制台现在支持：
@@ -593,3 +646,22 @@ Notes:
 - Manual versions are human-edited versions and do not replace draft / edited history.
 - `memory-health` is check-only in this version and does not auto-fix project data.
 - `self-check` checks project structure and imports only; it does not generate story content.
+
+## v2.6：Web 控制台入口恢复说明
+
+这次更新把几个常用入口重新放回了 Web 控制台：
+
+- 手动改稿模块重新可见
+- 右侧上下文检查器恢复了“编辑上下文”入口
+- 本地知识库入口恢复可见
+- 记忆与向量库健康检查入口恢复可见
+
+这样做的目标是让你在同一个工作台里完成：
+
+1. 查看章节状态
+2. 对照上下文编辑草稿
+3. 查询本地知识库
+4. 检查记忆 / 向量库是否健康
+5. 再回到版本管理和提交流程
+
+如果浏览器缓存较旧，建议先强制刷新一次页面。

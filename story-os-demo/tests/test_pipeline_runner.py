@@ -162,6 +162,9 @@ def test_save_pipeline_report_generates_json_and_markdown(monkeypatch: Any, tmp_
 
     assert Path(json_path).exists()
     assert Path(markdown_path).exists()
+    assert Path(json_path).name.startswith("run_chapter_001_")
+    assert Path(markdown_path).name.startswith("run_chapter_001_")
+    assert not Path("data/pipeline_runs/run_chapter_001.json").exists()
 
 
 def test_pipeline_fails_if_chapter_advances_more_than_one(monkeypatch: Any, tmp_path: Any) -> None:
@@ -185,3 +188,24 @@ def test_pipeline_fails_if_chapter_advances_more_than_one(monkeypatch: Any, tmp_
     assert report["status"] == "failed"
     assert any("current_chapter 推进异常" in error for error in report["errors"])
 
+
+
+def test_save_pipeline_report_uses_safe_run_id_filename(monkeypatch: Any, tmp_path: Any) -> None:
+    monkeypatch.chdir(tmp_path)
+    report = {
+        "pipeline_version": "1.4",
+        "status": "success",
+        "chapter_id": 1,
+        "run_id": "manual run:001",
+        "steps": [],
+        "final_state": {"current_chapter_before": 0, "current_chapter_after": 1},
+        "warnings": [],
+        "errors": [],
+    }
+
+    json_path, markdown_path = pipeline_runner.save_pipeline_report(report)
+
+    assert Path(json_path).name == "run_chapter_001_manual_run_001.json"
+    assert Path(markdown_path).name == "run_chapter_001_manual_run_001.md"
+    assert Path(json_path).exists()
+    assert Path(markdown_path).exists()

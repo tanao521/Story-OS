@@ -5,28 +5,50 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Story OS Web Console</title>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/design-system.css">
+  <link rel="stylesheet" href="/static/style.css?v=workspace-recovery-2">
+  <link rel="stylesheet" href="/static/style.css?v=workspace-recovery-3">
+  <link rel="stylesheet" href="/static/workbench.css">
+  <link rel="stylesheet" href="/static/design-system.css?v=workspace-recovery-1">
+  <link rel="stylesheet" href="/static/chapter-manager.css">
+  <link rel="stylesheet" href="/static/chapter-editor.css">
+  <link rel="stylesheet" href="/static/blueprint-editor.css">
+  <link rel="stylesheet" href="/static/planning-studio.css">
+  <link rel="stylesheet" href="/static/operations-center.css">
+  <link rel="stylesheet" href="/static/quality-pass.css">
 </head>
 <body>
   <div class="ambient-field" aria-hidden="true"></div>
   <div class="app-shell">
-    <header class="topbar">
-      <div class="brand-block">
-        <div class="brand-mark">S</div>
-        <div>
-          <h1>Story OS</h1>
-          <p id="project-line">正在读取项目状态...</p>
-        </div>
-      </div>
-      <nav class="topnav" aria-label="主导航">
-        <span>概览</span>
-        <span>创作流</span>
-        <span>版本</span>
-        <span>记忆</span>
+    <aside class="global-sidebar" aria-label="Story OS 全局导航">
+      <div class="sidebar-brand"><div class="brand-mark" aria-hidden="true"><span>SO</span></div><div class="brand-copy"><strong>Story OS</strong><small>Writing Studio</small></div></div>
+      <nav class="app-nav" aria-label="主导航">
+        <a class="app-nav-item is-active" href="#status-panel" data-section="status-panel" aria-current="page"><span class="nav-icon" aria-hidden="true">⌂</span><span class="nav-label">工作台</span></a>
+        <a class="app-nav-item" href="#project-assets-panel" data-section="project-assets-panel" data-asset="story_blueprint"><span class="nav-icon" aria-hidden="true">◇</span><span class="nav-label">故事蓝图</span></a>
+        <a class="app-nav-item" href="#chapter-archive-panel" data-section="chapter-archive-panel"><span class="nav-icon" aria-hidden="true">☷</span><span class="nav-label">章节管理</span></a>
+        <a class="app-nav-item" href="#outline-editor-panel" data-section="outline-editor-panel"><span class="nav-icon" aria-hidden="true">≡</span><span class="nav-label">大纲编辑</span></a>
+        <a class="app-nav-item" href="#writing-constraints-panel" data-section="writing-constraints-panel"><span class="nav-icon" aria-hidden="true">⌘</span><span class="nav-label">AI 写作约束</span></a>
+        <a class="app-nav-item" href="#versions-panel" data-section="versions-panel" data-inspector-target="true"><span class="nav-icon" aria-hidden="true">⑂</span><span class="nav-label">版本记录</span></a>
+        <a class="app-nav-item" href="#logs-view" data-section="logs-view"><span class="nav-icon" aria-hidden="true">›_</span><span class="nav-label">运行日志</span></a>
+        <a class="app-nav-item" href="#project-assets-panel" data-section="project-assets-panel" data-asset="story_spec"><span class="nav-icon" aria-hidden="true">⚙</span><span class="nav-label">项目设置</span></a>
+        <a class="app-nav-item" href="#manual-editor-panel" data-section="manual-editor-panel"><span class="nav-icon" aria-hidden="true">✎</span><span class="nav-label">手动改稿</span></a>
+        <a class="app-nav-item" href="#ask-panel" data-section="ask-panel" data-inspector-target="true"><span class="nav-icon" aria-hidden="true">◌</span><span class="nav-label">本地知识库</span></a>
+        <a class="app-nav-item" href="#memoryHealthPanel" data-section="memoryHealthPanel" data-inspector-target="true"><span class="nav-icon" aria-hidden="true">◎</span><span class="nav-label">记忆与向量库</span></a>
       </nav>
-      <div class="topbar-actions">
-        <span class="system-pill">多 Agent 创作控制台</span>
-        <button class="btn btn-secondary" type="button" onclick="refreshAll()">刷新状态</button>
+      <div class="sidebar-project"><span class="sidebar-project-label">当前项目</span><strong id="sidebar-project-name">Local Workspace</strong><button class="project-switch" type="button" onclick="openProjectSwitchDialog()" data-tooltip="查看本地项目切换说明"><span>切换项目</span><span aria-hidden="true">↗</span></button></div>
+    </aside>    <header class="topbar">
+      <div class="topbar-project"><span class="topbar-kicker">当前项目</span><strong id="topbar-project-name">正在读取...</strong></div>
+      <div class="topbar-context" aria-label="项目上下文">
+        <div class="context-item"><span>章节</span><strong id="topbar-current-chapter">—</strong></div>
+        <div class="context-item topbar-low-priority"><span>状态</span><strong id="topbar-project-status">读取中</strong></div>
+        <div class="context-item topbar-low-priority"><span class="status-dot is-online"></span><strong>本地服务</strong></div>
+        <div class="context-item"><span>保存</span><strong id="topbar-save-status">本地</strong></div>
       </div>
+      <div class="topbar-actions">
+        <button class="icon-button" id="inspector-toggle" type="button" onclick="toggleInspector()" aria-controls="context-inspector" aria-expanded="true" data-tooltip="折叠上下文检查器"><span aria-hidden="true">◫</span><span class="sr-only">折叠上下文检查器</span></button>
+        <button class="icon-button" type="button" onclick="refreshAll()" data-tooltip="刷新状态"><span aria-hidden="true">↻</span><span class="sr-only">刷新状态</span></button>
+      </div>
+      <p id="project-line" class="sr-only">正在读取项目状态...</p>
     </header>
 
     <main id="setup-view" class="setup-view hidden">
@@ -119,77 +141,75 @@
     </main>
 
     <main id="dashboard-view" class="dashboard-layout hidden">
-      <aside class="sidebar" aria-label="Story OS 侧边栏">
-        <div class="sidebar-brand"><div class="brand-mark small">S</div><strong>Story OS</strong></div>
-        <div class="sidebar-project"><span>当前项目</span><strong>Local Workspace</strong></div>
-        <nav class="side-menu">
-          <strong>创作流</strong>
-          <a href="#status-panel">故事大纲</a>
-          <a href="#versions-panel">角色与世界观</a>
-          <a href="#preview-panel">章节规划</a>
-          <a href="#manual-editor-panel">草稿生成</a>
-          <a href="#review-panel">审核发布</a>
-          <strong>知识与任务</strong>
-          <a href="#memoryHealthPanel">记忆库体检</a>
-          <a href="#todo-panel">任务清单</a>
-          <a href="#ask-panel">Story Memory</a>
-        </nav>
-      </aside>
+<section class="dashboard-main">
+        <section class="workbench-meta"><div id="workbench-meta-list" class="workbench-meta-list">Loading project state...</div><div id="status-metrics" class="hidden"></div><div id="next-action" class="hidden"></div></section><section id="workbench-task-panel" class="dashboard-hero"><div class="workbench-task-copy"><span id="workbench-chapter-code" class="workbench-chapter-code">NEXT CHAPTER</span><h2 id="workbench-task-title">Loading current writing task</h2><p id="workbench-task-description">Loading project state.</p><div id="workbench-task-facts" class="workbench-task-facts"></div></div><div class="workbench-task-actions"><button id="workbench-generate-button" class="btn btn-primary" type="button" data-workbench-generate onclick="runChapter()">生成下一章</button><button class="btn btn-secondary" type="button" onclick="openOutlineEditor()">编辑章节大纲</button></div></section><section id="workbench-story-state" class="workbench-section"><div class="panel-heading"><div><span class="eyebrow">Story State</span><h2>Current story state</h2></div></div><div id="story-state-grid" class="story-state-grid">Loading...</div></section><section id="chapter-archive-panel" class="chapter-manager-panel" aria-labelledby="chapter-manager-title"><header class="chapter-manager-header"><div><span class="eyebrow">Manuscript Index</span><h2 id="chapter-manager-title">章节管理 <span id="chapter-manager-count" class="chapter-manager-count">0 章</span></h2></div><div class="chapter-manager-header-actions"><button class="btn btn-secondary" type="button" onclick="refreshAll()">刷新</button><button class="btn btn-primary" type="button" data-workbench-generate onclick="runChapter()">生成下一章</button></div></header><div class="chapter-manager-toolbar" aria-label="章节列表工具"><label class="chapter-search"><span class="sr-only">搜索章节</span><input id="chapter-manager-search" type="search" placeholder="搜索章节标题或编号" oninput="chapterManagerSetSearch(this.value)"></label><label class="chapter-filter"><span class="sr-only">状态筛选</span><select id="chapter-manager-filter" onchange="chapterManagerSetFilter(this.value)"><option value="all">全部状态</option><option value="current">当前章节</option><option value="completed">已完成</option><option value="draft">草稿</option><option value="untitled">无标题</option><option value="empty">无正文</option><option value="failed">生成失败</option></select></label><label class="chapter-sort"><span class="sr-only">排序</span><select id="chapter-manager-sort" onchange="chapterManagerSetSort(this.value)"><option value="number-desc">章节号：最新优先</option><option value="number-asc">章节号：最早优先</option><option value="updated-desc">更新时间：最新优先</option><option value="words-desc">字数：最多优先</option></select></label></div><div id="chapter-manager-list" class="chapter-manager-list" data-legacy-list-id="chapter-archive-list" aria-live="polite"><div class="chapter-manager-empty">正在读取章节…</div></div></section>
 
-      <section class="dashboard-main">
-        <section class="dashboard-hero">
-          <div>
-            <span class="eyebrow">Overview</span>
-            <h2>专业创作控制台</h2>
-            <p>围绕“逐章滚动生成”组织状态、版本、审核、任务和记忆健康。</p>
+        <section id="outline-editor-panel" class="outline-studio panel" aria-labelledby="outline-editor-title">
+          <header class="studio-header"><div><span class="eyebrow">Chapter Planning</span><h2 id="outline-editor-title">章节大纲</h2></div><div class="studio-actions"><span id="outline-save-state" class="studio-save-state">未读取</span><button class="btn btn-secondary btn-compact" type="button" data-outline-reload>重新读取</button><button class="btn btn-primary btn-compact" type="button" data-outline-save>保存大纲</button></div></header>
+          <div id="outline-context-strip" class="outline-context-strip">正在读取章节上下文…</div>
+          <div class="outline-studio-layout"><aside class="outline-navigation scroll-area" aria-label="大纲目录"><div class="studio-nav-heading">当前计划</div><button class="studio-nav-item is-active" type="button" data-outline-section="chapter_plan">章节计划</button><button class="studio-nav-item" type="button" data-outline-section="story_phases">故事阶段</button></aside><section class="outline-editor-content"><header id="outline-content-heading" class="studio-content-heading"><span class="eyebrow">Stored outline</span><h3>章节计划</h3></header><div id="outline-notice" class="studio-notice hidden" role="status"></div><div id="outline-editor-content" class="outline-form-host"><div class="empty-state">正在读取当前项目蓝图…</div></div><details class="outline-raw-details"><summary>章节计划 JSON（兼容模式）</summary><p>仅编辑故事蓝图中既有的 <code>chapter_plan</code> 字段。JSON 无法解析时不会覆盖原文件。</p><textarea id="outline-raw-editor" spellcheck="false" aria-label="章节计划 JSON"></textarea></details></section><aside class="outline-inspector scroll-area" aria-label="大纲生成状态"><div id="outline-inspector-content"><div class="empty-state">正在读取生成状态…</div></div><footer class="outline-inspector-footer"><button class="btn btn-primary" type="button" data-outline-generate>生成下一章</button></footer></aside></div>
+        </section>
+        <section id="project-assets-panel" class="panel project-assets-panel">
+          <div class="panel-heading">
+            <div><span class="eyebrow">Project Archive</span><h2>项目档案预览与编辑</h2></div>
+            <div class="asset-actions">
+              <button class="btn btn-secondary" type="button" onclick="loadProjectAssets()">重新读取</button>
+              <button class="btn btn-primary" type="button" data-project-asset-save>保存当前档案</button>
+            </div>
           </div>
-          <div class="hero-actions">
-            <button class="btn btn-secondary" type="button" onclick="refreshAll()">刷新状态</button>
-            <button class="btn btn-primary" type="button" onclick="runChapter()">生成下一章到待审核</button>
+          <section id="blueprint-workspace" class="blueprint-workspace hidden" aria-labelledby="blueprint-workspace-title"><header class="blueprint-workspace-header"><div><span class="eyebrow">Narrative Design Document</span><h2 id="blueprint-workspace-title">故事蓝图</h2></div><div class="blueprint-workspace-actions"><span id="blueprint-save-state" class="blueprint-save-state">未载入</span><button class="btn btn-secondary btn-compact" type="button" data-blueprint-reload>重新读取</button><button class="btn btn-primary btn-compact" type="button" data-blueprint-save>保存蓝图</button></div></header><div class="blueprint-layout"><nav id="blueprint-directory" class="blueprint-directory scroll-area" aria-label="蓝图目录"><div class="empty-state">正在读取目录…</div></nav><section class="blueprint-content"><div id="blueprint-content-header" class="blueprint-content-header"><span class="eyebrow">Section</span><h3>选择一个蓝图节点</h3></div><div id="blueprint-notice" class="blueprint-notice hidden" role="status"></div><div id="blueprint-content-editor" class="blueprint-content-editor"><div class="empty-state">从左侧目录选择字段后开始编辑。</div></div><details class="blueprint-raw-details"><summary>原始 JSON（兼容模式）</summary><p>仅在需要处理旧结构或未知字段时编辑。保存前会校验 JSON；格式错误不会覆盖原文件。</p><textarea id="blueprint-raw-editor" spellcheck="false" aria-label="原始故事蓝图 JSON"></textarea></details></section><aside id="blueprint-inspector" class="blueprint-inspector scroll-area" aria-label="蓝图完整性检查器"><div id="blueprint-inspector-content"><div class="empty-state">选择节点后显示真实关系与完整性信息。</div></div></aside></div></section><div class="asset-layout">
+            <div class="asset-list" id="asset-list"></div>
+            <div class="asset-editor-wrap">
+              <div class="asset-toolbar">
+                <select id="asset-select" onchange="selectProjectAsset(this.value)"></select>
+                <span id="asset-meta" class="selected-chip">未读取</span>
+              </div>
+              <textarea id="asset-editor" class="asset-editor" spellcheck="false" placeholder="选择项目档案后，可在这里预览和手动修改故事大纲、角色、世界观或基础设定。"></textarea>
+              <p id="asset-save-status" class="asset-status">这里保存的是项目基础资料，不会生成正文，也不会推进章节。</p>
+            </div>
           </div>
         </section>
 
-        <section id="status-panel" class="panel status-panel"><div class="panel-heading"><div><span class="eyebrow">Project State</span><h2>状态总览</h2></div></div><div class="metrics" id="status-metrics"></div><div class="next-action" id="next-action"></div></section>
-
-        <section class="workflow-panel panel">
+        <section id="workflow-panel" class="workflow-panel panel">
           <div class="panel-heading"><div><span class="eyebrow">Creative Flow</span><h2>创作流与记忆</h2></div></div>
-          <div class="flow-track">
+          <div class="flow-track" id="flow-track">
             <div class="flow-step done"><b>1</b><span>故事大纲</span><small>已完成</small></div>
             <div class="flow-step done"><b>2</b><span>角色与世界观</span><small>已完成</small></div>
-            <div class="flow-step done"><b>3</b><span>背景构建</span><small>已构建</small></div>
-            <div class="flow-step active"><b>4</b><span>章节规划</span><small>进行中</small></div>
-            <div class="flow-step warm"><b>5</b><span>草稿生成</span><small>待处理</small></div>
-            <div class="flow-step"><b>6</b><span>AI 润色</span><small>待处理</small></div>
-            <div class="flow-step"><b>7</b><span>审核发布</span><small>待处理</small></div>
+            <div class="flow-step done"><b>3</b><span>背景构建</span><small>已完成</small></div>
+            <div class="flow-step active"><b>4</b><span>章节规划</span><small>读取中...</small></div>
+            <div class="flow-step"><b>5</b><span>草稿生成</span><small>待处理</small></div>
+            <div class="flow-step"><b>6</b><span>审核</span><small>待处理</small></div>
+            <div class="flow-step"><b>7</b><span>AI 润色</span><small>待处理</small></div>
+            <div class="flow-step"><b>8</b><span>提交章节</span><small>待处理</small></div>
           </div>
         </section>
 
-        <section class="quick-actions panel operations-panel"><div class="panel-heading"><div><span class="eyebrow">Quick Actions</span><h2>快捷操作</h2></div></div><div class="button-grid action-grid"><button class="btn btn-primary" type="button" onclick="runChapter()">生成下一章到待审核</button><button class="btn btn-secondary amber" type="button" onclick="qualityCheck()">生成/刷新质量评估</button><button class="btn btn-secondary violet" type="button" onclick="syncObsidian()">同步 Obsidian</button><button class="btn btn-secondary blue" type="button" onclick="indexVault()">更新向量库</button></div></section>
+        <section id="quick-actions-panel" class="quick-actions panel operations-panel"><div class="panel-heading"><div><span class="eyebrow">Quick Actions</span><h2>快捷操作</h2></div></div><div class="button-grid action-grid"><button class="btn btn-primary" type="button" onclick="runChapter()">生成下一章到待审核</button><button class="btn btn-secondary amber" type="button" onclick="qualityCheck()">生成/刷新质量评估</button><button class="btn btn-secondary violet" type="button" onclick="syncObsidian()" title="仅同步已提交章节">同步 Obsidian</button><button class="btn btn-secondary blue" type="button" onclick="indexVault()" title="仅索引已提交章节">更新向量库</button></div></section>
 
-        <section id="preview-panel" class="panel preview-panel"><div class="panel-heading"><div><span class="eyebrow">Manuscript</span><h2>正文预览</h2></div><div class="preview-actions"><button class="btn btn-secondary" type="button" onclick="copyCurrentText()">复制正文</button><button class="btn btn-secondary" type="button" onclick="qualityCheck()">刷新质量</button><button class="btn btn-primary" type="button" onclick="selectCurrentVersion()">选择此版本</button></div></div><div id="preview-meta" class="preview-meta empty-state">请选择一个版本查看正文。</div><pre id="text-preview" class="text-preview"></pre></section>
 
-        <section id="manual-editor-panel" class="panel manual-editor-panel">
-          <div class="panel-heading">
-            <div><span class="eyebrow">Manual Edit</span><h2>手动改稿</h2></div>
-            <div class="word-count" id="manual-word-count">0 字</div>
-          </div>
-          <div class="manual-editor-toolbar">
-            <select id="manual-source-select"></select>
-            <button class="btn btn-secondary" type="button" onclick="loadManualSource()">载入正文</button>
-            <button class="btn btn-secondary" type="button" onclick="loadManualSource()">重新载入来源版本</button>
-            <button class="btn btn-secondary" type="button" onclick="clearManualEditor()">清空改动</button>
-            <button class="btn btn-primary save-manual-button" type="button" onclick="saveManualVersion()">保存为 manual 新版本</button>
-          </div>
-          <div class="manual-meta" id="manual-source-meta">请选择来源版本后载入正文。</div>
-          <textarea id="manualEditor" class="manual-editor" placeholder="在这里进行人工改稿。保存 manual 不会提交正史，也不会推进 current_chapter。"></textarea>
-          <p class="manual-safety-note">手动保存不会提交正史。只有审核通过后，manual 版本才会进入正式章节。</p>
+
+        <section id="writing-constraints-panel" class="rules-studio panel" aria-labelledby="constraints-title">
+          <header class="studio-header"><div><span class="eyebrow">Writing Rules</span><h2 id="constraints-title">AI 写作约束</h2></div><div class="studio-actions"><span id="constraint-save-state" class="studio-save-state">未读取</span><button class="btn btn-secondary btn-compact" type="button" data-constraints-reload>重新读取</button><button class="btn btn-primary btn-compact" type="button" data-constraints-save>保存约束</button></div></header>
+          <div class="rules-studio-layout"><nav id="constraints-directory" class="rules-directory scroll-area" aria-label="写作约束分组"><button class="studio-nav-item is-active" type="button" data-constraint-section="length">篇幅</button><button class="studio-nav-item" type="button" data-constraint-section="structure">节奏与结构</button><button class="studio-nav-item" type="button" data-constraint-section="follow">必须遵守</button><button class="studio-nav-item" type="button" data-constraint-section="avoid">禁用内容</button><button class="studio-nav-item" type="button" data-constraint-section="style">AI 风格限制</button></nav><section class="rules-editor-content"><div id="constraints-notice" class="studio-notice hidden" role="status"></div><section class="constraint-group is-active" data-constraint-group="length"><header class="studio-content-heading"><span class="eyebrow">Chapter length</span><h3>篇幅范围</h3><p>这组规则直接使用现有章节字数限制。</p></header><div class="constraint-field-grid"><label>单章最少字数<input id="constraint-word-min" data-constraint-input type="number" min="1" placeholder="例如 3000"></label><label>单章最多字数<input id="constraint-word-max" data-constraint-input type="number" min="1" placeholder="例如 5000"></label></div></section><section class="constraint-group" data-constraint-group="structure"><header class="studio-content-heading"><span class="eyebrow">Narrative pacing</span><h3>节奏与结构</h3></header><label class="constraint-field wide">章节节奏<textarea id="constraint-pacing" data-constraint-input rows="5"></textarea></label><label class="constraint-field wide">章节结构要求<textarea id="constraint-structure" data-constraint-input rows="6"></textarea></label></section><section class="constraint-group" data-constraint-group="follow"><header class="studio-content-heading"><span class="eyebrow">Required rules</span><h3>必须遵守</h3><p>一行一条；保存时保持当前顺序。</p></header><label class="constraint-field wide"><textarea id="constraint-must-follow" data-constraint-input rows="12"></textarea></label></section><section class="constraint-group" data-constraint-group="avoid"><header class="studio-content-heading"><span class="eyebrow">Forbidden content</span><h3>必须避免</h3><p>一行一条；没有规则时保留为空。</p></header><label class="constraint-field wide"><textarea id="constraint-must-avoid" data-constraint-input rows="12"></textarea></label></section><section class="constraint-group" data-constraint-group="style"><header class="studio-content-heading"><span class="eyebrow">Style limits</span><h3>AI 风格限制</h3><p>一行一条；用于现有规划、草稿和人工检查流程。</p></header><label class="constraint-field wide"><textarea id="constraint-ai-style" data-constraint-input rows="12"></textarea></label></section></section><aside class="rules-inspector scroll-area" aria-label="约束生效状态"><div id="constraints-inspector-content"><div class="empty-state">正在读取规则状态…</div></div></aside></div>
+          <p id="constraint-save-status" class="constraint-status">约束会保存在当前项目配置中，后续章节规划、草稿和人工检查都会继续参考。</p>
         </section>
+        <section id="preview-panel" class="panel preview-panel"><div class="panel-heading"><div><span class="eyebrow">Manuscript</span><h2>正文预览</h2></div><div class="preview-actions"><button class="btn btn-secondary" type="button" onclick="copyCurrentText()">复制正文</button><button class="btn btn-secondary" type="button" onclick="qualityCheck(true)">刷新质量</button><button class="btn btn-secondary" type="button" onclick="checkContinuity()">检查剧情连贯性</button><button class="btn btn-primary" type="button" onclick="selectCurrentVersion()">选择此版本</button></div></div><div id="preview-meta" class="preview-meta empty-state">请选择一个版本查看正文。</div><pre id="text-preview" class="text-preview"></pre><button id="preview-toggle" class="preview-toggle" type="button" style="display:none" onclick="togglePreviewExpand()">展开全文</button></section>
 
-        <section class="detail-grid"><section class="panel diff-panel"><div class="panel-heading"><div><span class="eyebrow">Compare</span><h2>Diff 对比</h2></div></div><div id="diff-summary" class="preview-meta empty-state">请选择版本进行对比。</div><div id="diff-output" class="diff-output"></div></section><section class="panel quality-panel"><div class="panel-heading"><div><span class="eyebrow">Quality Gate</span><h2>质量报告</h2></div></div><div id="quality-output" class="quality-output empty-state">请选择版本查看质量报告。</div></section></section>
+        <section id="manual-editor-panel" class="chapter-editor-panel" aria-labelledby="chapter-editor-heading"><header class="chapter-editor-toolbar"><div class="chapter-editor-identity"><button class="btn btn-link chapter-editor-back" type="button" onclick="chapterEditorBackToList()">← 章节列表</button><div><span id="chapter-editor-code" class="eyebrow">MANUSCRIPT</span><h2 id="chapter-editor-heading">打开一个章节开始改稿</h2></div></div><div class="chapter-editor-tools"><span id="chapter-editor-save-status" class="chapter-editor-save-status">未载入</span><span id="chapter-editor-saved-at" class="chapter-editor-saved-at">—</span><button class="btn btn-secondary btn-compact" type="button" data-chapter-preview>预览</button><button class="btn btn-secondary btn-compact" type="button" onclick="openChapterEditorVersions()">版本记录</button><details class="chapter-editor-more"><summary class="icon-button" aria-label="更多编辑操作">⋯</summary><div class="chapter-editor-more-menu"><button type="button" onclick="loadManualSource()">重新载入来源</button><button type="button" onclick="clearManualEditor()">清空改动</button></div></details><button id="chapter-editor-save" class="btn btn-primary btn-compact" type="button" data-chapter-save>保存</button></div></header><div class="chapter-editor-sourcebar"><label><span>来源版本</span><select id="manual-source-select"></select></label><button class="btn btn-secondary btn-compact" type="button" onclick="loadManualSource()">载入正文</button><p id="manual-source-meta" class="manual-meta">请选择可编辑的草稿、编辑稿或人工稿作为来源。</p></div><div id="chapter-editor-stage" class="chapter-editor-stage"><div class="chapter-editor-page"><textarea id="manualEditor" class="manual-editor" spellcheck="true" placeholder="载入正文后可在这里进行手动改稿。保存会创建 manual 版本，不会自动提交章节。"></textarea><pre id="chapter-editor-preview" class="chapter-editor-preview hidden" aria-live="polite"></pre></div></div><footer class="chapter-editor-statusbar" aria-label="编辑状态"><span id="chapter-editor-word-count">0 字</span><span id="chapter-editor-paragraph-count">0 段</span><span id="chapter-editor-position">位置 0%</span><span id="chapter-editor-version">当前版本：—</span><span id="chapter-editor-file-status">本地文件：未载入</span><span><span class="status-dot is-online"></span> 本地服务</span></footer><p class="manual-safety-note">保存会创建 manual 版本；不会自动提交章节，也不会改写正文换行或内容。</p></section>
+
+        <section class="detail-grid"><section id="diff-panel" class="panel diff-panel"><div class="panel-heading"><div><span class="eyebrow">Compare</span><h2>Diff 对比</h2></div></div><div id="diff-summary" class="preview-meta empty-state">请选择版本进行对比。</div><div id="diff-output" class="diff-output"></div></section><section id="continuity-panel" class="panel quality-panel"><div class="panel-heading"><div><span class="eyebrow">Continuity</span><h2>剧情连贯性</h2></div></div><div id="continuity-output" class="quality-output empty-state">请选择一个当前章节版本后检查。</div></section><section id="quality-panel" class="panel quality-panel"><div class="panel-heading"><div><span class="eyebrow">Quality Gate</span><h2>质量报告</h2></div></div><div id="quality-output" class="quality-output empty-state">请选择版本查看质量报告。</div></section></section>
+
+        <section id="logs-view" class="panel logs-panel hidden"><div class="panel-heading"><div><span class="eyebrow">Activity</span><h2>运行日志</h2></div><div class="log-toolbar"><input id="log-search" type="search" placeholder="搜索日志"><select id="log-level"><option value="all">全部级别</option><option value="error">错误</option><option value="warning">警告</option><option value="success">成功</option><option value="info">信息</option></select><label><input id="log-autoscroll" type="checkbox" checked> 自动滚动</label><button class="btn btn-secondary btn-compact" type="button" data-copy-logs>复制</button><button class="btn btn-secondary btn-compact" type="button" data-clear-logs>清空显示</button></div></div><div id="log-output" class="terminal-log" aria-live="polite"></div></section><section id="error-center-panel" class="panel error-center-panel"><header class="panel-heading"><div><span class="eyebrow">Attention</span><h2>错误中心</h2></div><button class="btn btn-link" type="button" data-clear-errors>清空前端记录</button></header><div id="error-center-list" class="error-center-list"><div class="empty-state">暂无前端运行错误。</div></div></section>
       </section>
 
-      <aside class="dashboard-rail">
-        <section id="versions-panel" class="panel versions-panel"><div class="panel-heading"><div><span class="eyebrow">Versions</span><h2>章节版本</h2></div><div id="selected-version" class="selected-chip">Selected: 无</div></div><div class="version-section"><h3>Draft</h3><div id="draft-list" class="version-list"></div></div><div class="version-section"><h3>Edited</h3><div id="edited-list" class="version-list"></div></div><div class="version-section"><h3>Manual</h3><div id="manual-list" class="version-list"></div></div></section>
+      <aside id="context-inspector" class="dashboard-rail inspector-panel" aria-label="上下文检查器">
+        <header class="inspector-header">
+          <div><span class="inspector-kicker">Context</span><h2>上下文检查器</h2></div>
+          <button class="icon-button inspector-close" type="button" onclick="toggleInspector()" data-tooltip="折叠检查器"><span aria-hidden="true">→</span><span class="sr-only">折叠检查器</span></button>
+        </header>
+        <div class="inspector-scroll scroll-area"><section id="chapter-editor-inspector" class="panel chapter-editor-inspector"><div class="panel-heading"><div><span class="eyebrow">Writing Context</span><h2>编辑上下文</h2></div></div><div id="chapter-editor-inspector-content" class="chapter-editor-inspector-content"><div class="inspector-empty">载入章节后显示真实上下文。</div></div></section><section id="chapter-management-inspector" class="panel chapter-management-inspector"><div class="panel-heading"><div><span class="eyebrow">Chapter Context</span><h2>章节检查器</h2></div></div><div id="chapter-management-inspector-content" class="chapter-inspector-content"><div class="inspector-empty">选择一个章节查看文件与版本信息。</div></div></section><div id="workbench-inspector" class="inspector-workbench"><section class="panel"><div class="panel-heading"><div><span class="eyebrow">Pipeline</span><h2>Current generation flow</h2></div></div><div id="workbench-pipeline-list" class="pipeline-list">Loading...</div></section><section class="panel"><div class="panel-heading"><div><span class="eyebrow">Run State</span><h2>Current run state</h2></div></div><div id="workbench-run-state" class="inspector-mini-list">Loading...</div></section><section class="panel"><div class="panel-heading"><div><span class="eyebrow">Recent Activity</span><h2>Recent logs</h2></div><button class="btn btn-link" type="button" onclick="navigateToSection(&quot;logs-view&quot;)">View all</button></div><div id="workbench-log-list" class="inspector-mini-list">No logs</div></section><section class="panel"><div class="panel-heading"><div><span class="eyebrow">Attention</span><h2>Errors and notices</h2></div></div><div id="workbench-error-list" class="inspector-mini-list">No errors</div></section></div>
+        <section id="versions-panel" class="panel versions-panel"><header class="panel-heading"><div><span class="eyebrow">Versions</span><h2>章节版本</h2></div><div id="selected-version" class="selected-chip">Selected: 无</div></header><div class="version-studio"><aside class="version-browser"><section class="version-section"><h3>Draft</h3><div id="draft-list" class="version-list"></div></section><section class="version-section"><h3>Edited</h3><div id="edited-list" class="version-list"></div></section><section class="version-section"><h3>Manual</h3><div id="manual-list" class="version-list"></div></section></aside><section class="version-reader"><header><span class="eyebrow">Version content</span><h3 id="version-reader-title">选择一个版本</h3></header><pre id="version-reader-content" class="version-reader-content">从左侧选择版本以查看正文。比较继续使用现有轻量 diff 接口。</pre></section><aside id="version-meta-view" class="version-meta-view"><div class="empty-state">选择一个版本后显示来源、文件和相关操作。</div></aside></div></section>
+        <section id="committed-panel" class="panel committed-panel"><div class="panel-heading"><div><span class="eyebrow">Published</span><h2>已提交章节</h2></div></div><div id="committed-chapter-list" class="version-list"><div class="empty-state">读取中...</div></div></section>
         <section id="todo-panel" class="panel todo-panel"><div class="panel-heading"><div><span class="eyebrow">Tasks</span><h2>任务清单</h2></div></div><form class="todo-form" onsubmit="event.preventDefault(); addTodo();"><input id="todo-title" type="text" placeholder="任务标题" required><select id="todo-type"><option value="revision">revision</option><option value="continuity">continuity</option><option value="character">character</option><option value="worldbuilding">worldbuilding</option><option value="quality">quality</option><option value="other">other</option></select><select id="todo-priority"><option value="medium">medium</option><option value="high">high</option><option value="urgent">urgent</option><option value="low">low</option></select><input id="todo-chapter" type="number" min="1" placeholder="章节"><button class="btn btn-compact btn-secondary" type="submit">添加</button></form><div id="todo-list" class="todo-list"></div></section>
         <section id="memoryHealthPanel" class="panel health-panel tab-panel">
           <div class="panel-heading">
@@ -207,10 +227,37 @@
         </section>
         <section id="review-panel" class="panel review-panel"><div class="panel-heading"><div><span class="eyebrow">Human Review</span><h2>审核</h2></div></div><p id="review-status" class="review-line"></p><p id="review-version" class="review-line"></p><div class="button-grid review-actions"><button class="btn btn-primary" type="button" onclick="approveReview(false)">审核通过</button><button class="btn btn-danger" type="button" onclick="rejectReview()">拒绝</button><button class="btn btn-secondary" type="button" onclick="laterReview()">稍后审核</button></div></section>
         <section id="ask-panel" class="panel ask-panel"><div class="panel-heading"><div><span class="eyebrow">Story Memory</span><h2>Ask Story</h2></div></div><div class="ask-controls"><select id="ask-mode"><option value="state">ask-state</option><option value="memory">ask-memory</option><option value="story" selected>ask-story</option></select><label class="check-row"><input id="ask-vector" type="checkbox" checked><span>向量检索</span></label><label class="check-row"><input id="ask-llm" type="checkbox"><span>DeepSeek 综合</span></label></div><textarea id="ask-question" rows="4" placeholder="问当前状态、记忆线索或下一章注意事项..."></textarea><button class="btn btn-primary ask-submit" type="button" onclick="askStory()">提问</button><pre id="ask-answer"></pre></section>
+        </div>
+        <footer class="inspector-footer"><span class="status-dot is-online"></span><span>本地上下文已连接</span></footer>
       </aside>
     </main>
-    <section id="logs-view" class="panel logs-panel hidden"><div class="panel-heading"><div><span class="eyebrow">Activity</span><h2>操作日志</h2></div></div><div id="log-output"></div></section>
+
   </div>
-  <script src="/static/app.js"></script>
-</body>
+    <dialog id="project-switch-dialog" class="dialog confirm-dialog" aria-labelledby="project-switch-title">
+      <form method="dialog" class="dialog-surface">
+        <div class="dialog-header"><div><span class="eyebrow">Local projects</span><h2 id="project-switch-title">切换本地项目</h2></div><button class="icon-button" value="cancel" aria-label="关闭">×</button></div>
+        <div class="dialog-body"><p>当前 Web 版本没有项目列表或切换接口。项目切换仍由本地 <code>.story_os/config.json</code> 的 <code>active_project</code> 配置管理。</p><div class="info-state"><span class="status-dot is-info"></span><span>可继续进入项目设置查看当前项目档案；不会创建虚构的云端项目。</span></div></div>
+        <div class="dialog-actions"><button class="btn btn-secondary" value="cancel">取消</button><button class="btn btn-primary" value="settings" onclick="openProjectSettingsFromDialog()">打开项目设置</button></div>
+      </form>
+    </dialog>
+  <script src="/static/app.js?v=7"></script>
+  <script src="/static/planning-studio.js?v=2"></script>
+  <script src="/static/operations-center.js?v=2"></script>
+  <script src="/static/quality-pass.js?v=1"></script>
+<dialog id="chapter-archive-dialog" class="dialog confirm-dialog" aria-labelledby="chapter-archive-dialog-title"><div class="dialog-surface"><div class="dialog-header"><div><span class="eyebrow">Safe archive</span><h2 id="chapter-archive-dialog-title">归档章节</h2></div><button class="icon-button" type="button" onclick="closeChapterArchiveDialog()" aria-label="关闭">×</button></div><div id="chapter-archive-dialog-body" class="dialog-body"></div><div class="dialog-actions"><button class="btn btn-secondary" type="button" onclick="closeChapterArchiveDialog()">取消</button><button id="chapter-archive-confirm" class="btn btn-danger" type="button" onclick="confirmChapterArchive()">归档章节</button></div></div></dialog></body>
 </html>
+<script>
+async function checkContinuity() {
+  const targetVersion = currentVersion || selectedVersion;
+  if (!targetVersion) return logMessage("请先选择或查看一个版本。", "warning");
+  const data = await apiPost("/api/continuity-check", targetVersion);
+  if (!data.ok) return logApiResult("剧情连贯性检查", data);
+  const result = data.result || {}, target = document.getElementById("continuity-output");
+  if (result.status === "not_applicable") { target.classList.add("empty-state"); target.textContent = "第一章或缺少前一已提交章节，暂无法检查。"; return; }
+  target.classList.remove("empty-state");
+  const label = { pass: "通过", warning: "需关注", fail: "不连贯" }[result.verdict] || "需关注";
+  target.textContent = `结论：${label} ｜ 连贯性：${formatScore(result.score)}\n${result.summary || ""}\n问题：${(result.issues || []).join("；") || "未发现明确问题。"}\n建议：${(result.suggestions || []).join("；") || "无需额外调整。"}`;
+  logApiResult("剧情连贯性检查", data);
+  window.alert(data.message || "剧情连贯性检查完成。");
+}
+</script>

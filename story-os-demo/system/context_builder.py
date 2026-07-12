@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from system.chapter_archive import is_memory_chapter_active
+
 
 CONTEXT_JSON_PATH = Path("data/context/current_context.json")
 CONTEXT_MARKDOWN_PATH = Path("data/context/current_context.md")
@@ -13,48 +15,175 @@ def build_working_context(
     state: dict[str, Any],
     memory_index: dict[str, Any],
     query: str = "",
+    story_spec: dict[str, Any] | None = None,
+    characters: dict[str, Any] | None = None,
+    world_bible: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     current_chapter = int(state.get("current_chapter", 0) or 0)
-    recent_chapters = get_recent_chapters(memory_index, current_chapter, limit=3)
-    recent_ids = [
-        int(chapter["chapter_id"])
-        for chapter in recent_chapters
-        if "chapter_id" in chapter
-    ]
-    retrieved_summaries = retrieve_old_summaries(
-        memory_index,
-        current_chapter,
-        query,
-        recent_ids,
-        max_results=5,
-    )
     total_committed = len(memory_index.get("chapters", [])) if isinstance(memory_index.get("chapters"), list) else 0
-    warnings = [
-        f"章节原文缺失：chapter_{chapter.get('chapter_id', ''):03d}"
-        for chapter in recent_chapters
-        if chapter.get("missing")
+
+    # ── Layer 1: Global Memory (always included, compact) ──────────────
+    global_memory = _build_global_memory(story_spec or {}, characters or {}, world_bible or {}, state)
+
+    # ── Layer 2: Recent Memory (1 full prev chapter + 3 summaries) ─────
+    recent_chapters = get_recent_chapters(memory_index, current_chapter, limit=3)
+    recent_ids = [int(ch["chapter_id"]) for ch in recent_chapters if "chapter_id" in ch]
+
+    # Split: the LATEST chapter as full text, the rest as summaries only
+    prev_chapter_full: dict[str, Any] | None = None
+    recent_summaries: list[dict[str, Any]] = []
+    if recent_chapters:
+        # Newest = the highest chapter_id = last element (they're sorted asc)
+        prev_chapter_full = recent_chapters[-1]
+        # Older (up to 2) → summaries
+        for ch in recent_chapters[:-1]:
+            cid = ch.get("chapter_id", 0)
+            recent_summaries.append(_load_chapter_summary(cid, ch, memory_index))
+        # Also add the newest chapter's summary for quick reference
+        if prev_chapter_full:
+            cid = prev_chapter_full.get("chapter_id", 0)
+            recent_summaries.insert(0, _load_chapter_summary(cid, prev_chapter_full, memory_index))
+
+    # Supplement with summaries from older chapters if < 3 total
+    if len(recent_summaries) < 3:
+        extra_summaries = retrieve_old_summaries(
+            memory_index, current_chapter, "", recent_ids, max_results=3 - len(recent_summaries),
+        )
+        recent_summaries.extend(extra_summaries)
+
+    retrieved_summaries = retrieve_old_summaries(
+        memory_index, current_chapter, query, recent_ids, max_results=5,
+    )
+
+    # ── Layer 3: Retrieval Memory (vector search, on-demand) ───────────
+    vector_retrieved: list[dict[str, Any]] = []
+    retrieval_mode = "keyword"
+    try:
+        from system.vector_memory import is_available, search_similar
+
+        if is_available() and query:
+            retrieval_mode = "keyword_plus_vector"
+            vector_retrieved = search_similar(query, max_results=5)
+    except Exception:
+        pass
+
+    warnings: list[str] = [
+        f"章节原文缺失：chapter_{ch.get('chapter_id', ''):03d}"
+        for ch in recent_chapters if ch.get("missing")
     ]
 
     return {
-        "context_version": "0.7",
-        "mode": "sliding_window_plus_summary_retrieval",
+        "context_version": "1.0",
+        "mode": "three_tier_memory",
         "current_chapter": current_chapter,
         "next_chapter_id": current_chapter + 1,
+        "global_memory": global_memory,
+        "recent_memory": {
+            "previous_chapter_full": prev_chapter_full,
+            "recent_summaries": recent_summaries,
+        },
+        "retrieval_memory": {
+            "vector_results": vector_retrieved,
+            "keyword_results": retrieved_summaries,
+            "mode": retrieval_mode,
+        },
+        "state_snapshot": build_state_snapshot(state),
+        "memory_budget": {
+            "global_memory_chars": _estimate_chars(global_memory),
+            "prev_chapter_chars": len(str(prev_chapter_full.get("text", ""))) if prev_chapter_full else 0,
+            "recent_summaries_count": len(recent_summaries),
+            "vector_retrieved_count": len(vector_retrieved),
+            "keyword_retrieved_count": len(retrieved_summaries),
+            "total_committed": total_committed,
+        },
+        "warnings": warnings,
+        # ── backwards-compat aliases ───────────────────────────────────
+        "recent_chapters": recent_chapters,
+        "retrieved_summaries": retrieved_summaries,
+        "vector_retrieved_memories": vector_retrieved,
         "working_context_policy": {
             "recent_raw_chapters": 3,
             "older_chapters": "summary_only",
-            "retrieval": "rule_based_keyword_search",
+            "retrieval": retrieval_mode,
         },
-        "recent_chapters": recent_chapters,
-        "retrieved_summaries": retrieved_summaries,
-        "state_snapshot": build_state_snapshot(state),
-        "memory_budget": {
-            "recent_chapters_count": len(recent_chapters),
-            "retrieved_summaries_count": len(retrieved_summaries),
-            "raw_history_excluded_count": max(total_committed - len(recent_chapters), 0),
-        },
-        "warnings": warnings,
     }
+
+
+def _build_global_memory(
+    story_spec: dict[str, Any],
+    characters: dict[str, Any],
+    world_bible: dict[str, Any],
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the compact global memory blob — always sent, never truncated."""
+    constraints = story_spec.get("writing_constraints", {}) if isinstance(story_spec, dict) else {}
+    if not isinstance(constraints, dict):
+        constraints = {}
+    # protagonist goals: from main characters' core_desire
+    main_chars = characters.get("main_characters", []) if isinstance(characters, dict) else []
+    protagonist_goals: list[str] = []
+    for mc in main_chars[:3]:
+        if isinstance(mc, dict) and mc.get("core_desire"):
+            protagonist_goals.append(f"{mc.get('name', '')}: {mc['core_desire']}")
+    # world rules
+    world_rules: list[str] = []
+    if isinstance(world_bible, dict):
+        for r in world_bible.get("core_rules", [])[:5]:
+            if isinstance(r, dict) and r.get("rule"):
+                world_rules.append(r["rule"])
+        for r in world_bible.get("continuity_rules", [])[:3]:
+            if isinstance(r, str):
+                world_rules.append(r)
+    return {
+        "title": str(story_spec.get("title", "")),
+        "genre": str(story_spec.get("genre", "")),
+        "tone": str(story_spec.get("tone", "")),
+        "writing_style": str(story_spec.get("writing_style", "")),
+        "narration": str(story_spec.get("narration", "")),
+        "world_style": str(world_bible.get("world_style", story_spec.get("world_style", ""))),
+        "protagonist_goals": protagonist_goals,
+        "world_rules": world_rules,
+        "core_appeal": story_spec.get("focus", []) if isinstance(story_spec.get("focus"), list) else [],
+        "forbidden": constraints.get("must_avoid") or story_spec.get("avoid", []) or [],
+        "anti_ai_rules": constraints.get("ai_style_limits") or story_spec.get("anti_ai_style_rules", []) or [],
+        "current_chapter": state.get("current_chapter", 0),
+        "open_foreshadows_count": len([
+            f for f in (state.get("foreshadows") or [])
+            if isinstance(f, dict) and f.get("status") in {"open", "planned"}
+        ]) if isinstance(state.get("foreshadows"), list) else 0,
+    }
+
+
+def _load_chapter_summary(
+    chapter_id: int,
+    chapter_entry: dict[str, Any],
+    memory_index: dict[str, Any],
+) -> dict[str, Any]:
+    """Return a compact summary dict for a chapter."""
+    raw_path = str(chapter_entry.get("summary_path", ""))
+    data: dict[str, Any] = {}
+    if raw_path:
+        summary_path = Path(raw_path)
+        if summary_path.exists():
+            try:
+                data = json.loads(summary_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+    return {
+        "chapter_id": chapter_id,
+        "title": str(data.get("chapter_title", chapter_entry.get("title", ""))),
+        "short_summary": str(data.get("short_summary", chapter_entry.get("short_summary", ""))),
+        "key_events": data.get("key_events", []) if isinstance(data.get("key_events"), list) else [],
+        "memory_tags": data.get("memory_tags", chapter_entry.get("memory_tags", [])) if isinstance(data.get("memory_tags"), list) else [],
+    }
+
+
+def _estimate_chars(obj: Any) -> int:
+    """Quick character count for budget tracking."""
+    try:
+        return len(json.dumps(obj, ensure_ascii=False))
+    except Exception:
+        return 0
 
 
 def get_recent_chapters(
@@ -76,6 +205,9 @@ def get_recent_chapters(
             "chapter_id": chapter.get("chapter_id", 0),
             "title": chapter.get("title", ""),
             "chapter_path": chapter.get("chapter_path", ""),
+            "summary_path": chapter.get("summary_path", ""),
+            "short_summary": chapter.get("short_summary", ""),
+            "memory_tags": chapter.get("memory_tags", []),
             "text": "",
         }
         if path.exists():
@@ -196,7 +328,7 @@ def _chapter_entries(memory_index: dict[str, Any]) -> list[dict[str, Any]]:
     chapters = memory_index.get("chapters", [])
     if not isinstance(chapters, list):
         return []
-    return [chapter for chapter in chapters if isinstance(chapter, dict)]
+    return [chapter for chapter in chapters if isinstance(chapter, dict) and is_memory_chapter_active(chapter)]
 
 
 def _load_summary_entry(chapter: dict[str, Any]) -> dict[str, Any]:

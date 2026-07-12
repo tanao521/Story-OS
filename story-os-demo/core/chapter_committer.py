@@ -17,7 +17,7 @@ def commit_chapter(
     world_bible: dict[str, Any],
 ) -> dict[str, Any]:
     chapter_id = int(draft.get("chapter_id", chapter_plan.get("chapter_id", 1)) or 1)
-    chapter_title = str(draft.get("chapter_title", chapter_plan.get("chapter_title", "")))
+    chapter_title = _chapter_title(draft, chapter_plan)
     chapter_path = _chapter_path(chapter_id)
     summary_path = _summary_path(chapter_id)
     source_used = "manual" if draft.get("manual_text") else ("edited" if draft.get("edited_text") else "draft")
@@ -52,7 +52,7 @@ def commit_chapter(
 def summarize_chapter(draft: dict[str, Any], chapter_plan: dict[str, Any]) -> dict[str, Any]:
     chapter_text = _chapter_text(draft)
     chapter_id = int(draft.get("chapter_id", chapter_plan.get("chapter_id", 1)) or 1)
-    chapter_title = str(draft.get("chapter_title", chapter_plan.get("chapter_title", "")))
+    chapter_title = _chapter_title(draft, chapter_plan)
     chapter_goal = str(chapter_plan.get("chapter_goal", ""))
     main_conflict = str(chapter_plan.get("conflict_design", {}).get("main_conflict", ""))
     climax_event = str(chapter_plan.get("climax_design", {}).get("climax_event", ""))
@@ -88,7 +88,7 @@ def apply_state_updates(
     summary: dict[str, Any],
 ) -> dict[str, Any]:
     chapter_id = int(chapter_plan.get("chapter_id", summary.get("chapter_id", 1)) or 1)
-    chapter_title = str(chapter_plan.get("chapter_title", summary.get("chapter_title", "")))
+    chapter_title = str(summary.get("chapter_title") or chapter_plan.get("chapter_title", ""))
     chapter_path = _chapter_path(chapter_id).as_posix()
     summary_path = _summary_path(chapter_id).as_posix()
 
@@ -186,6 +186,20 @@ def _chapter_path(chapter_id: int) -> Path:
 
 def _summary_path(chapter_id: int) -> Path:
     return Path("data/summaries") / f"chapter_{chapter_id:03d}_summary.json"
+
+
+def _chapter_title(draft: dict[str, Any], chapter_plan: dict[str, Any]) -> str:
+    title = str(draft.get("chapter_title") or chapter_plan.get("chapter_title") or "").strip()
+    if title:
+        return title
+    text = _chapter_text(draft).strip()
+    first_line = text.splitlines()[0].strip() if text else ""
+    if first_line.startswith("#"):
+        first_line = first_line.lstrip("#").strip()
+        if first_line:
+            return first_line
+    chapter_id = int(draft.get("chapter_id", chapter_plan.get("chapter_id", 1)) or 1)
+    return f"第{chapter_id}章"
 
 
 def _short_summary(chapter_title: str, key_events: list[str], chapter_text: str) -> str:

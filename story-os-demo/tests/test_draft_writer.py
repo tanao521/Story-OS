@@ -1,10 +1,12 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Any
 
 from core.blueprint_generator import generate_blueprint
 from core.character_builder import generate_characters
 from core.draft_writer import (
+    _draft_constraint_violations,
+    build_draft_prompt,
     clean_ai_style,
     render_draft_markdown,
     self_check_draft,
@@ -75,6 +77,24 @@ def test_draft_text_length_is_more_than_500_chars() -> None:
     assert len(draft["draft_text"]) > 500
 
 
+def test_must_follow_is_treated_as_instruction_not_literal_output_requirement() -> None:
+    story_spec = {
+        "writing_constraints": {
+            "chapter_word_count": {"min": 20, "max": 120},
+            "must_follow": ["保持第三人称有限视角"],
+            "must_avoid": [],
+            "ai_style_limits": [],
+        },
+        "avoid": [],
+    }
+    chapter_plan = {"word_count_constraints": {"min": 20, "max": 120}}
+    text = "他站在门边，观察走廊里的人影变化，也留意着房间里的灯光和呼吸节奏。" * 5
+
+    violations = _draft_constraint_violations(text, story_spec, chapter_plan)
+
+    assert not any("保持第三人称有限视角" in violation for violation in violations)
+
+
 def test_draft_chapter_id_matches_plan() -> None:
     story_spec, blueprint, characters, world_bible, state, chapter_plan = make_inputs()
 
@@ -133,3 +153,44 @@ def test_write_chapter_draft_does_not_modify_current_chapter() -> None:
     write_chapter_draft(story_spec, blueprint, characters, world_bible, state, chapter_plan)
 
     assert state["current_chapter"] == before
+
+
+def test_writing_constraints_control_prompt_plan_and_mock_length(monkeypatch: Any) -> None:
+    story_spec, blueprint, characters, world_bible, state, _ = make_inputs()
+    story_spec["writing_constraints"] = {"chapter_word_count": {"min": 3000, "max": 3800}}
+    chapter_plan = plan_next_chapter(story_spec, blueprint, characters, world_bible, state)
+    prompt = build_draft_prompt(story_spec, blueprint, characters, world_bible, state, chapter_plan)
+    draft = write_chapter_draft(story_spec, blueprint, characters, world_bible, state, chapter_plan)
+
+    assert chapter_plan["word_count_constraints"] == {"min": 3000, "max": 3800}
+    assert "3000~3800" in prompt
+    assert draft["actual_word_count"] >= 3000
+
+
+def test_writing_constraints_render_as_hard_rules(monkeypatch: Any) -> None:
+    story_spec, blueprint, characters, world_bible, state, _ = make_inputs()
+    story_spec["writing_constraints"] = {
+        "chapter_word_count": {"min": 3000, "max": 3800},
+        "pacing": "??????????????",
+        "chapter_structure": "??????????????",
+        "must_follow": ["?????", "??????????"],
+        "must_avoid": ["??????", "???????"],
+        "ai_style_limits": ["????A??B??"],
+    }
+    chapter_plan = plan_next_chapter(story_spec, blueprint, characters, world_bible, state)
+
+    prompt = build_draft_prompt(story_spec, blueprint, characters, world_bible, state, chapter_plan)
+
+    assert "?????????" in prompt
+    assert "?????" in prompt
+    assert "??????" in prompt
+    assert "????A??B??" in prompt
+
+
+def test_write_chapter_draft_marks_mock_as_fallback_when_local_model_disabled(monkeypatch: Any) -> None:
+    story_spec, blueprint, characters, world_bible, state, chapter_plan = make_inputs()
+    draft = write_chapter_draft(story_spec, blueprint, characters, world_bible, state, chapter_plan)
+
+    assert draft["generation"]["mode"] == "mock"
+    assert draft["generation"]["fallback_used"] is True
+    assert draft["generation"]["warnings"]

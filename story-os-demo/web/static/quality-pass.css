@@ -1,0 +1,8 @@
+/* Stage 8 quality pass */
+:where(button,a,input,textarea,select,summary):focus-visible{outline:2px solid var(--accent-hover);outline-offset:3px}
+button:disabled,[aria-disabled="true"]{cursor:not-allowed;opacity:.58}
+
+.app-nav-item,.btn,input,textarea,select,.chapter-manager-row{transition:background 120ms ease-out,color 120ms ease-out,border-color 120ms ease-out,opacity 160ms ease-out}
+@media(max-width:1280px){.topbar-project-context>:nth-child(n+5){display:none}.dashboard-layout{min-width:0}.chapter-manager-list{overflow-x:auto}.global-sidebar{width:68px}.global-sidebar .brand-copy,.global-sidebar .nav-label,.global-sidebar .sidebar-project{display:none}}
+@media(max-width:980px){.dashboard-rail{display:none}.dashboard-main{min-width:0}.topbar{min-width:0}.chapter-editor-page{width:100%}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}

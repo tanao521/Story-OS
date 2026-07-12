@@ -121,3 +121,46 @@ def test_save_quality_report_writes_json_and_markdown(tmp_path: Path) -> None:
 
     assert Path(json_path).exists()
     assert Path(markdown_path).exists()
+
+
+def test_mock_generation_quality_report_is_high_risk() -> None:
+    report = build_quality_report(
+        {
+            "chapter_id": 1,
+            "chapter_title": "Opening",
+            "draft_text": make_text(),
+            "generation": {"mode": "mock", "fallback_used": True, "warnings": ["mock"]},
+        },
+        "draft",
+        1,
+        "data/drafts/chapter_001_draft_v001.json",
+        make_plan(),
+        {},
+        {},
+        {},
+        {},
+    )
+
+    assert report["overall_score"] <= 0.35
+    assert any(item["type"] == "mock_generation" and item["severity"] == "high" for item in report["flags"])
+    assert report["checks"]["mock_generation"] is True
+
+
+def test_repeated_paragraph_quality_report_is_flagged() -> None:
+    paragraph = make_text().split("\n\n")[0]
+    repeated = "\n\n".join([paragraph] * 6)
+
+    report = build_quality_report(
+        {"chapter_id": 1, "chapter_title": "Opening", "draft_text": repeated},
+        "draft",
+        1,
+        "data/drafts/chapter_001_draft_v001.json",
+        make_plan(),
+        {},
+        {},
+        {},
+        {},
+    )
+
+    assert report["overall_score"] <= 0.45
+    assert any(item["type"] == "repetition" for item in report["flags"])
