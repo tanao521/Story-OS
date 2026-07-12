@@ -1,4 +1,18 @@
-function renderKnowledgeStoreSummary() {}
+function renderKnowledgeStoreSummary(memory = {}) {
+  const target = document.getElementById("knowledge-store-summary");
+  if (!target) return;
+  const vectorEnabled = !!memory.vector_memory_enabled;
+  const indexedChapters = Number(memory.vector_indexed_chapters || 0);
+  const indexedChunks = Number(memory.vector_chunks || 0);
+  const reportName = memory.last_vector_index_report ? String(memory.last_vector_index_report).split(/[\/]/).pop() : "暂无";
+  const summaryItems = [
+    ["向量库状态", vectorEnabled ? "已启用" : "未启用"],
+    ["已索引章节", vectorEnabled ? "第 " + indexedChapters + " 章" : "暂无"],
+    ["片段数量", vectorEnabled ? indexedChunks + " 片段" : "暂无"],
+    ["最近报告", reportName],
+  ];
+  target.innerHTML = "<div class=\"knowledge-store-summary-grid\">" + summaryItems.map(([label, value]) => "<div class=\"knowledge-store-summary-item\"><span>" + escapeHtml(label) + "</span><strong>" + escapeHtml(String(value)) + "</strong></div>").join("") + "</div>";
+}
 let currentVersion = null;
 let currentText = "";
 let latestDraft = null;
