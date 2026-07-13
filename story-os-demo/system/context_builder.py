@@ -9,6 +9,17 @@ from system.chapter_archive import is_memory_chapter_active
 
 CONTEXT_JSON_PATH = Path("data/context/current_context.json")
 CONTEXT_MARKDOWN_PATH = Path("data/context/current_context.md")
+DERIVED_STATE_PATH = Path("data/derived_state.json")
+
+def _artifact_is_stale(kind: str, chapter_id: int) -> bool:
+    try:
+        state = json.loads(DERIVED_STATE_PATH.read_text(encoding="utf-8"))
+        return any(item.get("artifact_type") == kind and int(item.get("chapter_id", -1)) == int(chapter_id) and item.get("status") in {"stale", "rebuild_required"} for item in state.get("artifacts", []))
+    except (OSError, ValueError, TypeError):
+        return False
+
+def _summary_is_stale(chapter_id: int) -> bool:
+    return _artifact_is_stale("chapter_summary", chapter_id)
 
 
 def build_working_context(
@@ -63,7 +74,7 @@ def build_working_context(
 
         if is_available() and query:
             retrieval_mode = "keyword_plus_vector"
-            vector_retrieved = search_similar(query, max_results=5)
+            vector_retrieved = [item for item in search_similar(query, max_results=8) if not _artifact_is_stale("vector_memory", int(item.get("chapter_id", -1) or -1))][:5]
     except Exception:
         pass
 
@@ -74,7 +85,10 @@ def build_working_context(
 
     return {
         "context_version": "1.0",
-        "mode": "three_tier_memory",
+        # Keep the long-standing public mode string for CLI/plugins while
+        # exposing the richer representation explicitly below.
+        "mode": "sliding_window_plus_summary_retrieval",
+        "memory_architecture": "three_tier_memory",
         "current_chapter": current_chapter,
         "next_chapter_id": current_chapter + 1,
         "global_memory": global_memory,
@@ -95,6 +109,9 @@ def build_working_context(
             "vector_retrieved_count": len(vector_retrieved),
             "keyword_retrieved_count": len(retrieved_summaries),
             "total_committed": total_committed,
+            "recent_chapters_count": len(recent_chapters),
+            "retrieved_summaries_count": len(retrieved_summaries),
+            "raw_history_excluded_count": max(0, total_committed - len(recent_chapters)),
         },
         "warnings": warnings,
         # ── backwards-compat aliases ───────────────────────────────────
@@ -162,6 +179,9 @@ def _load_chapter_summary(
     """Return a compact summary dict for a chapter."""
     raw_path = str(chapter_entry.get("summary_path", ""))
     data: dict[str, Any] = {}
+    # Never let a summary marked stale masquerade as current canon memory.
+    if _summary_is_stale(chapter_id):
+        return {"chapter_id": chapter_id, "title": str(chapter_entry.get("title", "")), "short_summary": "", "key_events": [], "memory_tags": [], "stale": True}
     if raw_path:
         summary_path = Path(raw_path)
         if summary_path.exists():

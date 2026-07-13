@@ -67,3 +67,39 @@ class ProjectCreateRequest(BaseModel):
     anti_ai_style_rules: list[str] = Field(default_factory=list)
     need_outline: bool = True
     use_deepseek: bool = False
+
+class JobCreateRequest(BaseModel):
+    job_type: Literal["run_chapter", "index_vault", "sync_obsidian", "quality_check", "memory_health", "revision_quality_check", "revision_continuity_check", "revision_impact_analysis", "apply_revision", "restore_canon_version", "rebuild_chapter_summary", "reindex_chapter_memory", "sync_revised_chapter_to_obsidian"]
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlanningEntityRequest(BaseModel):
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlanningReorderRequest(BaseModel):
+    ids: list[str] = Field(default_factory=list)
+
+
+class RevisionCreateRequest(BaseModel):
+    chapter_id: int = Field(ge=1)
+    reason: str = ""
+    scope: str = ""
+    source_version_id: str | None = None
+
+
+class RevisionCandidateRequest(BaseModel):
+    content: str
+    source: Literal["manual", "ai_rewrite", "ai_polish", "restored_version", "imported"] = "manual"
+    notes: str = ""
+
+
+class RevisionReviewRequest(BaseModel):
+    decision: Literal["approve", "request_changes", "reject"]
+    candidate_version_id: str | None = None
+    comment: str = ""
+    confirmed_risks: bool = False
+
+
+class CanonRestoreRequest(BaseModel):
+    confirmed_risks: bool = False

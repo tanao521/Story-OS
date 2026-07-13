@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 from pathlib import Path
 from typing import Any, Callable
 
@@ -10,7 +11,15 @@ from fastapi.templating import Jinja2Templates
 
 import commands
 from core.setup_wizard import create_story_project
+from core.project_context import get_project_context
+from system.narrative_memory_service import EventNotFound, NarrativeMemoryService, NarrativeMemoryError
+from system.project_manager import get_project_manager, ProjectManagerError
+from system.job_manager import get_job_manager, JobError, JobNotFoundError, JobStateError
+from system.planning_service import load_planning, overview as planning_overview, list_entities as planning_list, create_entity as planning_create, update_entity as planning_update, delete_entity as planning_delete, sync_next_plan
+from system.revision_service import RevisionService, RevisionError
+
 from system.chapter_archive import ChapterArchiveError, archive_chapter
+from system.data_store import DataStore
 from system.continuity_checker import (
     check_chapter_continuity,
     load_continuity_report,
@@ -90,10 +99,11 @@ def index(request: Request) -> HTMLResponse:
 
 @router.get("/api/project/init-state")
 def api_project_init_state() -> dict[str, Any]:
-    story_spec_path = Path("data/story_spec.json")
+    context = get_project_context()
+    story_spec_path = Path(context.data_dir / "story_spec.json")
     missing_files = []
-    for item in ["data/story_spec.json", "data/state.json"]:
-        if not Path(item).exists():
+    for item in ["story_spec.json", "state.json"]:
+        if not Path(context.data_dir / item).exists():
             missing_files.append(item)
     initialized = story_spec_path.exists()
     return api_ok(result={
@@ -129,7 +139,10 @@ def api_project_create(request: ProjectCreateRequest) -> JSONResponse:
 
 @router.get("/api/status")
 def api_status() -> dict[str, Any]:
-    return build_status_dashboard(full=True)
+    # Keep test/downgrade compatibility with legacy one-argument dashboard shims.
+    if "data_dir" not in inspect.signature(build_status_dashboard).parameters:
+        return build_status_dashboard(full=True)
+    return build_status_dashboard(data_dir=get_project_context().data_dir, full=True)
 
 
 
@@ -155,17 +168,17 @@ async def api_save_project_asset(asset_id: str, request: Request) -> JSONRespons
         if not isinstance(payload, dict) or not isinstance(payload.get("content"), str):
             return api_error("项目档案内容无效。", ["content must be a string"])
         asset = PROJECT_ASSETS[asset_id]
-        path = Path(asset["path"])
-        path.parent.mkdir(parents=True, exist_ok=True)
+        context = get_project_context()
+        path = context.root / asset["path"]
         content = payload["content"]
         if asset["format"] == "json":
             try:
                 parsed = json.loads(content or "{}")
             except json.JSONDecodeError as exc:
                 return api_error("JSON 格式无效，未保存。", [f"line {exc.lineno}, column {exc.colno}: {exc.msg}"])
-            path.write_text(json.dumps(parsed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            DataStore(context).write_json(path, parsed)
         else:
-            path.write_text(content, encoding="utf-8")
+            DataStore(context).write_markdown(path, content)
         return api_ok("项目档案已保存。", {"asset": _read_project_asset(asset_id)})
 
     return guarded(action)
@@ -173,7 +186,7 @@ async def api_save_project_asset(asset_id: str, request: Request) -> JSONRespons
 @router.get("/api/writing-constraints")
 def api_writing_constraints() -> JSONResponse:
     def action() -> dict[str, Any]:
-        story_spec = _load_json_safe(Path("data/story_spec.json"), {})
+        story_spec = _load_json_safe(get_project_context().data_dir / "story_spec.json", {})
         constraints = _normalize_writing_constraints(story_spec)
         return api_ok(result=constraints)
 
@@ -190,14 +203,15 @@ async def api_save_writing_constraints(request: Request) -> JSONResponse:
     def action() -> dict[str, Any]:
         if not isinstance(payload, dict):
             return api_error("写作约束格式无效。", ["payload must be an object"])
-        story_spec_path = Path("data/story_spec.json")
+        context = get_project_context()
+        story_spec_path = context.data_dir / "story_spec.json"
         story_spec = _load_json_safe(story_spec_path, {})
         if not isinstance(story_spec, dict) or not story_spec:
             return api_error("尚未创建小说项目。", ["data/story_spec.json not found"])
         constraints = _normalize_writing_constraints({"writing_constraints": payload, **payload})
         story_spec["writing_constraints"] = constraints
         story_spec["anti_ai_style_rules"] = constraints.get("ai_style_limits", [])
-        story_spec_path.write_text(json.dumps(story_spec, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        DataStore(context).write_json(story_spec_path, story_spec)
         return api_ok("写作约束已保存。", constraints)
 
     return guarded(action)
@@ -210,12 +224,13 @@ def api_llm_health() -> dict[str, Any]:
 @router.get("/api/memory-health")
 def api_memory_health(full: bool = False) -> JSONResponse:
     def action() -> dict[str, Any]:
-        report = run_memory_health_check(data_dir="data", full=full)
+        report = run_memory_health_check(data_dir=get_project_context().data_dir, full=full)
         return api_ok(result=report)
 
     return guarded(action)
 
-
+
+
 
 @router.post("/api/planning/blueprint")
 async def api_generate_blueprint(request: Request) -> JSONResponse:
@@ -564,7 +579,8 @@ def api_sync_obsidian() -> JSONResponse:
 def api_index_vault() -> JSONResponse:
     return guarded(lambda: command_response(commands.index_vault_command()))
 
-
+
+
 def _load_json_safe(path: Path, default: Any) -> Any:
     if not path.exists():
         return default
@@ -798,7 +814,8 @@ def todo_status_response(todo_id: int, status: str, message: str) -> dict[str, A
 
 def _read_project_asset(asset_id: str) -> dict[str, Any]:
     asset = PROJECT_ASSETS[asset_id]
-    path = Path(asset["path"])
+    context = get_project_context()
+    path = context.root / asset["path"]
     content = ""
     exists = path.exists()
     if exists:
@@ -861,3 +878,217 @@ def _list_from_any(value: Any) -> list[str]:
         return [str(item).strip() for item in value if str(item).strip()]
     normalized = str(value).replace("，", ",").replace("\n", ",")
     return [item.strip() for item in normalized.split(",") if item.strip()]
+
+
+# Restored Stage 7 narrative-memory API: all reads/writes use the active ProjectContext.
+def _nm() -> NarrativeMemoryService: return NarrativeMemoryService(get_project_context())
+@router.get("/api/narrative-memory/overview")
+def nm_overview(): return JSONResponse({"ok":True,"message":"","result":_nm().overview(),"warnings":[],"errors":[]})
+@router.get("/api/narrative-memory/events")
+def nm_events(chapter_id:int|None=None): return JSONResponse({"ok":True,"message":"","result":{"events":_nm().events(chapter_id)},"warnings":[],"errors":[]})
+@router.post("/api/narrative-memory/chapters/{chapter_id}/extract")
+def nm_extract(chapter_id:int):
+ try:return JSONResponse({"ok":True,"message":"","result":{"events":_nm().extract(chapter_id)},"warnings":[],"errors":[]})
+ except Exception as exc:return JSONResponse({"ok":False,"message":"Extraction failed.","result":{},"warnings":[],"errors":[str(exc)[:300]]},status_code=409)
+@router.get("/api/narrative-memory/timeline")
+def nm_timeline(): return JSONResponse({"ok":True,"message":"","result":{"timeline":_nm().store.read_json('data/narrative_memory/timeline.json',default=[],expected_type=list) or []},"warnings":[],"errors":[]})
+@router.get("/api/narrative-memory/conflicts")
+def nm_conflicts(): return JSONResponse({"ok":True,"message":"","result":{"conflicts":_nm().conflicts()},"warnings":[],"errors":[]})
+@router.post("/api/continuity/preflight")
+async def nm_preflight(request:Request):
+ p=await request.json(); r=_nm().preflight(int(p.get('chapter_id',1))); return JSONResponse({"ok":r['status']!='blocked',"message":"","result":r,"warnings":[],"errors":[]},status_code=409 if r['status']=='blocked' else 200)
+@router.post("/api/narrative-memory/events/{event_id}/confirm")
+async def nm_confirm(event_id:str,request:Request):
+ try:
+  payload=await request.json(); decision=str(payload.get('decision','confirmed')); patch=payload.get('patch') or {}
+  if decision not in {'confirmed','corrected','rejected'}: return _fail('Invalid confirmation decision.','INVALID_CONFIRMATION',422)
+  if not isinstance(patch,dict): return _fail('Event patch must be an object.','INVALID_EVENT_PATCH',422)
+  return _ok({'event':_nm().confirm(event_id,decision,patch)},'Narrative event updated.')
+ except EventNotFound:return _fail('Narrative event not found.','NARRATIVE_EVENT_NOT_FOUND',404)
+ except NarrativeMemoryError as exc:return _fail(str(exc),getattr(exc,'code','NARRATIVE_MEMORY_ERROR'),409)
+@router.post("/api/narrative-memory/project")
+def nm_project(): return _ok({'state':_nm().project()},'Narrative state projection rebuilt.')
+@router.post("/api/narrative-memory/chapters/{chapter_id}/snapshot")
+def nm_snapshot(chapter_id:int):
+ try:return _ok({'snapshot':_nm().snapshot(chapter_id)},'Narrative snapshot saved.')
+ except Exception as exc:return _fail(str(exc),'NARRATIVE_SNAPSHOT_ERROR',409)
+@router.get("/api/narrative-memory/context-preview")
+def nm_preview(chapter_id:int=1): return _ok({'preview':_nm().preview(chapter_id)})
+@router.post("/api/narrative-memory/overrides/{kind}")
+async def nm_override(kind:str,request:Request):
+ try:
+  payload=await request.json(); return _ok({'values':_nm().set_override(kind,payload.get('value'))},'Narrative override saved.')
+ except NarrativeMemoryError as exc:return _fail(str(exc),getattr(exc,'code','NARRATIVE_MEMORY_ERROR'),422)
+
+
+# Reconstructed phase 2-6 API bridge.  Services remain the sole business authority.
+def _ok(result=None,message=""): return JSONResponse({"ok":True,"message":message,"result":result or {},"warnings":[],"errors":[]})
+def _fail(message,code,status=400): return JSONResponse({"ok":False,"message":message,"result":{},"warnings":[],"errors":[code]},status_code=status)
+def _ctx(): return get_project_context()
+async def _create_revision_check_job(revision_id:str,request:Request,job_type:str) -> JSONResponse:
+ try:
+  revision=RevisionService(_ctx()).get_revision(revision_id)
+  try: payload=await request.json()
+  except Exception: payload={}
+  if not isinstance(payload,dict): return _fail('Request body must be an object.','INVALID_REQUEST',422)
+  job=get_job_manager().create_job(job_type,{'revision_id':revision_id,'candidate_version_id':payload.get('candidate_version_id'),'chapter_id':revision['chapter_id']},context=_ctx())
+  return _ok({'job':job},'Revision check task created.')
+ except RevisionError as exc:return _fail(str(exc),exc.code,404)
+ except JobError as exc:return _fail(str(exc),getattr(exc,'code','JOB_ERROR'),409)
+@router.get('/api/projects')
+def p_projects():
+ try:return _ok(get_project_manager().list_projects())
+ except Exception as e:return _fail(str(e),'PROJECT_ERROR')
+@router.get('/api/projects/active')
+def p_active(): return _ok({'project':get_project_manager().get_active_project()})
+@router.post('/api/projects/{project_id}/activate')
+def p_activate(project_id:str):
+ try:return _ok({'project':get_project_manager().activate_project(project_id)},'Project activated.')
+ except ProjectManagerError as e:return _fail(str(e),'PROJECT_NOT_FOUND',404)
+@router.post('/api/jobs')
+async def p_job(request:Request):
+ try:
+  data=await request.json(); job=get_job_manager().create_job(str(data.get('job_type','')),dict(data.get('parameters') or {}),context=_ctx()); return _ok({'job':job},'Task created.')
+ except JobError as e:return _fail(str(e),getattr(e,'code','JOB_ERROR'),409)
+@router.get('/api/jobs')
+def p_jobs(): return _ok({'jobs':get_job_manager().list_jobs(context=_ctx())})
+@router.get('/api/jobs/active')
+def p_active_jobs(): return _ok({'jobs':get_job_manager().active_jobs(context=_ctx())})
+@router.get('/api/jobs/{job_id}')
+def p_job_get(job_id:str):
+ try:return _ok({'job':get_job_manager().get_job(job_id,context=_ctx())})
+ except JobNotFoundError:return _fail('Task not found.','JOB_NOT_FOUND',404)
+@router.post('/api/jobs/{job_id}/cancel')
+def p_job_cancel(job_id:str):
+ try:return _ok({'job':get_job_manager().cancel_job(job_id,context=_ctx())})
+ except JobError as e:return _fail(str(e),getattr(e,'code','JOB_ERROR'),409)
+@router.get('/api/planning/overview')
+def p_plan_overview(): return _ok(planning_overview(_ctx()))
+@router.get('/api/planning/{kind}')
+def p_plan_list(kind:str): return _ok({kind:planning_list(kind,_ctx())})
+@router.post('/api/revisions')
+async def p_revision(request:Request):
+ try:
+  d=await request.json(); r=RevisionService(_ctx()).create_revision(int(d['chapter_id']),reason=str(d.get('reason',''))); return _ok({'revision':r})
+ except Exception as e:return _fail(str(e),'REVISION_ERROR',409)
+@router.get('/api/revisions')
+def p_revisions(): return _ok({'revisions':RevisionService(_ctx()).list_revisions()})
+@router.get('/api/revisions/{revision_id}')
+def p_revision_get(revision_id:str):
+ try:
+  svc=RevisionService(_ctx());return _ok({'revision':svc.get_revision(revision_id),'candidates':svc.list_candidates(revision_id)})
+ except RevisionError as e:return _fail(str(e),e.code,404)
+
+
+@router.get('/api/jobs/{job_id}/logs')
+def p_job_logs(job_id:str,after:int=0,limit:int=100):
+ try:return _ok(get_job_manager().get_logs(job_id,context=_ctx(),after=after,limit=limit))
+ except JobNotFoundError:return _fail('Task not found.','JOB_NOT_FOUND',404)
+@router.post('/api/jobs/{job_id}/retry')
+def p_job_retry(job_id:str):
+ try:return _ok({'job':get_job_manager().retry_job(job_id,context=_ctx())},'Retry task created.')
+ except JobNotFoundError:return _fail('Task not found.','JOB_NOT_FOUND',404)
+ except JobError as e:return _fail(str(e),getattr(e,'code','JOB_ERROR'),409)
+@router.post('/api/planning/{kind}')
+async def p_plan_create(kind:str,request:Request):
+ try:return _ok({'item':planning_create(kind,(await request.json()).get('payload',{}),_ctx())})
+ except Exception as e:return _fail(str(e),'PLANNING_ERROR')
+@router.put('/api/planning/{kind}/{entity_id}')
+async def p_plan_update(kind:str,entity_id:str,request:Request):
+ try:return _ok({'item':planning_update(kind,entity_id,(await request.json()).get('payload',{}),_ctx())})
+ except KeyError:return _fail('Planning item not found.','PLANNING_ITEM_NOT_FOUND',404)
+@router.delete('/api/planning/{kind}/{entity_id}')
+def p_plan_delete(kind:str,entity_id:str):
+ try:return _ok({'item':planning_delete(kind,entity_id,_ctx())})
+ except Exception as e:return _fail(str(e),'PLANNING_ERROR',409)
+@router.post('/api/revisions/{revision_id}/candidates')
+async def p_revision_candidate(revision_id:str,request:Request):
+ try:
+  d=await request.json(); c=RevisionService(_ctx()).save_candidate(revision_id,str(d.get('content','')),source=str(d.get('source','manual')),notes=str(d.get('notes','')));return _ok({'candidate':c})
+ except RevisionError as e:return _fail(str(e),e.code,409)
+@router.get('/api/revisions/{revision_id}/diff')
+def p_revision_diff(revision_id:str):
+ try:return _ok({'diff':RevisionService(_ctx()).diff(revision_id)})
+ except RevisionError as e:return _fail(str(e),e.code,404)
+@router.post('/api/revisions/{revision_id}/review')
+async def p_revision_review(revision_id:str,request:Request):
+ try:
+  d=await request.json(); return _ok(RevisionService(_ctx()).review(revision_id,str(d.get('decision','')),candidate_id=d.get('candidate_version_id'),comment=str(d.get('comment','')),confirmed_risks=bool(d.get('confirmed_risks'))))
+ except RevisionError as e:return _fail(str(e),e.code,409)
+@router.post('/api/revisions/{revision_id}/apply')
+def p_revision_apply(revision_id:str):
+ try:
+  r=RevisionService(_ctx()).get_revision(revision_id);j=get_job_manager().create_job('apply_revision',{'revision_id':revision_id,'chapter_id':r['chapter_id']},context=_ctx());return _ok({'job':j})
+ except Exception as e:return _fail(str(e),'REVISION_APPLY_ERROR',409)
+@router.post('/api/revisions/{revision_id}/cancel')
+def p_revision_cancel(revision_id:str):
+ try:return _ok({'revision':RevisionService(_ctx()).cancel(revision_id)},'Revision cancelled.')
+ except RevisionError as e:return _fail(str(e),e.code,409)
+@router.get('/api/revisions/{revision_id}/candidates')
+def p_revision_candidates(revision_id:str):
+ try:return _ok({'candidates':RevisionService(_ctx()).list_candidates(revision_id)})
+ except RevisionError as e:return _fail(str(e),e.code,404)
+@router.get('/api/revisions/{revision_id}/candidates/{candidate_id}')
+def p_revision_candidate_get(revision_id:str,candidate_id:str):
+ try:return _ok({'candidate':RevisionService(_ctx()).get_candidate(revision_id,candidate_id)})
+ except RevisionError as e:return _fail(str(e),e.code,404)
+@router.put('/api/revisions/{revision_id}/candidates/{candidate_id}')
+async def p_revision_candidate_update(revision_id:str,candidate_id:str,request:Request):
+ try:
+  svc=RevisionService(_ctx()); prior=svc.get_candidate(revision_id,candidate_id); d=await request.json()
+  content=str(d.get('content',prior['content'])); created=svc.save_candidate(revision_id,content,source=str(d.get('source','manual')),notes=str(d.get('notes','Updated from '+candidate_id)))
+  return _ok({'candidate':created,'replaces_candidate_id':candidate_id},'Saved as a new immutable revision candidate.')
+ except RevisionError as e:return _fail(str(e),e.code,409)
+@router.post('/api/revisions/{revision_id}/quality-check')
+async def p_revision_quality(revision_id:str,request:Request):
+ return await _create_revision_check_job(revision_id,request,'revision_quality_check')
+@router.post('/api/revisions/{revision_id}/continuity-check')
+async def p_revision_continuity(revision_id:str,request:Request):
+ return await _create_revision_check_job(revision_id,request,'revision_continuity_check')
+@router.post('/api/revisions/{revision_id}/impact-analysis')
+async def p_revision_impact(revision_id:str,request:Request):
+ return await _create_revision_check_job(revision_id,request,'revision_impact_analysis')
+@router.get('/api/chapters/{chapter_id}/canon-versions')
+def p_canon_versions(chapter_id:int):
+ try:return _ok({'versions':RevisionService(_ctx()).list_canon_versions(chapter_id)})
+ except RevisionError as e:return _fail(str(e),e.code,404)
+@router.get('/api/chapters/{chapter_id}/canon-versions/{version_id}')
+def p_canon_version_get(chapter_id:int,version_id:str):
+ try:return _ok({'version':RevisionService(_ctx()).get_canon_version(chapter_id,version_id)})
+ except RevisionError as e:return _fail(str(e),e.code,404)
+@router.post('/api/chapters/{chapter_id}/canon-versions/{version_id}/restore')
+async def p_canon_restore(chapter_id:int,version_id:str,request:Request):
+ try:
+  d=await request.json();j=get_job_manager().create_job('restore_canon_version',{'chapter_id':chapter_id,'version_id':version_id,'confirmed_risks':bool(d.get('confirmed_risks'))},context=_ctx());return _ok({'job':j})
+ except Exception as e:return _fail(str(e),'CANON_RESTORE_ERROR',409)
+@router.get('/api/archive')
+def p_archive(): return _ok({'items':RevisionService(_ctx()).list_archive()})
+@router.post('/api/archive/{archive_id}/restore')
+def p_archive_restore(archive_id:str):
+ try:return _ok({'restore':RevisionService(_ctx()).restore_archive(archive_id)})
+ except RevisionError as e:return _fail(str(e),e.code,409)
+
+
+@router.post('/api/projects')
+async def p_create_project(request:Request):
+ try:
+  data=await request.json(); return _ok({'project':get_project_manager().create_project(data)},'Project created.')
+ except Exception as e:return _fail(str(e),'PROJECT_CREATE_ERROR',409)
+@router.get('/api/jobs/{job_id}/logs')
+def p_job_logs_restored(job_id:str,after:int=0,limit:int=100):
+ try:return _ok(get_job_manager().get_logs(job_id,context=_ctx(),after=after,limit=limit))
+ except JobNotFoundError:return _fail('Task not found.','JOB_NOT_FOUND',404)
+@router.post('/api/jobs/{job_id}/retry')
+def p_job_retry_restored(job_id:str):
+ try:return _ok({'job':get_job_manager().retry_job(job_id,context=_ctx())})
+ except JobNotFoundError:return _fail('Task not found.','JOB_NOT_FOUND',404)
+ except JobError as e:return _fail(str(e),getattr(e,'code','JOB_ERROR'),409)
+@router.get('/api/archive/{archive_id}')
+def p_archive_detail(archive_id:str):
+ try:return _ok({'item':RevisionService(_ctx()).get_archive(archive_id)})
+ except RevisionError as e:return _fail(str(e),e.code,404)
+
+@router.post('/api/planning/chapters/{chapter_id}/sync-next')
+def p_plan_sync_next(chapter_id:str):
+ try:return _ok({'plan':sync_next_plan(chapter_id,_ctx())})
+ except Exception as e:return _fail(str(e),'PLANNING_SYNC_ERROR',409)

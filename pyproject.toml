@@ -1,5 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "storyos"
 version = "0.1.0"
-requires-python = ">=3.13"
-dependencies = []
+description = "A local AI-powered operating system for long-form fiction writing."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "chromadb>=1.0,<2",
+    "fastapi>=0.110,<1",
+    "jinja2>=3.1,<4",
+    "python-dotenv>=1,<2",
+    "python-multipart>=0.0.9,<1",
+    "requests>=2.31,<3",
+    "sentence-transformers>=3,<6",
+    "uvicorn>=0.27,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx>=0.27,<1",
+    "pytest>=8,<10",
+]
+
+[project.scripts]
+storyos = "storyos_launcher:main"
+
+[tool.setuptools]
+package-dir = {"" = "story-os-demo"}
+py-modules = ["commands", "config", "main", "storyos_launcher"]
+
+[tool.setuptools.packages.find]
+where = ["story-os-demo"]
+include = ["core*", "llm*", "system*", "web*"]

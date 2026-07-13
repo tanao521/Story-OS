@@ -1,6 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import sys
+import os
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +76,8 @@ from system.validators import validate_story_spec
 
 
 def main() -> None:
+    from core.project import resolve_current_project_root
+    os.chdir(resolve_current_project_root())
     command = sys.argv[1] if len(sys.argv) > 1 else "setup"
 
     if command == "status":
@@ -195,7 +198,7 @@ def main() -> None:
         "configure-llm",
     ]:
         print(f"- python main.py {item}")
-
+    raise SystemExit(2)
 
 
 

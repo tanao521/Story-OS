@@ -13,6 +13,7 @@ from core.draft_editor import edit_draft, render_edited_markdown
 from core.draft_writer import render_draft_markdown, write_chapter_draft
 from core.next_chapter_planner import plan_next_chapter, render_next_chapter_plan_markdown
 from core.project import ensure_project_structure, resolve_current_project_root
+from core.project_context import get_project_context
 from core.setup_wizard import build_initial_state
 from core.world_builder import generate_world_bible, render_world_bible_markdown
 from llm.planning_service import (
@@ -23,6 +24,7 @@ from llm.planning_service import (
 )
 from system.context_builder import build_working_context, save_current_context
 from system.file_store import load_json, save_json, save_markdown
+from system.planning_service import load_planning
 from system.memory_health import (
     render_memory_health_markdown,
     run_memory_health_check,
@@ -68,6 +70,13 @@ def build_context_command() -> dict[str, Any]:
     world_bible = load_json(str(paths["world_bible"])) if paths["world_bible"].exists() else {}
     query = _build_context_query(state, paths)
     context = build_working_context(state, memory_index, query, story_spec, characters, world_bible)
+    try:
+        planning = load_planning(get_project_context())
+        current = int(state.get("current_chapter", 0) or 0) + 1
+        chapter_plan = next((item for item in planning.get("chapters", []) if int(item.get("chapter_number", item.get("chapter_id", -1)) or -1) == current), None)
+        context["planning_context"] = {"chapter_plan": chapter_plan or {}, "active_threads": [item for item in planning.get("plot_threads", []) if item.get("status") == "active"], "open_foreshadowing": [item for item in planning.get("foreshadowing", []) if item.get("status") not in {"resolved", "abandoned"}]}
+    except Exception:
+        context["planning_context"] = {}
     json_path, markdown_path = save_current_context(context)
     state["current_stage"] = "context_built"
     state["context"] = {
@@ -77,7 +86,7 @@ def build_context_command() -> dict[str, Any]:
         "recent_raw_chapters": 3,
         "older_chapters_strategy": "summary_only",
     }
-    save_json("data/state.json", state)
+    save_json(str(_paths()["state"]), state)
     return _success(
         "build-context",
         "当前写作上下文包已生成。",
@@ -391,7 +400,7 @@ def compare_drafts_command(select_spec: str | None = None) -> dict[str, Any]:
     except Exception:
         pass
 
-    committed = _scan_committed_chapters(data_dir=Path("data"))
+    committed = _scan_committed_chapters(data_dir=get_project_context().data_dir)
     if chapter_id > 0 and not versions.get("drafts") and not versions.get("edited") and not versions.get("manual"):
         try:
             versions = load_versions_index(chapter_id - 1)
@@ -473,7 +482,11 @@ def quality_check_command(
         refinement: dict[str, Any] | None = None
         flags = report.get("flags", [])
         suggestions = report.get("suggestions", [])
-        if (flags or suggestions) and report.get("overall_score", 1.0) is not None:
+        # Quality assessment must remain deterministic and non-blocking by
+        # default.  AI refinement is an explicit opt-in workflow, never an
+        # implicit follow-up to a normal quality check.
+        auto_refine = bool(getattr(config, "AUTO_REFINE_AFTER_QUALITY", False))
+        if auto_refine and (flags or suggestions) and report.get("overall_score", 1.0) is not None:
             try:
                 from core.draft_editor_refine import refine_draft_with_quality_report
                 from core.draft_writer import _extract_title_from_text
@@ -626,7 +639,7 @@ def commit_chapter_command() -> dict[str, Any]:
     result["source_path"] = str(source_info.get("json_path", ""))
     save_markdown(result["chapter_path"], render_committed_chapter_markdown(draft))
     save_json(result["summary_path"], result["summary"])
-    save_json("data/state.json", state)
+    save_json(str(_paths()["state"]), state)
     warnings = list(result.get("warnings", [])) + source_warnings
     return _success(
         "commit-chapter",
@@ -652,7 +665,7 @@ def sync_obsidian_command() -> dict[str, Any]:
     if not vault_dir:
         return _failed("sync-obsidian", "未配置 obsidian_vault_dir。")
     project_name = local_config.get("obsidian_project_dir_name", "StoryOS")
-    result = sync_to_obsidian(DATA_DIR, vault_dir, project_name)
+    result = sync_to_obsidian(get_project_context().data_dir, vault_dir, project_name)
     if paths["state"].exists():
         state = load_json(str(paths["state"]))
         state["current_stage"] = "obsidian_synced"
@@ -663,14 +676,14 @@ def sync_obsidian_command() -> dict[str, Any]:
             "index_path": result.get("index_path", ""),
             "sync_version": result.get("sync_version", "0.8"),
         }
-        save_json("data/state.json", state)
+        save_json(str(_paths()["state"]), state)
     return _success("sync-obsidian", "Obsidian 同步完成。", outputs=result, warnings=result.get("warnings", []))
 
 
 def index_vault_command() -> dict[str, Any]:
     from system.vector_memory import build_or_update_index
 
-    result = build_or_update_index(DATA_DIR)
+    result = build_or_update_index(get_project_context().data_dir)
     if result.get("status") == "failed":
         return _failed("index-vault", result.get("message", "向量索引构建失败。"))
     return _success(
@@ -713,8 +726,8 @@ def self_check_command(json_output: bool = False) -> dict[str, Any]:
 def memory_health_command(json_output: bool = False, full: bool = False) -> dict[str, Any]:
     import json
 
-    report = run_memory_health_check(DATA_DIR, full=full)
-    paths = save_memory_health_report(report, DATA_DIR)
+    report = run_memory_health_check(get_project_context().data_dir, full=full)
+    paths = save_memory_health_report(report, get_project_context().data_dir)
     report["report_paths"] = paths
     if json_output:
         print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -820,7 +833,7 @@ def _save_draft_payload(
         "versioned_json_path": version_paths["json_path"],
         "versioned_markdown_path": version_paths["markdown_path"],
     }
-    save_json("data/state.json", state)
+    save_json(str(_paths()["state"]), state)
     return _success(
         command_name,
         message,
@@ -874,7 +887,7 @@ def _save_edited_payload(
         "versioned_json_path": version_paths["json_path"],
         "versioned_markdown_path": version_paths["markdown_path"],
     }
-    save_json("data/state.json", state)
+    save_json(str(_paths()["state"]), state)
     warnings = list(extra_warnings or []) + list(edited.get("editing", {}).get("warnings", []))
     return _success(
         command_name,
@@ -1046,7 +1059,7 @@ def _parse_select_spec(select_spec: str) -> tuple[str, int]:
 
 
 def _paths(project_root: Path | None = None) -> dict[str, Path]:
-    root = project_root or Path.cwd()
+    root = get_project_context(project_root).root
     return {
         "story_spec": root / "data" / "story_spec.json",
         "state": root / "data" / "state.json",

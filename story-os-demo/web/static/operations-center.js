@@ -11,6 +11,8 @@
       if (target) target.innerHTML = "<article class=\"error-entry\"><strong>运行错误</strong><p>检查步骤、文件和服务后重试。</p><code>" + escape(message) + "</code></article>";
     }
   };
+  window.addEventListener("storyos:project-cleared", () => { logs = []; const out=document.getElementById("log-output"); if(out) out.textContent="Project changed; previous task logs were cleared."; });
+  window.addEventListener("storyos:refresh-operations", () => { window.dispatchEvent(new Event("storyos:operations-ready")); });
   document.addEventListener("click", (event) => {
     if (event.target.closest("[data-clear-logs]")) document.getElementById("log-output").innerHTML = "";
     if (event.target.closest("[data-copy-logs]")) navigator.clipboard?.writeText(logs.map((item) => item.message).join("\n"));

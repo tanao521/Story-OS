@@ -810,3 +810,27 @@ Web 控制台现在恢复了完整的创作顺序：
 Web 入口：生成/重建故事蓝图、生成角色档案、生成下一章规划、故事阶段。
 
 DeepSeek 仅在 .story_os/config.json 中显式开启规划层时调用；未开启或请求失败时会使用本地规划模板，并在页面状态中标记生成方式。
+
+## v2.5 Stabilization: installation and verification
+
+Python 3.10 or newer is required. From the repository root, install with `python -m pip install -e .`; for tests, use `python -m pip install -e ".[dev]"`.
+
+Windows PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe main.py self-check
+.\.venv\Scripts\python.exe main.py web
+```
+
+macOS / Linux:
+
+```bash
+python -m venv .venv
+.venv/bin/python -m pip install -e ".[dev]"
+.venv/bin/python main.py self-check
+.venv/bin/python main.py web
+```
+
+`pyproject.toml` is authoritative; `requirements.txt` is a synchronized compatibility list. The `storyos self-check` and `storyos web` commands are equivalent installed entry points. Run tests with `python -m pytest -q`.

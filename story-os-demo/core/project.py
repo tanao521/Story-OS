@@ -5,6 +5,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from core.project_context import get_project_context
+
 
 BLUEPRINT_VERSION = "v1.0"
 
@@ -31,16 +33,10 @@ def resolve_current_project_root(
     project_name: str | None = None,
     project_root: str | Path | None = None,
 ) -> Path:
-    if project_root is not None:
-        return Path(project_root).expanduser().resolve()
+    """Return the single active project root used by CLI and Web operations."""
     if project_name:
-        return (Path.cwd() / "projects" / project_name).resolve()
-    active_project = _active_project_from_local_config(Path.cwd())
-    if active_project:
-        return active_project.resolve()
-    return Path.cwd().resolve()
-
-
+        return get_project_context(Path.cwd() / "projects" / project_name).root
+    return get_project_context(project_root).root
 def ensure_project_structure(project_root: Path, form_data: dict[str, Any] | None = None) -> dict[str, Any]:
     root = Path(project_root).expanduser().resolve()
     data_dir = root / "data"

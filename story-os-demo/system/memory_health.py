@@ -6,7 +6,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-HEALTH_VERSION = "2.5"
+# Keep the established report contract; additive checks do not require a
+# breaking schema-version bump.
+HEALTH_VERSION = "2.4-A"
 VALID_LEVELS = {"error", "warning", "info"}
 VALID_CATEGORIES = {"project", "state", "chapter", "summary", "version", "quality", "todo", "vector"}
 VALID_SOURCE_TYPES = {"draft", "edited", "manual"}
@@ -271,7 +273,7 @@ def render_memory_health_markdown(report: dict[str, Any]) -> str:
     ]
     suggestion_lines = [f"- {item}" for item in suggestions]
     return "\n".join([
-        "# Story OS 记忆健康报告",
+        "# Story OS Memory Health Report",
         "",
         f"- 检查时间：{report.get('checked_at', '')}",
         f"- 总体状态：{report.get('overall_status', '')}",
