@@ -286,10 +286,12 @@ def _version_related_files(
         if path.exists() and path.is_file():
             sources.append(path)
     quality_stem = f"chapter_{chapter_id:03d}_{source_type}_v{version:03d}_quality"
-    for suffix in [".json", ".md"]:
-        path = root / "quality_reports" / f"{quality_stem}{suffix}"
-        if path.exists() and path.is_file():
-            sources.append(path)
+    continuity_stem = f"chapter_{chapter_id:03d}_{source_type}_v{version:03d}_continuity"
+    for directory, stem in [("quality_reports", quality_stem), ("continuity_reports", continuity_stem)]:
+        for suffix in [".json", ".md"]:
+            path = root / directory / f"{stem}{suffix}"
+            if path.exists() and path.is_file():
+                sources.append(path)
     return sorted(set(sources), key=lambda path: path.as_posix())
 
 

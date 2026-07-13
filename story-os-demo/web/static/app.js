@@ -15,6 +15,7 @@ function renderKnowledgeStoreSummary(memory = {}) {
 }
 let currentVersion = null;
 let currentText = "";
+let currentContinuityReport = null;
 let latestDraft = null;
 let latestEdited = null;
 let latestManual = null;
@@ -122,7 +123,7 @@ async function createStoryProject() {
     }
     showDashboard();
     logApiResult("创建小说项目", result);
-    logMessage("下一步：点击或运行 python main.py blueprint 生成故事蓝图。", "success");
+    logMessage("首次规划层已初始化：故事蓝图、角色档案和世界观设定均已生成。", "success");
     await refreshAll();
   });
 }
@@ -257,8 +258,11 @@ function renderVersions(targetId, items, isCommitted = false) {
 async function loadVersionContent(sourceType, version) {
   const data = await apiGet(`/api/versions/content?source_type=${encodeURIComponent(sourceType)}&version=${encodeURIComponent(version)}`);
   if (!data.ok) return logApiResult("查看版本", data);
+  currentContinuityReport = null;
   renderVersionContent(data.result);
   await loadQualityReport(sourceType, version);
+  await loadContinuityReport(sourceType, version);
+  navigateToSection("preview-panel");
 }
 async function selectVersion(sourceType, version) { await runAction("选择版本", () => apiPost("/api/versions/select", { source_type: sourceType, version })); await refreshAll(); }
 async function archiveVersion(sourceType, version, chapterId) {
@@ -279,6 +283,28 @@ async function compareWithOpposite(sourceType, version) { const other = sourceTy
 async function loadVersionDiff(leftType, leftVersion, rightType, rightVersion) { const data = await apiGet(`/api/versions/diff?left_type=${leftType}&left_version=${leftVersion}&right_type=${rightType}&right_version=${rightVersion}`); if (!data.ok) return logApiResult("Diff 对比", data); renderDiff(data.result); }
 async function loadQualityReport(sourceType, version) { const data = await apiGet(`/api/quality-report?source_type=${encodeURIComponent(sourceType)}&version=${encodeURIComponent(version)}`); if (!data.ok) return logApiResult("质量报告", data); renderQualityReport(data.result); }
 
+async function loadContinuityReport(sourceType, version) {
+  const output = document.getElementById("continuity-output");
+  const url = "/api/continuity-report?source_type=" + encodeURIComponent(sourceType) + "&version=" + encodeURIComponent(version);
+  const data = await apiGet(url);
+  if (!data.ok) {
+    if (output) { output.classList.add("empty-state"); output.textContent = "读取该版本的连贯性报告失败：" + (data.message || "未知错误"); }
+    return;
+  }
+  const result = data.result || {};
+  currentContinuityReport = result;
+  renderContinuityScoreCard(result);
+  if (!result.exists) {
+    if (output) { output.classList.add("empty-state"); output.textContent = "当前版本尚未进行剧情连贯性检查。"; }
+    return;
+  }
+  if (output) {
+    const label = { pass: "通过", warning: "需关注", fail: "不连贯" }[result.verdict] || "需关注";
+    const mode = result.mode === "local_fallback" ? "（本地规则兜底）" : "（DeepSeek 审校）";
+    output.classList.remove("empty-state");
+    output.textContent = "当前版本报告\n结论：" + label + " · 连贯性：" + formatScore(result.score) + " " + mode + "\n" + (result.summary || "") + "\n问题：" + ((result.issues || []).join("；") || "未发现明确问题。") + "\n建议：" + ((result.suggestions || []).join("；") || "无需额外调整。");
+  }
+}
 function renderVersionContent(data) {
   currentVersion = { source_type: data.source_type, version: data.version };
   currentText = data.text || "";
@@ -286,7 +312,7 @@ function renderVersionContent(data) {
   const quality = data.quality || {};
   const isCommitted = data.source_type === "committed";
   document.getElementById("preview-meta").classList.remove("empty-state");
-  document.getElementById("preview-meta").innerHTML = [["版本", data.version_label || ""], ["标题", data.title || ""], ["字数", data.word_count || 0], ["模式", generation.mode || "unknown"], ["评分", formatScore(quality.score)], ["路径", data.json_path || ""]].map(([label, value]) => `<div class="meta-item"><b>${escapeHtml(label)}</b><span>${escapeHtml(String(value))}</span></div>`).join("");
+  document.getElementById("preview-meta").innerHTML = [["版本", data.version_label || ""], ["标题", data.title || ""], ["字数", data.word_count || 0], ["模式", generation.mode || "unknown"], ["质量评分", formatScore(quality.score)], ["路径", data.json_path || ""]].map(([label, value]) => `<div class="meta-item"><b>${escapeHtml(label)}</b><span>${escapeHtml(String(value))}</span></div>`).join("") + '<div id="continuity-score-meta" class="meta-item continuity-score-meta is-pending" aria-live="polite"><b>剧情连贯性</b><span id="continuity-score-value">未检查</span><small id="continuity-score-detail">与上一章的衔接评分</small></div>';
   var preview = document.getElementById("text-preview");
   preview.textContent = currentText || "该版本暂无正文内容。";
   preview.classList.remove("expanded");
@@ -316,6 +342,71 @@ function togglePreviewExpand() {
   var expanded = preview.classList.toggle("expanded");
   toggle.textContent = expanded ? "收起" : "展开全文";
 }
+
+
+async function checkContinuity() {
+  const targetVersion = currentVersion || selectedVersion;
+  const output = document.getElementById("continuity-output");
+  if (!targetVersion) {
+    if (output) {
+      output.classList.add("empty-state");
+      output.textContent = "请先点击版本的“查看正文”，再检查剧情连贯性。";
+    }
+    return logMessage("请先选择或查看一个版本。", "warning");
+  }
+  if (output) {
+    output.classList.add("empty-state");
+    output.textContent = "正在检查上一章结尾与当前章节开头的衔接…";
+  }
+  try {
+    const data = await apiPost("/api/continuity-check", targetVersion);
+    if (!data.ok) {
+      if (output) {
+        output.classList.add("empty-state");
+        output.textContent = "连贯性检查失败：" + (data.message || (data.errors || []).join("；") || "未知错误");
+      }
+      logApiResult("剧情连贯性检查", data);
+      navigateToSection("continuity-panel");
+      return;
+    }
+    const result = data.result || {};
+    if (result.status === "not_applicable") {
+      currentContinuityReport = { exists: false, status: "not_applicable", message: result.message || "首章无需检查与上一章的衔接。" };
+      renderContinuityScoreCard(currentContinuityReport);
+      if (output) {
+        output.classList.add("empty-state");
+        output.textContent = result.message || "缺少上一已提交章节，暂无法检查。";
+      }
+      navigateToSection("continuity-panel");
+      return;
+    }
+    const label = { pass: "通过", warning: "需关注", fail: "不连贯" }[result.verdict] || "需关注";
+    currentContinuityReport = { exists: true, ...result };
+    renderContinuityScoreCard(currentContinuityReport);
+    if (output) {
+      output.classList.remove("empty-state");
+      const modeNotice = result.mode === "local_fallback" ? "<p class=\"quality-output-note\">DeepSeek 暂不可用，当前结果使用本地规则兜底。</p>" : "";
+      output.innerHTML = "<div class=\"quality-score risk-" + escapeHtml(result.verdict || "warning") + "\">结论：" + escapeHtml(label) + " · 连贯性：" + escapeHtml(formatScore(result.score)) + "</div>" + modeNotice +
+        "<p>" + escapeHtml(result.summary || "") + "</p><h3>问题</h3><ul>" +
+        ((result.issues || []).map((item) => "<li>" + escapeHtml(item) + "</li>").join("") || "<li>未发现明确问题。</li>") +
+        "</ul><h3>建议</h3><ul>" +
+        ((result.suggestions || []).map((item) => "<li>" + escapeHtml(item) + "</li>").join("") || "<li>无需额外调整。</li>") +
+        "</ul>";
+    }
+    logApiResult("剧情连贯性检查", data);
+    navigateToSection("continuity-panel");
+  } catch (error) {
+    currentContinuityReport = { exists: false, status: "error" };
+    renderContinuityScoreCard(currentContinuityReport);
+    if (output) {
+      output.classList.add("empty-state");
+      output.textContent = "连贯性检查失败：" + (error.message || "网络或服务错误");
+    }
+    logMessage(error.message || "剧情连贯性检查失败。", "error");
+    navigateToSection("continuity-panel");
+  }
+}
+function renderContinuityScoreCard(report) { const card = document.getElementById("continuity-score-meta"); const value = document.getElementById("continuity-score-value"); const detail = document.getElementById("continuity-score-detail"); if (!card || !value || !detail) return; card.className = "meta-item continuity-score-meta"; if (!report || report.status === "error") { card.classList.add("is-pending"); value.textContent = report?.status === "error" ? "读取失败" : "未检查"; detail.textContent = report?.status === "error" ? "请重新载入或再次检查" : "点击“检查剧情连贯性”"; return; } if (report.status === "not_applicable") { card.classList.add("is-na"); value.textContent = "不适用"; detail.textContent = report.message || "缺少可用于对接的上一章"; return; } if (!report.exists) { card.classList.add("is-pending"); value.textContent = "未检查"; detail.textContent = "点击“检查剧情连贯性”"; return; } const verdict = report.verdict || "warning"; const verdictLabel = { pass: "衔接顺畅", warning: "建议关注", fail: "存在断点" }[verdict] || "建议关注"; card.classList.add("risk-" + verdict); value.textContent = formatScore(report.score) + " / 1.00"; detail.textContent = verdictLabel + " · 检查报告已载入"; }
 function renderDiff(data) { const summary = data.summary || {}; document.getElementById("diff-summary").classList.remove("empty-state"); document.getElementById("diff-summary").innerHTML = [["对比", `${versionLabel(data.left)} -> ${versionLabel(data.right)}`], ["左侧字数", summary.left_chars || 0], ["右侧字数", summary.right_chars || 0], ["新增", summary.added_count || 0], ["删除", summary.removed_count || 0], ["变化比例", `${Math.round((summary.changed_ratio || 0) * 100)}%`]].map(([label, value]) => `<div class="meta-item"><b>${escapeHtml(label)}</b><span>${escapeHtml(String(value))}</span></div>`).join(""); document.getElementById("diff-output").innerHTML = data.diff_html || ""; }
 function renderQualityReport(data) { if (!data.exists) { document.getElementById("quality-output").classList.add("empty-state"); document.getElementById("quality-output").innerHTML = '<p>当前版本尚未生成质量报告。</p><button class="btn btn-secondary" type="button" onclick="qualityCheck()">生成质量评估</button>'; return; } document.getElementById("quality-output").classList.remove("empty-state"); const risk = riskLevel(data.overall_score); const scores = Object.entries(data.scores || {}).map(([key, value]) => `<li>${escapeHtml(key)}：${escapeHtml(formatScore(value))}</li>`).join("") || "<li>暂无</li>"; const flags = (data.flags || []).map((item, index) => `<li>${index + 1}. [${escapeHtml(item.severity || "")}][${escapeHtml(item.type || "")}] ${escapeHtml(item.message || "")}</li>`).join("") || "<li>暂无</li>"; const suggestions = (data.suggestions || []).map((item) => `<li>${escapeHtml(String(item))}</li>`).join("") || "<li>暂无</li>"; document.getElementById("quality-output").innerHTML = `<div class="quality-score risk-${risk}">总分：${escapeHtml(formatScore(data.overall_score))} · 风险：${risk}</div><h3>分项评分</h3><ul>${scores}</ul><h3>问题</h3><ol>${flags}</ol><h3>建议</h3><ul>${suggestions}</ul>`; }
 
@@ -575,6 +666,7 @@ async function loadWritingConstraints() {
     setValue("constraint-must-follow", listToLines(result.must_follow));
     setValue("constraint-must-avoid", listToLines(result.must_avoid));
     setValue("constraint-ai-style", listToLines(result.ai_style_limits));
+    renderConstraintsInspector(result);
     setConstraintStatus("约束已读取。", "saved");
   } catch (error) {
     setConstraintStatus("读取写作约束失败。", "error");
@@ -603,6 +695,45 @@ async function saveWritingConstraints() {
   }
 }
 
+function setConstraintSection(section) {
+  const selected = section || "length";
+  document.querySelectorAll("[data-constraint-section]").forEach((item) => {
+    item.classList.toggle("is-active", item.dataset.constraintSection === selected);
+  });
+  document.querySelectorAll("[data-constraint-group]").forEach((item) => {
+    item.classList.toggle("is-active", item.dataset.constraintGroup === selected);
+  });
+  renderConstraintsInspector();
+}
+
+function renderConstraintsInspector(source = null) {
+  const target = document.getElementById("constraints-inspector-content");
+  if (!target) return;
+  const readLines = (id, fallback = []) => {
+    const value = document.getElementById(id)?.value;
+    if (value !== undefined) return String(value).split(/\n/).map((item) => item.trim()).filter(Boolean);
+    return Array.isArray(fallback) ? fallback : [];
+  };
+  const words = source?.chapter_word_count || {};
+  const min = document.getElementById("constraint-word-min")?.value || words.min || "未设置";
+  const max = document.getElementById("constraint-word-max")?.value || words.max || "未设置";
+  const pacing = document.getElementById("constraint-pacing")?.value || source?.pacing || "";
+  const structure = document.getElementById("constraint-structure")?.value || source?.chapter_structure || "";
+  const follow = readLines("constraint-must-follow", source?.must_follow);
+  const avoid = readLines("constraint-must-avoid", source?.must_avoid);
+  const style = readLines("constraint-ai-style", source?.ai_style_limits);
+  const rows = [
+    ["篇幅", min + "–" + max + " 字"],
+    ["节奏", pacing ? "已设置" : "未设置"],
+    ["结构", structure ? "已设置" : "未设置"],
+    ["必须遵守", follow.length + " 条"],
+    ["禁用内容", avoid.length + " 条"],
+    ["AI 风格限制", style.length + " 条"],
+  ];
+  target.innerHTML = rows.map((entry) => '<div class="studio-status-line"><span>' + escapeHtml(entry[0]) + '</span><strong>' + escapeHtml(entry[1]) + '</strong></div>').join("") +
+    '<section class="studio-inspector-section"><h4>生效范围</h4><p>这些约束会传入章节规划、正文生成、编辑和质量检查。</p></section>';
+}
+
 function setValue(id, value) {
   const target = document.getElementById(id);
   if (target) target.value = value == null ? "" : String(value);
@@ -619,6 +750,16 @@ function setConstraintStatus(message, type = "") {
   target.classList.remove("saved", "error");
   if (type) target.classList.add(type);
 }
+
+
+document.addEventListener("click", (event) => {
+  const section = event.target.closest("[data-constraint-section]");
+  if (section) setConstraintSection(section.dataset.constraintSection);
+});
+
+document.addEventListener("input", (event) => {
+  if (event.target.matches("[data-constraint-input]")) renderConstraintsInspector();
+});
 
 
 initializeDesignSystem();

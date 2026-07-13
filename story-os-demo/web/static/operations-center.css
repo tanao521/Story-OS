@@ -1,1 +1,22 @@
 ﻿.versions-panel,.logs-panel,.error-center-panel{padding:0;overflow:hidden}.versions-panel>.panel-heading,.logs-panel>.panel-heading,.error-center-panel>.panel-heading{padding:14px 18px;border-bottom:1px solid var(--border-subtle)}.version-studio{display:grid;grid-template-columns:250px minmax(0,1fr) 230px;min-height:520px}.version-browser,.version-meta-view{padding:12px;background:rgba(255,255,255,.012);overflow:auto}.version-browser{border-right:1px solid var(--border-subtle)}.version-meta-view{border-left:1px solid var(--border-subtle)}.version-section{padding:0 0 12px;border-bottom:1px solid var(--border-subtle)}.version-card{padding:8px 0!important;border:0!important;border-bottom:1px solid var(--border-subtle)!important;border-radius:0!important;background:transparent!important}.version-reader{min-width:0;padding:22px}.version-reader-content{white-space:pre-wrap;word-break:break-word;color:var(--text-primary);font:14px/1.8 serif}.log-toolbar{display:flex;flex-wrap:wrap;gap:7px}.terminal-log{max-height:400px;overflow:auto;background:#090d13;font:12px/1.6 monospace}.terminal-log>div{padding:3px 16px;border-left:2px solid transparent}.terminal-log .log-error{color:#e3a1a1;border-color:var(--status-error)}.error-center-list{padding:0 18px}.error-entry{padding:11px 0;border-bottom:1px solid var(--border-subtle)}.error-entry strong{color:var(--status-error)}@media(max-width:1280px){.version-studio{grid-template-columns:220px minmax(0,1fr)}.version-meta-view{display:none}}@media(max-width:900px){.version-studio{grid-template-columns:1fr}.version-browser{border-right:0;border-bottom:1px solid var(--border-subtle)}}
+
+
+/* Make the manuscript reader respond to the panel width, not only viewport width. */
+.versions-panel { container-type: inline-size; }
+@container (max-width: 860px) {
+  .version-studio { grid-template-columns: minmax(190px, 36%) minmax(0, 1fr); }
+  .version-meta-view { display: none; }
+}
+@container (max-width: 620px) {
+  .version-studio { grid-template-columns: 1fr; min-height: 0; }
+  .version-browser { max-height: 300px; border-right: 0; border-bottom: 1px solid var(--border-subtle); }
+  .version-reader { min-height: 380px; padding: 16px; }
+  .version-reader-content { min-height: 300px; max-height: none; }
+}
+
+
+/* Versions are controls only; the single manuscript preview remains the reader. */
+.versions-panel .version-studio { grid-template-columns: minmax(0, 1fr); min-height: 0; }
+.versions-panel .version-browser { max-height: none; padding: 14px 18px; border-right: 0; border-bottom: 0; }
+.versions-panel .version-reader,
+.versions-panel .version-meta-view { display: none !important; }

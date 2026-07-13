@@ -11,9 +11,15 @@ from fastapi.templating import Jinja2Templates
 import commands
 from core.setup_wizard import create_story_project
 from system.chapter_archive import ChapterArchiveError, archive_chapter
+from system.continuity_checker import (
+    check_chapter_continuity,
+    load_continuity_report,
+    save_continuity_report,
+)
 from system.manual_editor import create_manual_version
 from system.llm_health import build_llm_health_report
 from system.memory_health import run_memory_health_check
+from system.obsidian_sync import load_local_config, save_local_config
 from system.quality_checker import load_quality_report, quality_report_paths, quality_summary_from_report
 from system.review_gate import prepare_review_record, save_review_markdown, update_review_status
 from system.status_dashboard import build_status_dashboard
@@ -103,7 +109,20 @@ def api_project_create(request: ProjectCreateRequest) -> JSONResponse:
         if not request.title.strip():
             return api_error("小说标题不能为空。", ["title is required"])
         result = create_story_project(request.model_dump(), "data")
-        return api_ok("小说项目已创建。", result)
+        planning_config = load_local_config()
+        planning_config["use_deepseek_for_planning"] = bool(request.use_deepseek)
+        save_local_config(planning_config)
+        planning = commands.initialize_planning_command(use_deepseek=request.use_deepseek)
+        if (planning.get("status") == "failed"):
+            return api_error(
+                "项目已创建，但规划层初始化失败。",
+                [str(planning.get("message", "planning initialization failed"))],
+            )
+        return api_ok(
+            "小说项目已创建，故事蓝图、角色档案和世界观设定已生成。",
+            {**result, "planning": planning.get("outputs", {})},
+            warnings=list(planning.get("warnings", [])),
+        )
 
     return guarded(action)
 
@@ -251,6 +270,65 @@ async def api_save_or_plan_next_chapter(request: Request) -> JSONResponse:
         return api_ok("章节规划已保存。", {"plan": payload, "path": "data/next_chapter_plan.json"})
     return guarded(action)
 
+
+@router.get("/api/continuity-report")
+def api_get_continuity_report(
+    source_type: str = Query(..., pattern="^(draft|edited|manual|committed)$"),
+    version: int = Query(..., ge=1),
+) -> JSONResponse:
+    def action() -> dict[str, Any]:
+        current = build_version_content(source_type, version)
+        chapter_id = int(current.get("chapter_id", 0) or 0)
+        report = load_continuity_report(chapter_id, source_type, version, "data")
+        if not report:
+            return api_ok(result={"exists": False, "chapter_id": chapter_id, "source_type": source_type, "source_version": version})
+        return api_ok(result={"exists": True, **report})
+
+    return guarded(action)
+
+
+@router.post("/api/continuity-check")
+async def api_continuity_check(request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    def action() -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            return api_error("连贯性检查参数无效。", ["payload must be an object"])
+        source_type = str(payload.get("source_type", "")).strip()
+        try:
+            version = int(payload.get("version", 0) or 0)
+        except (TypeError, ValueError):
+            version = 0
+        if source_type not in {"draft", "edited", "manual", "committed"} or version < 1:
+            return api_error("请先选择一个有效的正文版本。", ["source_type and version are required"])
+        current = build_version_content(source_type, version)
+        chapter_id = int(current.get("chapter_id", 0) or 0)
+        if chapter_id <= 1:
+            return api_ok("首章没有上一章可供比对。", {"status": "not_applicable", "message": "首章没有上一已提交章节可供比对。"})
+        previous_path = Path("data") / "chapters" / f"chapter_{chapter_id - 1:03d}.md"
+        if not previous_path.exists():
+            return api_ok("缺少上一已提交章节，暂无法检查。", {"status": "not_applicable", "message": "缺少上一已提交章节，暂无法检查。"})
+        result = check_chapter_continuity(previous_path.read_text(encoding="utf-8"), str(current.get("text", "")))
+        warnings = list(result.pop("warnings", [])) if isinstance(result, dict) else []
+        report = {
+            "chapter_id": chapter_id,
+            "source_type": source_type,
+            "source_version": version,
+            "source_path": current.get("json_path", ""),
+            "previous_chapter_id": chapter_id - 1,
+            **result,
+        }
+        json_path, markdown_path = save_continuity_report(report, "data")
+        return api_ok(
+            "剧情连贯性检查完成。",
+            {"status": "completed", "exists": True, "json_path": json_path, "markdown_path": markdown_path, **report},
+            warnings=warnings,
+        )
+
+    return guarded(action)
 
 @router.post("/api/run-chapter")
 def api_run_chapter() -> JSONResponse:
@@ -668,6 +746,41 @@ def approve_review(force: bool = False, polish: bool | None = None) -> dict[str,
         if followup_result.get("status") == "failed":
             response["warnings"].append(str(followup_result.get("message", "")))
     return response
+
+
+def _archive_versions_after_commit(chapter_id: int) -> tuple[list[dict[str, Any]], list[str]]:
+    """Archive all non-committed versions after a chapter is approved and committed."""
+    versions = list_versions(chapter_id, "data")
+    archived: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for source_type, collection_key in (("draft", "drafts"), ("edited", "edited"), ("manual", "manual")):
+        entries = versions.get(collection_key, [])
+        if not isinstance(entries, list):
+            continue
+        for entry in list(entries):
+            try:
+                version = int(entry.get("version", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if version < 1:
+                continue
+            try:
+                result = archive_version(
+                    chapter_id,
+                    source_type,
+                    version,
+                    "data",
+                    reason="review_approved_commit",
+                )
+                archived.append({
+                    "source_type": source_type,
+                    "version": version,
+                    "archive_dir": result.get("archive_dir", ""),
+                    "files": result.get("files", []),
+                })
+            except (VersionArchiveError, FileNotFoundError) as exc:
+                warnings.append(f"{source_type}_v{version:03d} 归档失败：{exc}")
+    return archived, warnings
 
 
 def update_review(status: str, decision: str, message: str) -> dict[str, Any]:

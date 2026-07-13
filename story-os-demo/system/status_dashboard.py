@@ -81,24 +81,28 @@ def collect_memory_status(data_dir: str | Path = "data") -> dict[str, Any]:
     vector_report = root / "memory" / "vector_index_report.json"
     vector_available = False
     vector_stats: dict[str, Any] = {}
+    report_stats: dict[str, Any] = load_json_if_exists(vector_report, {}) or {}
     try:
         from system.vector_memory import is_available, collection_stats
 
-        if is_available(data_dir):
-            vector_available = True
-            vector_stats = collection_stats(data_dir)
+        vector_available = bool(is_available(data_dir))
+        vector_stats = collection_stats(data_dir) or {}
     except Exception:
         pass
+    if not vector_stats.get("chapters_indexed") and report_stats.get("chapters_indexed") is not None:
+        vector_stats = {
+            **report_stats,
+            **vector_stats,
+        }
     return {
         "context_exists": (root / "context" / "current_context.json").exists(),
         "obsidian_synced": bool(state.get("obsidian", {}).get("synced")) if isinstance(state.get("obsidian"), dict) else False,
         "vector_memory_enabled": vector_available or vector_report.exists(),
-        "vector_indexed_chapters": vector_stats.get("chapters_indexed", 0),
-        "vector_chunks": vector_stats.get("chunks_indexed", 0),
+        "vector_indexed_chapters": int(vector_stats.get("chapters_indexed", 0) or 0),
+        "vector_chunks": int(vector_stats.get("chunks_indexed", 0) or 0),
         "last_vector_index_report": vector_report.as_posix() if vector_report.exists() else "",
         "memory_index_exists": (root / "memory" / "memory_index.json").exists(),
     }
-
 
 
 def load_latest_memory_health_summary(data_dir: str | Path = "data") -> dict[str, Any]:

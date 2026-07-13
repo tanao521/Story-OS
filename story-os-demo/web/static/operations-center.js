@@ -1,1 +1,19 @@
-﻿(()=>{let x=[];const e=v=>window.escapeHtml?window.escapeHtml(v):String(v),old=window.logMessage;window.logMessage=(m,t="info")=>{x.push({m,t});x=x.slice(-300);let o=document.getElementById("log-output"),q=document.getElementById("log-search")?.value||"",f=document.getElementById("log-level")?.value||"all";if(o&&m.includes(q)&&(f==="all"||f===t)){let d=document.createElement("div");d.className="log-"+t;d.textContent="["+new Date().toLocaleTimeString()+"] "+m;o.append(d);if(o.children.length>300)o.firstChild.remove();if(document.getElementById("log-autoscroll")?.checked)o.scrollTop=o.scrollHeight}if(t==="error"){let r=document.getElementById("error-center-list");if(r)r.innerHTML="<article class=\"error-entry\"><strong>运行错误</strong><p>检查步骤、文件和服务后重试。</p><code>"+e(m)+"</code></article>"}};let a=window.renderVersionContent;window.renderVersionContent=d=>{a(d);document.getElementById("version-reader-title").textContent=d.version_label||"版本内容";document.getElementById("version-reader-content").textContent=d.text||"暂无正文";document.getElementById("version-meta-view").textContent="来源："+(d.source_type||"")+" · 字数："+(d.word_count||0)};document.addEventListener("click",z=>{if(z.target.closest("[data-clear-logs]"))document.getElementById("log-output").innerHTML="";if(z.target.closest("[data-copy-logs]"))navigator.clipboard?.writeText(x.map(i=>i.m).join("\n"));if(z.target.closest("[data-clear-errors]"))document.getElementById("error-center-list").textContent="暂无前端运行错误。"})})();
+(() => {
+  let logs = [];
+  const escape = (value) => window.escapeHtml ? window.escapeHtml(value) : String(value);
+  const previousLog = window.logMessage;
+  window.logMessage = (message, type = "info") => {
+    logs.push({ message, type });
+    logs = logs.slice(-300);
+    previousLog?.(message, type);
+    if (type === "error") {
+      const target = document.getElementById("error-center-list");
+      if (target) target.innerHTML = "<article class=\"error-entry\"><strong>运行错误</strong><p>检查步骤、文件和服务后重试。</p><code>" + escape(message) + "</code></article>";
+    }
+  };
+  document.addEventListener("click", (event) => {
+    if (event.target.closest("[data-clear-logs]")) document.getElementById("log-output").innerHTML = "";
+    if (event.target.closest("[data-copy-logs]")) navigator.clipboard?.writeText(logs.map((item) => item.message).join("\n"));
+    if (event.target.closest("[data-clear-errors]")) document.getElementById("error-center-list").textContent = "暂无前端运行错误。";
+  });
+})();

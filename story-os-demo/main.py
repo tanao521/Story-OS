@@ -489,6 +489,14 @@ def run_setup_command() -> None:
     print(f"[project] project_root = {project_root}")
     print(f"[project] blueprint_path = {structure['blueprint_path']}")
     print("小说项目已初始化完成。")
+    planning_result = command_api.initialize_planning_command(
+        use_deepseek=bool(story_spec.get("use_deepseek", False))
+    )
+    if planning_result.get("status") == "failed":
+        print("项目已创建，但规划层初始化失败：")
+        print(planning_result.get("message", "unknown planning error"))
+    else:
+        print("故事蓝图、角色档案、世界观设定和首章计划已自动生成。")
 
 def run_blueprint_command() -> None:
     paths = _required_project_paths()

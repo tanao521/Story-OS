@@ -134,7 +134,7 @@ def _related_files(root: Path, chapter_code: str) -> list[Path]:
         root / "versions" / f"chapter_{chapter_code}_versions.json",
     ]
     candidates.extend(path for path in fixed if path.exists() and path.is_file())
-    for directory in ["drafts", "edited", "manual", "pipeline_runs"]:
+    for directory in ["drafts", "edited", "manual", "pipeline_runs", "quality_reports", "continuity_reports"]:
         folder = root / directory
         if not folder.exists():
             continue

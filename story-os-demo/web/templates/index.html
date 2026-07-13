@@ -14,7 +14,7 @@
   <link rel="stylesheet" href="/static/chapter-editor.css">
   <link rel="stylesheet" href="/static/blueprint-editor.css">
   <link rel="stylesheet" href="/static/planning-studio.css">
-  <link rel="stylesheet" href="/static/operations-center.css">
+  <link rel="stylesheet" href="/static/operations-center.css?v=3">
   <link rel="stylesheet" href="/static/quality-pass.css">
 </head>
 <body>
@@ -128,11 +128,11 @@
 
         <section class="setup-submit-row">
           <div class="setup-options">
-            <label class="check-row"><input id="setup-need-outline" type="checkbox" checked><span>创建后建议生成故事蓝图</span></label>
-            <label class="check-row"><input id="setup-use-deepseek" type="checkbox"><span>创建阶段使用 DeepSeek（默认关闭）</span></label>
+            <label class="check-row"><input id="setup-need-outline" type="checkbox" checked><span>创建时自动生成故事蓝图、角色档案和世界观设定</span></label>
+            <label class="check-row"><input id="setup-use-deepseek" type="checkbox"><span>规划阶段使用 DeepSeek（需已配置 API Key）</span></label>
           </div>
           <div class="setup-actions">
-            <div class="next-step-note"><strong>下一步：生成故事蓝图</strong><span>运行后台生成项目档案并开始规划第一章前置资料。</span></div>
+            <div class="next-step-note"><strong>创建后自动进入规划层</strong><span>系统会生成故事蓝图、角色档案、世界观设定和首章计划。</span></div>
             <button class="btn btn-primary btn-hero" type="submit">创建项目</button>
             <span id="setup-error" class="setup-error"></span>
           </div>
@@ -208,7 +208,7 @@
           <button class="icon-button inspector-close" type="button" onclick="toggleInspector()" data-tooltip="折叠检查器"><span aria-hidden="true">→</span><span class="sr-only">折叠检查器</span></button>
         </header>
         <div class="inspector-scroll scroll-area"><section id="chapter-editor-inspector" class="panel chapter-editor-inspector"><div class="panel-heading"><div><span class="eyebrow">Writing Context</span><h2>编辑上下文</h2></div></div><div id="chapter-editor-inspector-content" class="chapter-editor-inspector-content"><div class="inspector-empty">载入章节后显示真实上下文。</div></div></section><section id="chapter-management-inspector" class="panel chapter-management-inspector"><div class="panel-heading"><div><span class="eyebrow">Chapter Context</span><h2>章节检查器</h2></div></div><div id="chapter-management-inspector-content" class="chapter-inspector-content"><div class="inspector-empty">选择一个章节查看文件与版本信息。</div></div></section><div id="workbench-inspector" class="inspector-workbench"><section class="panel"><div class="panel-heading"><div><span class="eyebrow">Pipeline</span><h2>Current generation flow</h2></div></div><div id="workbench-pipeline-list" class="pipeline-list">Loading...</div></section><section class="panel"><div class="panel-heading"><div><span class="eyebrow">Run State</span><h2>Current run state</h2></div></div><div id="workbench-run-state" class="inspector-mini-list">Loading...</div></section><section class="panel"><div class="panel-heading"><div><span class="eyebrow">Recent Activity</span><h2>Recent logs</h2></div><button class="btn btn-link" type="button" onclick="navigateToSection(&quot;logs-view&quot;)">View all</button></div><div id="workbench-log-list" class="inspector-mini-list">No logs</div></section><section class="panel"><div class="panel-heading"><div><span class="eyebrow">Attention</span><h2>Errors and notices</h2></div></div><div id="workbench-error-list" class="inspector-mini-list">No errors</div></section></div>
-        <section id="versions-panel" class="panel versions-panel"><header class="panel-heading"><div><span class="eyebrow">Versions</span><h2>章节版本</h2></div><div id="selected-version" class="selected-chip">Selected: 无</div></header><div class="version-studio"><aside class="version-browser"><section class="version-section"><h3>Draft</h3><div id="draft-list" class="version-list"></div></section><section class="version-section"><h3>Edited</h3><div id="edited-list" class="version-list"></div></section><section class="version-section"><h3>Manual</h3><div id="manual-list" class="version-list"></div></section></aside><section class="version-reader"><header><span class="eyebrow">Version content</span><h3 id="version-reader-title">选择一个版本</h3></header><pre id="version-reader-content" class="version-reader-content">从左侧选择版本以查看正文。比较继续使用现有轻量 diff 接口。</pre></section><aside id="version-meta-view" class="version-meta-view"><div class="empty-state">选择一个版本后显示来源、文件和相关操作。</div></aside></div></section>
+        <section id="versions-panel" class="panel versions-panel"><header class="panel-heading"><div><span class="eyebrow">Versions</span><h2>章节版本</h2></div><div id="selected-version" class="selected-chip">Selected: 无</div></header><div class="version-studio"><aside class="version-browser"><section class="version-section"><h3>Draft</h3><div id="draft-list" class="version-list"></div></section><section class="version-section"><h3>Edited</h3><div id="edited-list" class="version-list"></div></section><section class="version-section"><h3>Manual</h3><div id="manual-list" class="version-list"></div></section></aside></div></section>
         <section id="committed-panel" class="panel committed-panel"><div class="panel-heading"><div><span class="eyebrow">Published</span><h2>已提交章节</h2></div></div><div id="committed-chapter-list" class="version-list"><div class="empty-state">读取中...</div></div></section>
         <section id="todo-panel" class="panel todo-panel"><div class="panel-heading"><div><span class="eyebrow">Tasks</span><h2>任务清单</h2></div></div><form class="todo-form" onsubmit="event.preventDefault(); addTodo();"><input id="todo-title" type="text" placeholder="任务标题" required><select id="todo-type"><option value="revision">revision</option><option value="continuity">continuity</option><option value="character">character</option><option value="worldbuilding">worldbuilding</option><option value="quality">quality</option><option value="other">other</option></select><select id="todo-priority"><option value="medium">medium</option><option value="high">high</option><option value="urgent">urgent</option><option value="low">low</option></select><input id="todo-chapter" type="number" min="1" placeholder="章节"><button class="btn btn-compact btn-secondary" type="submit">添加</button></form><div id="todo-list" class="todo-list"></div></section>
         <section id="memoryHealthPanel" class="panel health-panel tab-panel">
@@ -240,25 +240,10 @@
         <div class="dialog-actions"><button class="btn btn-secondary" value="cancel">取消</button><button class="btn btn-primary" value="settings" onclick="openProjectSettingsFromDialog()">打开项目设置</button></div>
       </form>
     </dialog>
-  <script src="/static/app.js?v=7"></script>
+  <script src="/static/app.js?v=12"></script>
   <script src="/static/planning-studio.js?v=2"></script>
-  <script src="/static/planning-recovery.js?v=1"></script>
-  <script src="/static/operations-center.js?v=2"></script>
+  <script src="/static/planning-recovery.js?v=2"></script>
+  <script src="/static/operations-center.js?v=3"></script>
   <script src="/static/quality-pass.js?v=1"></script>
 <dialog id="chapter-archive-dialog" class="dialog confirm-dialog" aria-labelledby="chapter-archive-dialog-title"><div class="dialog-surface"><div class="dialog-header"><div><span class="eyebrow">Safe archive</span><h2 id="chapter-archive-dialog-title">归档章节</h2></div><button class="icon-button" type="button" onclick="closeChapterArchiveDialog()" aria-label="关闭">×</button></div><div id="chapter-archive-dialog-body" class="dialog-body"></div><div class="dialog-actions"><button class="btn btn-secondary" type="button" onclick="closeChapterArchiveDialog()">取消</button><button id="chapter-archive-confirm" class="btn btn-danger" type="button" onclick="confirmChapterArchive()">归档章节</button></div></div></dialog></body>
 </html>
-<script>
-async function checkContinuity() {
-  const targetVersion = currentVersion || selectedVersion;
-  if (!targetVersion) return logMessage("请先选择或查看一个版本。", "warning");
-  const data = await apiPost("/api/continuity-check", targetVersion);
-  if (!data.ok) return logApiResult("剧情连贯性检查", data);
-  const result = data.result || {}, target = document.getElementById("continuity-output");
-  if (result.status === "not_applicable") { target.classList.add("empty-state"); target.textContent = "第一章或缺少前一已提交章节，暂无法检查。"; return; }
-  target.classList.remove("empty-state");
-  const label = { pass: "通过", warning: "需关注", fail: "不连贯" }[result.verdict] || "需关注";
-  target.textContent = `结论：${label} ｜ 连贯性：${formatScore(result.score)}\n${result.summary || ""}\n问题：${(result.issues || []).join("；") || "未发现明确问题。"}\n建议：${(result.suggestions || []).join("；") || "无需额外调整。"}`;
-  logApiResult("剧情连贯性检查", data);
-  window.alert(data.message || "剧情连贯性检查完成。");
-}
-</script>

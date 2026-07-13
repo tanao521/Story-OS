@@ -84,6 +84,7 @@ def generate_blueprint(story_spec: dict[str, Any]) -> dict[str, Any]:
             "hidden_truths": tendency["truths"],
         },
         "story_phases": phases,
+        "chapter_plan": [],
         "initial_foreshadow_pool": _initial_foreshadow_pool(phases),
         "rolling_generation_policy": ROLLING_GENERATION_POLICY.copy(),
     }

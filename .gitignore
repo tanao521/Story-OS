@@ -30,3 +30,7 @@ data/
 # OS
 .DS_Store
 Thumbs.db
+pytest-*/
+scratch/
+_tmp*
+temp_*

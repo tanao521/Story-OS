@@ -87,7 +87,7 @@ def build_context_command() -> dict[str, Any]:
 
 
 
-def generate_blueprint_command(force: bool = False) -> dict[str, Any]:
+def generate_blueprint_command(force: bool = False, use_deepseek: bool | None = None) -> dict[str, Any]:
     """Generate the high-level story blueprint and persist its planning metadata."""
     project_root = resolve_current_project_root()
     structure = ensure_project_structure(project_root)
@@ -107,7 +107,7 @@ def generate_blueprint_command(force: bool = False) -> dict[str, Any]:
                 outputs={"path": "data/story_blueprint.json", "mode": existing.get("generation_meta", {}).get("mode", "stored")},
             )
     blueprint = generate_blueprint(story_spec)
-    client, warnings = _planning_client_for_web(story_spec)
+    client, warnings = _planning_client_for_web(story_spec, use_deepseek=use_deepseek)
     mode = "local_template"
     if client is not None:
         blueprint, planning_warnings = generate_blueprint_with_deepseek(story_spec, blueprint, client)
@@ -175,9 +175,53 @@ def build_assets_command(force: bool = False) -> dict[str, Any]:
     )
 
 
-def _planning_client_for_web(story_spec: dict[str, Any]) -> tuple[Any | None, list[str]]:
+def initialize_planning_command(use_deepseek: bool = False) -> dict[str, Any]:
+    """Complete the planning bootstrap immediately after first project creation."""
+    blueprint_result = generate_blueprint_command(force=True, use_deepseek=use_deepseek)
+    if blueprint_result.get("status") == "failed":
+        return blueprint_result
+
+    assets_result = build_assets_command(force=True)
+    if assets_result.get("status") == "failed":
+        return _success(
+            "initialize-planning",
+            "故事蓝图已生成，但角色档案和世界观设定生成失败。",
+            outputs={"blueprint": blueprint_result.get("outputs", {})},
+            warnings=list(blueprint_result.get("warnings", [])) + [str(assets_result.get("message", "角色档案生成失败"))],
+        )
+
+    plan_result = plan_next_command(use_deepseek=use_deepseek)
+    warnings = list(blueprint_result.get("warnings", [])) + list(assets_result.get("warnings", [])) + list(plan_result.get("warnings", []))
+    if plan_result.get("status") == "failed":
+        return _success(
+            "initialize-planning",
+            "故事蓝图、角色档案和世界观设定已完成，但首章计划生成失败。",
+            outputs={"blueprint": blueprint_result.get("outputs", {}), "assets": assets_result.get("outputs", {})},
+            warnings=warnings + [str(plan_result.get("message", "首章计划生成失败"))],
+        )
+
+    paths = _paths(resolve_current_project_root())
+    blueprint = load_json(str(paths["blueprint"]))
+    first_plan = load_json(str(paths["next_chapter_plan"]))
+    chapter_plan = blueprint.get("chapter_plan", [])
+    if not isinstance(chapter_plan, list):
+        chapter_plan = []
+    blueprint["chapter_plan"] = [first_plan] if not chapter_plan else chapter_plan
+    save_json(str(paths["blueprint"]), blueprint)
+    save_markdown(str(resolve_current_project_root() / "data" / "story_blueprint.md"), render_blueprint_markdown(blueprint))
+
+    outputs = {
+        "blueprint": blueprint_result.get("outputs", {}),
+        "assets": assets_result.get("outputs", {}),
+        "first_chapter_plan": plan_result.get("outputs", {}),
+        "initialized": True,
+    }
+    return _success("initialize-planning", "故事蓝图、角色档案、世界观设定和首章计划已完成初始化。", outputs=outputs, warnings=warnings)
+
+
+def _planning_client_for_web(story_spec: dict[str, Any], use_deepseek: bool | None = None) -> tuple[Any | None, list[str]]:
     local_config = load_local_config()
-    enabled = bool(local_config.get("use_deepseek_for_planning", False))
+    enabled = bool(local_config.get("use_deepseek_for_planning", False)) if use_deepseek is None else bool(use_deepseek)
     if not enabled:
         return None, ["DeepSeek 规划层未启用，已使用本地规划模板。"]
     if not config.DEEPSEEK_API_KEY:
@@ -198,7 +242,7 @@ def _world_bible_is_ready(world_bible: Any) -> bool:
     return isinstance(world_bible, dict) and bool(world_bible.get("core_rules"))
 
 
-def plan_next_command() -> dict[str, Any]:
+def plan_next_command(use_deepseek: bool | None = None) -> dict[str, Any]:
     project_root = resolve_current_project_root()
     structure = ensure_project_structure(project_root)
     paths = _paths(project_root)
@@ -223,7 +267,7 @@ def plan_next_command() -> dict[str, Any]:
     state = load_json(str(paths["state"])) if paths["state"].exists() else build_initial_state(story_spec)
     working_context = _load_optional_context(paths)
     plan = plan_next_chapter(story_spec, blueprint, characters, world_bible, state, working_context)
-    client, planning_warnings = _planning_client_for_web(story_spec)
+    client, planning_warnings = _planning_client_for_web(story_spec, use_deepseek=use_deepseek)
     warnings.extend(planning_warnings)
     if client is not None:
         plan, deepseek_warnings = plan_next_chapter_with_deepseek(story_spec, blueprint, characters, world_bible, state, working_context, plan, client)

@@ -187,6 +187,13 @@ textarea { resize: vertical; min-height: 104px; line-height: 1.7; }
 .meta-item { min-height: 58px; border: 1px solid rgba(151,190,232,.16); border-radius: 10px; background: rgba(255,255,255,.045); padding: 9px; }
 .meta-item b { display: block; margin-bottom: 5px; color: var(--faint); font-size: 11px; }
 .meta-item span { color: var(--text); overflow-wrap: anywhere; }
+.continuity-score-meta { position: relative; overflow: hidden; border-color: rgba(124,108,242,.34); background: linear-gradient(135deg, rgba(124,108,242,.12), rgba(255,255,255,.045)); }
+.continuity-score-meta span { display:block; color:#e8e1ff; font-size:18px; font-weight:760; }
+.continuity-score-meta small { display:block; margin-top:4px; color:var(--muted); font-size:10px; line-height:1.35; }
+.continuity-score-meta.is-pending span,.continuity-score-meta.is-na span { color:var(--muted); font-size:15px; }
+.continuity-score-meta.risk-pass span { color:var(--success); }
+.continuity-score-meta.risk-warning span { color:var(--warning); }
+.continuity-score-meta.risk-fail span { color:var(--danger); }
 .empty-state { display: block; border: 1px dashed rgba(151,190,232,.30); border-radius: 10px; background: rgba(255,255,255,.035); color: var(--muted); padding: 14px; }
 .text-preview, .diff-output, #ask-answer, #log-output { border: 1px solid rgba(151,190,232,.16); border-radius: 12px; background: rgba(4, 10, 18, .72); }
 .text-preview { min-height: 390px; max-height: 640px; margin: 0; overflow: auto; color: #eef7ff; padding: 18px; white-space: pre-wrap; line-height: 1.9; font-family: "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 15px; }
