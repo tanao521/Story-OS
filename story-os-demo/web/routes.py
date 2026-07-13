@@ -1074,15 +1074,6 @@ async def p_create_project(request:Request):
  try:
   data=await request.json(); return _ok({'project':get_project_manager().create_project(data)},'Project created.')
  except Exception as e:return _fail(str(e),'PROJECT_CREATE_ERROR',409)
-@router.get('/api/jobs/{job_id}/logs')
-def p_job_logs_restored(job_id:str,after:int=0,limit:int=100):
- try:return _ok(get_job_manager().get_logs(job_id,context=_ctx(),after=after,limit=limit))
- except JobNotFoundError:return _fail('Task not found.','JOB_NOT_FOUND',404)
-@router.post('/api/jobs/{job_id}/retry')
-def p_job_retry_restored(job_id:str):
- try:return _ok({'job':get_job_manager().retry_job(job_id,context=_ctx())})
- except JobNotFoundError:return _fail('Task not found.','JOB_NOT_FOUND',404)
- except JobError as e:return _fail(str(e),getattr(e,'code','JOB_ERROR'),409)
 @router.get('/api/archive/{archive_id}')
 def p_archive_detail(archive_id:str):
  try:return _ok({'item':RevisionService(_ctx()).get_archive(archive_id)})

@@ -1,5 +1,6 @@
 from pathlib import Path
 from fastapi.testclient import TestClient
+from system.job_manager import JobManager
 from web.app import app
 def test_recovered_routes(monkeypatch,tmp_path:Path):
     monkeypatch.chdir(tmp_path)
@@ -14,6 +15,11 @@ def test_recovered_routes(monkeypatch,tmp_path:Path):
 
 def test_recovered_revision_flow(monkeypatch,tmp_path:Path):
     monkeypatch.chdir(tmp_path); chapter=tmp_path/'data'/'chapters'/'chapter_001.md'; chapter.parent.mkdir(parents=True); chapter.write_text('# One\n\nOriginal.',encoding='utf-8')
+    # Keep API-contract coverage deterministic: actual revision work is
+    # separately covered by revision-service tests, while this route test only
+    # needs to prove that each endpoint creates the right background task.
+    manager = JobManager(runner=lambda job, context, emit, cancelled: {'output': {'job_type': job['job_type']}})
+    monkeypatch.setattr('web.routes.get_job_manager', lambda: manager)
     with TestClient(app) as client:
         created=client.post('/api/revisions',json={'chapter_id':1}).json(); rid=created['result']['revision']['revision_id']
         candidate=client.post(f'/api/revisions/{rid}/candidates',json={'content':'# One\n\nChanged.'}).json()['result']['candidate']
@@ -26,6 +32,7 @@ def test_recovered_revision_flow(monkeypatch,tmp_path:Path):
             assert response.status_code==200 and response.json()['result']['job']['job_type'].startswith('revision_')
         assert client.post(f'/api/revisions/{rid}/review',json={'decision':'approve'}).status_code==200
         assert client.get('/api/chapters/1/canon-versions').status_code==200
+    manager.shutdown()
 
 
 def test_recovered_planning_crud(monkeypatch,tmp_path:Path):
