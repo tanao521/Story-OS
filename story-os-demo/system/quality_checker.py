@@ -571,7 +571,7 @@ def _llm_quality_evaluate(
     if not api_key:
         return None
     try:
-        from llm.deepseek_client import DeepSeekClient
+        from llm.model_gateway import get_model_gateway
     except ImportError:
         return None
 
@@ -599,12 +599,7 @@ def _llm_quality_evaluate(
     )
 
     try:
-        client = DeepSeekClient(
-            api_key=api_key,
-            model=str(getattr(_cfg, "DEEPSEEK_MODEL", "deepseek-chat")),
-            base_url=str(getattr(_cfg, "DEEPSEEK_BASE_URL", "https://api.deepseek.com")),
-        )
-        response = client.chat_text(prompt, temperature=0.1).strip()
+        response = get_model_gateway().generate_text("quality_review", prompt, temperature=0.1, prompt_id="quality_review").strip()
         import re as _re
         m = _re.search(r"\{[\s\S]*\}", response)
         if not m:

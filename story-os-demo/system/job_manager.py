@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -11,7 +12,7 @@ from core.project_context import ProjectContext, bind_project_context, get_proje
 from system.data_store import DataStore
 from system.job_models import ACTIVE_JOB_STATUSES, RETRYABLE_JOB_STATUSES, make_job, make_step, now_iso, public_job
 
-SUPPORTED_JOB_TYPES = {"run_chapter", "index_vault", "sync_obsidian", "quality_check", "memory_health", "revision_quality_check", "revision_continuity_check", "revision_impact_analysis", "apply_revision", "restore_canon_version", "rebuild_chapter_summary", "reindex_chapter_memory", "sync_revised_chapter_to_obsidian", "extract_narrative_events", "rebuild_narrative_memory", "recheck_memory_conflicts", "generate_context_preview"}
+SUPPORTED_JOB_TYPES = {"run_chapter", "index_vault", "sync_obsidian", "quality_check", "memory_health", "revision_quality_check", "revision_continuity_check", "revision_impact_analysis", "apply_revision", "restore_canon_version", "rebuild_chapter_summary", "reindex_chapter_memory", "sync_revised_chapter_to_obsidian", "extract_narrative_events", "rebuild_narrative_memory", "recheck_memory_conflicts", "generate_context_preview", "agent_workflow", "chapter_reflection", "full_creative_review", "generate_creative_proposal", "generate_experiment_variants", "evaluate_experiment", "detect_creative_patterns", "evaluate_strategy_outcome", "generate_quality_report", "initialize_vector_index", "incremental_vector_index", "rebuild_vector_index"}
 STEP_LABELS = {
     "build-context": "Build writing context", "plan-next": "Plan next chapter",
     "write-draft": "Write draft", "prepare-review": "Prepare review",
@@ -21,6 +22,13 @@ STEP_LABELS = {
     "revision-impact": "Analyze revision impact", "apply-revision": "Apply approved revision",
     "restore-canon": "Restore historical canon", "rebuild-summary": "Rebuild chapter summary",
     "reindex-chapter": "Reindex chapter memory", "sync-revised-chapter": "Sync revised chapter", "extract-events": "Extract narrative events", "rebuild-narrative": "Rebuild narrative memory", "recheck-conflicts": "Recheck memory conflicts", "context-preview": "Generate context preview",
+    "agent-workflow": "Run creative-team workflow",
+    "chapter-reflection": "Reflect active canon chapter", "full-creative-review": "Run full creative review",
+    "creative-proposal": "Generate strategy proposal", "experiment-variants": "Generate experiment variants",
+    "evaluate-experiment": "Evaluate creative experiment",
+    "detect-creative-patterns": "Create creative pattern candidate", "evaluate-strategy-outcome": "Evaluate strategy outcome",
+    "generate-quality-report": "\u751f\u6210\u5f53\u524d\u6b63\u53f2\u8d28\u91cf\u62a5\u544a", "initialize-vector-index": "\u521d\u59cb\u5316\u672c\u5730\u5411\u91cf\u7d22\u5f15",
+    "incremental-vector-index": "\u66f4\u65b0\u672c\u5730\u5411\u91cf\u7d22\u5f15", "rebuild-vector-index": "\u91cd\u5efa\u672c\u5730\u5411\u91cf\u7d22\u5f15",
 }
 
 
@@ -60,6 +68,7 @@ class JobManager:
                 self._executor = ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="storyos-job")
             self._accepting = True
         self.mark_interrupted_jobs()
+        self.recover_stale_jobs()
 
     def shutdown(self) -> None:
         with self._lock:
@@ -90,6 +99,25 @@ class JobManager:
         self.ensure_started()
         context = context or get_project_context()
         parameters = dict(parameters or {})
+        if job_type in {"generate_quality_report", "initialize_vector_index", "incremental_vector_index", "rebuild_vector_index"}:
+            parameters.setdefault("created_by", "user")
+            parameters.setdefault("source_version", str(parameters.get("canon_version_id") or ""))
+        if job_type in {"chapter_reflection", "full_creative_review", "generate_creative_proposal", "generate_experiment_variants", "evaluate_experiment", "detect_creative_patterns", "evaluate_strategy_outcome"}:
+            parameters.setdefault("created_by", "user")
+            parameters.setdefault("source_version", str(parameters.get("source_canon_version_id") or ""))
+        task_type = _job_model_task_type(job_type)
+        if task_type and "model_routing" not in parameters:
+            # Persist the exact route chosen at enqueue time so later preference edits cannot
+            # send a running job to a different provider or project.
+            from llm.model_gateway import get_model_gateway
+            parameters["model_routing"] = get_model_gateway(context).freeze_route(task_type)
+        if job_type in {"run_chapter", "apply_revision", "restore_canon_version"} and "prewrite_backup" not in parameters:
+            try:
+                from system.backup_service import BackupService
+                parameters["prewrite_backup"] = BackupService(context).create("automatic")
+            except Exception:
+                # Fresh/legacy projects can legitimately have no complete snapshot set yet.
+                parameters["prewrite_backup"] = {"status": "skipped", "reason": "No eligible project files were available."}
         if job_type == "run_chapter" and parameters.get("chapter_id") is None:
             plan = DataStore(context).read_json("data/next_chapter_plan.json", default={}, expected_type=dict) or {}
             state = DataStore(context).read_json("data/state.json", default={}, expected_type=dict) or {}
@@ -101,6 +129,10 @@ class JobManager:
                 existing = self._active_matching(context, job_type)
                 if existing:
                     raise JobAlreadyRunningError(existing["job_id"])
+            if job_type in {"generate_quality_report", "initialize_vector_index", "incremental_vector_index", "rebuild_vector_index"}:
+                existing = self._active_repair_job(context, job_type, parameters)
+                if existing:
+                    return public_job(existing)
             chapter_id = parameters.get("chapter_id")
             if job_type in {"run_chapter", "apply_revision", "restore_canon_version"} and chapter_id is not None:
                 conflict = self._active_chapter_operation(context, int(chapter_id))
@@ -111,6 +143,9 @@ class JobManager:
                 job_type=job_type, parameters=parameters, retry_of=retry_of, attempt=attempt,
             )
             job["steps"] = self._initial_steps(job_type)
+            if job_type in {"chapter_reflection", "full_creative_review", "generate_creative_proposal", "generate_experiment_variants", "evaluate_experiment", "detect_creative_patterns", "evaluate_strategy_outcome", "generate_quality_report", "initialize_vector_index", "incremental_vector_index", "rebuild_vector_index"}:
+                job["created_by"] = parameters["created_by"]
+                job["source_version"] = parameters["source_version"]
             job["progress"] = {"current": 0, "total": len(job["steps"]), "percent": 0}
             self._save(context, job)
             self._submit(context, job["job_id"])
@@ -206,6 +241,8 @@ class JobManager:
                     return
                 job["status"] = "running"
                 job["started_at"] = now_iso()
+                job["heartbeat_at"] = now_iso()
+                job["worker_id"] = f"pid-{os.getpid()}"
                 job["message"] = "Task is running."
                 self._log(job, "info", "", job["message"])
                 self._save(context, job)
@@ -257,6 +294,8 @@ class JobManager:
                 step["finished_at"] = now_iso()
             step["status"] = status
             step["message"] = str(event.get("message") or step.get("message", ""))[:500]
+            job["progress_message"] = step["message"]
+            job["heartbeat_at"] = now_iso()
             if event.get("outputs"):
                 step["outputs"] = event["outputs"]
             if event.get("warnings"):
@@ -273,10 +312,11 @@ class JobManager:
         pipeline_status = report.get("status") if isinstance(report, dict) else None
         job["result"] = result
         job["finished_at"] = now_iso()
-        if pipeline_status == "waiting_for_review":
+        job["heartbeat_at"] = now_iso()
+        if pipeline_status == "waiting_for_review" or result.get("workflow_status") == "waiting_for_human":
             job["status"] = "waiting_for_review"
             review = report.get("review", {})
-            job["message"] = "Draft generated and waiting for human review."
+            job["message"] = "Workflow is waiting for an author decision." if result.get("workflow_status") == "waiting_for_human" else "Draft generated and waiting for human review."
             job["result"].update({"draft_version": 1, "review_status": review.get("status", "pending"), "next_action": "open_review"})
         elif pipeline_status == "success_with_warnings" or job.get("warnings"):
             job["status"] = "completed_with_warnings"
@@ -294,6 +334,7 @@ class JobManager:
     def _finish_cancelled(self, context: ProjectContext, job: dict[str, Any], message: str) -> None:
         job["status"] = "cancelled"
         job["finished_at"] = now_iso()
+        job["heartbeat_at"] = now_iso()
         job["message"] = message
         self._log(job, "info", job.get("current_step", ""), message)
         self._save(context, job)
@@ -301,8 +342,48 @@ class JobManager:
     def _cancel_requested(self, context: ProjectContext, job_id: str) -> bool:
         return bool(self._load(context, job_id).get("cancel_requested"))
 
+    def recover_stale_jobs(self, *, context: ProjectContext | None = None, max_age_seconds: int = 900,
+                           dry_run: bool = False) -> list[str]:
+        """Mark abandoned workers retryable without automatically running them again."""
+        from datetime import datetime, timezone
+        contexts = [context] if context else [get_project_context()]
+        recovered: list[str] = []
+        for item_context in contexts:
+            if item_context is None:
+                continue
+            for job in self._all_jobs(item_context):
+                if job.get("status") not in {"running", "cancel_requested", "queued"}:
+                    continue
+                value = str(job.get("heartbeat_at") or job.get("updated_at") or job.get("created_at") or "")
+                try:
+                    age = (datetime.now(timezone.utc) - datetime.fromisoformat(value.replace("Z", "+00:00"))).total_seconds()
+                except ValueError:
+                    age = max_age_seconds + 1
+                if age <= max_age_seconds:
+                    continue
+                recovered.append(str(job.get("job_id", "")))
+                if dry_run:
+                    continue
+                job.update({"status": "recoverable_failed", "finished_at": now_iso(), "heartbeat_at": now_iso(), "message": "Task worker stopped responding; retry is available."})
+                job.setdefault("warnings", []).append("JOB_STUCK")
+                self._log(job, "warning", str(job.get("current_step", "")), job["message"])
+                self._save(item_context, job)
+        return recovered
+
     def _active_matching(self, context: ProjectContext, job_type: str) -> dict[str, Any] | None:
         return next((job for job in self._all_jobs(context) if job.get("job_type") == job_type and job.get("status") in ACTIVE_JOB_STATUSES), None)
+
+    def _active_repair_job(self, context: ProjectContext, job_type: str, parameters: dict[str, Any]) -> dict[str, Any] | None:
+        for job in self._all_jobs(context):
+            if job.get("job_type") != job_type or job.get("status") not in ACTIVE_JOB_STATUSES:
+                continue
+            current = job.get("parameters") or {}
+            if job_type == "generate_quality_report":
+                if all(str(current.get(key) or "") == str(parameters.get(key) or "") for key in ("chapter_id", "canon_version_id", "content_hash")):
+                    return job
+            else:
+                return job
+        return None
 
     def _active_chapter_operation(self, context: ProjectContext, chapter_id: int) -> dict[str, Any] | None:
         protected = {"run_chapter", "apply_revision", "restore_canon_version"}
@@ -378,7 +459,7 @@ class JobManager:
             "revision_quality_check": ["revision-quality"], "revision_continuity_check": ["revision-continuity"],
             "revision_impact_analysis": ["revision-impact"], "apply_revision": ["apply-revision"],
             "restore_canon_version": ["restore-canon"], "rebuild_chapter_summary": ["rebuild-summary"],
-            "reindex_chapter_memory": ["reindex-chapter"], "sync_revised_chapter_to_obsidian": ["sync-revised-chapter"], "extract_narrative_events":["extract-events"], "rebuild_narrative_memory":["rebuild-narrative"], "recheck_memory_conflicts":["recheck-conflicts"], "generate_context_preview":["context-preview"],
+            "reindex_chapter_memory": ["reindex-chapter"], "sync_revised_chapter_to_obsidian": ["sync-revised-chapter"], "extract_narrative_events":["extract-events"], "rebuild_narrative_memory":["rebuild-narrative"], "recheck_memory_conflicts":["recheck-conflicts"], "generate_context_preview":["context-preview"], "agent_workflow":["agent-workflow"], "chapter_reflection":["chapter-reflection"], "full_creative_review":["full-creative-review"], "generate_creative_proposal":["creative-proposal"], "generate_experiment_variants":["experiment-variants"], "evaluate_experiment":["evaluate-experiment"], "detect_creative_patterns":["detect-creative-patterns"], "evaluate_strategy_outcome":["evaluate-strategy-outcome"], "generate_quality_report":["generate-quality-report"], "initialize_vector_index":["initialize-vector-index"], "incremental_vector_index":["incremental-vector-index"], "rebuild_vector_index":["rebuild-vector-index"],
         }[job_type]
         return [make_step(name, STEP_LABELS[name]) for name in names]
 
@@ -417,3 +498,12 @@ def reset_job_manager_for_tests() -> None:
         if _manager is not None:
             _manager.shutdown()
         _manager = None
+
+
+def _job_model_task_type(job_type: str) -> str | None:
+    return {
+        "run_chapter": "write_draft", "quality_check": "quality_review",
+        "revision_quality_check": "quality_review", "revision_continuity_check": "continuity_review",
+        "revision_impact_analysis": "revision_impact_analysis", "rebuild_chapter_summary": "chapter_summary",
+        "extract_narrative_events": "narrative_event_extraction", "generate_context_preview": "context_compression",
+    }.get(job_type)

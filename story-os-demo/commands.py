@@ -641,6 +641,12 @@ def commit_chapter_command() -> dict[str, Any]:
     save_json(result["summary_path"], result["summary"])
     save_json(str(_paths()["state"]), state)
     warnings = list(result.get("warnings", [])) + source_warnings
+    reflection_job = None
+    try:
+        from system.job_manager import get_job_manager
+        reflection_job = get_job_manager().create_job("chapter_reflection", {"chapter_id": chapter_id, "created_by": "system"}, context=get_project_context())
+    except Exception as exc:
+        warnings.append(f"创作复盘待重试：{str(exc)[:160]}")
     return _success(
         "commit-chapter",
         "当前章已提交。",
@@ -651,6 +657,7 @@ def commit_chapter_command() -> dict[str, Any]:
             "source_used": result.get("source_used"),
             "source_version": result.get("source_version"),
             "source_path": result.get("source_path"),
+            "creative_reflection_job_id": reflection_job.get("job_id") if reflection_job else None,
         },
         warnings=warnings,
     )
@@ -692,6 +699,59 @@ def index_vault_command() -> dict[str, Any]:
         outputs=result.get("outputs", {}),
         warnings=result.get("warnings", []),
     )
+
+
+def repair_current_quality_report_command(chapter_id: int | None = None, force: bool = False) -> dict[str, Any]:
+    """Queue a Lite report for the active canon only; never for a selected draft."""
+    from system.job_manager import get_job_manager
+    from system.memory_repair_service import MemoryRepairService
+    from system.revision_service import RevisionService
+
+    context = get_project_context()
+    service = MemoryRepairService(context)
+    status = service.quality_status(chapter_id)
+    candidates = [item for item in status.get("items", []) if item.get("status") in {"missing", "stale", "failed", "generating"}]
+    if not candidates:
+        return _success("repair-quality-report", "\u5f53\u524d\u6b63\u53f2\u5df2\u6709\u6709\u6548\u8d28\u91cf\u62a5\u544a\uff0c\u65e0\u9700\u91cd\u590d\u751f\u6210\u3002", outputs={"status": status})
+    selected_items = candidates if chapter_id is None else candidates[:1]
+    jobs: list[dict[str, Any]] = []
+    for selected in selected_items:
+        if selected.get("status") == "generating":
+            continue
+        canon = RevisionService(context).active_canon(int(selected["chapter_id"]))
+        jobs.append(get_job_manager().create_job(
+            "generate_quality_report",
+            {
+                "chapter_id": int(selected["chapter_id"]),
+                "canon_version_id": canon["canon_version_id"],
+                "content_hash": canon["content_hash"],
+                "analysis_profile": "lite",
+                "force": bool(force),
+                "created_by": "user",
+            },
+            context=context,
+        ))
+    if not jobs:
+        return _success("repair-quality-report", "\u5f53\u524d\u6b63\u53f2\u8d28\u91cf\u62a5\u544a\u6b63\u5728\u751f\u6210\u3002", outputs={"status": status})
+    return _success("repair-quality-report", "\u5df2\u521b\u5efa\u5f53\u524d\u6b63\u53f2\u8d28\u91cf\u62a5\u544a\u4efb\u52a1\u3002", outputs={"job": jobs[0], "jobs": jobs, "status": status, "chapter_ids": [int(item["chapter_id"]) for item in selected_items]})
+
+
+def initialize_vector_index_command(rebuild: bool = False) -> dict[str, Any]:
+    """Queue a project-local vector-index repair with no remote dependency."""
+    from system.job_manager import get_job_manager
+    from system.memory_repair_service import MemoryRepairService
+
+    context = get_project_context()
+    status = MemoryRepairService(context).vector_status()
+    if status.get("status") in {"ready", "empty"} and not rebuild:
+        return _success("initialize-vector-index", "\u672c\u5730\u5411\u91cf\u7d22\u5f15\u5df2\u53ef\u7528\uff0c\u65e0\u9700\u91cd\u590d\u521d\u59cb\u5316\u3002", outputs={"status": status})
+    job_type = "rebuild_vector_index" if rebuild else ("incremental_vector_index" if status.get("status") == "stale" else "initialize_vector_index")
+    job = get_job_manager().create_job(
+        job_type,
+        {"created_by": "user", "source_snapshot": status.get("source_snapshot", {}), "mode": "rebuild" if rebuild else "initialize"},
+        context=context,
+    )
+    return _success("initialize-vector-index", "\u5df2\u521b\u5efa\u672c\u5730\u5411\u91cf\u7d22\u5f15\u4efb\u52a1\u3002", outputs={"job": job, "status": status})
 
 
 

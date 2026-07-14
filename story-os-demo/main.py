@@ -53,6 +53,7 @@ from system.obsidian_sync import (
     sync_to_obsidian,
 )
 from system.status_dashboard import build_status_dashboard, render_status_text, save_status_report
+from system.health_checker import HealthChecker
 from system.story_qa import (
     answer_from_memory,
     answer_from_state,
@@ -86,8 +87,17 @@ def main() -> None:
     if command == "memory-health":
         run_memory_health_command(sys.argv[2:])
         return
+    if command == "repair-quality-report":
+        run_repair_quality_report_command(sys.argv[2:])
+        return
+    if command in {"init-vector-index", "rebuild-vector-index"}:
+        run_initialize_vector_index_command(sys.argv[2:], rebuild=command == "rebuild-vector-index")
+        return
     if command == "self-check":
         run_self_check_command(sys.argv[2:])
+        return
+    if command == "system-health":
+        print(__import__("json").dumps(HealthChecker().check(), ensure_ascii=False, indent=2))
         return
     if command == "web":
         run_web_server()
@@ -171,6 +181,9 @@ def main() -> None:
     for item in [
         "status",
         "memory-health",
+        "repair-quality-report",
+        "init-vector-index",
+        "rebuild-vector-index",
         "self-check",
         "web",
         "todo",
@@ -214,9 +227,53 @@ def run_self_check_command(args: list[str]) -> None:
 
 def run_memory_health_command(args: list[str]) -> None:
     if "--fix" in args:
-        print("--fix will be implemented in v2.4-B.")
+        quality = command_api.repair_current_quality_report_command(force="--force" in args)
+        vector = command_api.initialize_vector_index_command(rebuild="--rebuild-vector-index" in args)
+        _print_command_result(quality)
+        _print_command_result(vector)
+        _wait_for_repair_jobs(quality, vector)
         return
     command_api.memory_health_command(json_output="--json" in args, full="--full" in args)
+
+
+def run_repair_quality_report_command(args: list[str]) -> None:
+    chapter = _optional_int_arg("--chapter")
+    result = command_api.repair_current_quality_report_command(chapter_id=chapter, force="--force" in args)
+    _print_command_result(result)
+    _wait_for_repair_jobs(result)
+
+
+def run_initialize_vector_index_command(args: list[str], rebuild: bool = False) -> None:
+    result = command_api.initialize_vector_index_command(rebuild=rebuild or "--rebuild" in args)
+    _print_command_result(result)
+    _wait_for_repair_jobs(result)
+
+
+def _wait_for_repair_jobs(*results: dict[str, Any], timeout_seconds: float = 90.0) -> None:
+    """Keep CLI-created background repairs alive until their safe terminal state."""
+    import time
+    from system.job_manager import get_job_manager
+
+    job_ids: list[str] = []
+    for result in results:
+        outputs = result.get("outputs", {}) if isinstance(result, dict) else {}
+        rows = outputs.get("jobs", []) if isinstance(outputs.get("jobs"), list) else []
+        rows = rows or ([outputs.get("job")] if isinstance(outputs.get("job"), dict) else [])
+        job_ids.extend(str(row.get("job_id")) for row in rows if isinstance(row, dict) and row.get("job_id"))
+    if not job_ids:
+        return
+    manager = get_job_manager()
+    deadline = time.monotonic() + timeout_seconds
+    active = {"queued", "running", "cancel_requested"}
+    pending = set(job_ids)
+    while pending and time.monotonic() < deadline:
+        pending = {job_id for job_id in pending if manager.get_job(job_id).get("status") in active}
+        if pending:
+            time.sleep(0.1)
+    for job_id in job_ids:
+        job = manager.get_job(job_id)
+        print(f"- job {job_id}: {job.get('status')}")
+    manager.shutdown()
 
 
 
@@ -242,6 +299,10 @@ def run_web_server() -> None:
     if changed:
         save_local_config(local_config)
 
+    health = HealthChecker().check()
+    print(f"Startup Check: {health.get('status', 'unknown')}")
+    if health.get("status") == "unhealthy":
+        print("Startup check found recoverable local issues. Open System Diagnostics after startup.")
     host = str(web_config.get("host") or defaults["host"])
     port = int(web_config.get("port") or defaults["port"])
     url = f"http://{host}:{port}"

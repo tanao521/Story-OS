@@ -314,7 +314,14 @@ class RevisionService:
                 revision.setdefault("warnings", []).append(f"Narrative memory rebuild required: {str(exc)[:160]}")
             revision.update({"status": "completed", "completed_at": _now(), "updated_at": _now()}); self._save_revision(revision)
             self._audit("revision_applied", "revision", revision_id, chapter, "success", f"Activated {version_id}; prior canon retained.")
-            return {"chapter_id": chapter, "canon_version": new, "revision": revision, "warnings": ["Summary, vector memory, and planning-derived artifacts are marked stale and need rebuilding."]}
+            warnings = ["Summary, vector memory, and planning-derived artifacts are marked stale and need rebuilding."]
+            reflection_job = None
+            try:
+                from system.job_manager import get_job_manager
+                reflection_job = get_job_manager().create_job("chapter_reflection", {"chapter_id": chapter, "created_by": "system"}, context=self.context)
+            except Exception as exc:
+                warnings.append(f"Creative reflection can be retried manually: {str(exc)[:160]}")
+            return {"chapter_id": chapter, "canon_version": new, "revision": revision, "creative_reflection_job": reflection_job, "warnings": warnings}
         finally: lock.release()
 
     def restore_canon(self, chapter_id: int, version_id: str, *, confirmed_risks: bool = False) -> dict[str, Any]:

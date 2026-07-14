@@ -575,6 +575,60 @@ Web 控制台支持基于 draft / edited / manual 版本进行人工改稿，并
 
 ## Project context files
 
+## Phase 11: Commercial writing analytics
+
+The local-only analytics centre adds a project-scoped `data/story_analytics/`
+profile, explainable genre and audience signals, chapter scorecards, simulated
+retention risks, emotion/satisfaction markers, and a Story Market Report.
+It never crawls platforms, reads account data, predicts revenue, or promises a
+hit. Every API response includes a source label: `rule_based`,
+`ai_simulation`, or `manual_input`.
+
+Web APIs:
+
+```text
+GET  /api/analytics/project
+PUT  /api/analytics/project
+POST /api/analytics/market
+POST /api/analytics/audience
+GET  /api/analytics/chapter/{id}
+GET  /api/analytics/retention
+GET  /api/analytics/emotion
+GET  /api/analytics/satisfaction
+GET  /api/analytics/report
+```
+
+The Phase 10 team also includes Market Analyst, Audience Analyst, Story
+Strategist, and Retention Analyst in the author-gated `commercial_review_v1`
+workflow. Their notes remain advisory and never write, approve, or commit a
+chapter.
+
+## Phase 12: Author knowledge assets
+
+Author-owned knowledge is stored once at the Story OS workspace level in
+`data/author_profile/` and `data/creative_assets/`. It is intentionally
+separate from any novel project: only manually saved preferences, experiences,
+templates and idea fragments are reusable across projects. Chapters, drafts,
+project state and private project memory are never copied into this store.
+
+The Author Center supports profile and preference management, rule-based style
+signals, success/failure lessons, reusable creative assets, an idea inbox, and
+non-binding Author Copilot reminders. The Context Builder exposes this content
+as `author_global` before project rules and reports conflicts as choices rather
+than overwriting the author.
+
+```text
+GET /api/author/profile
+PUT /api/author/profile
+PUT /api/author/preferences
+GET /api/author/assets
+POST /api/author/assets
+GET /api/author/experience
+POST /api/author/failures
+POST /api/author/style/analyze
+GET /api/author/copilot
+```
+
 This project uses two local context files for Codex:
 
 - `AGENTS.md`: long-term project rules and safety constraints

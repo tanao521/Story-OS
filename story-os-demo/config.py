@@ -41,6 +41,13 @@ WRITE_MODEL_BASE_URL = _env_value("WRITE_MODEL_BASE_URL", "MODEL_BASE_URL", "OPE
 WRITE_MODEL_NAME = _env_value("WRITE_MODEL_NAME", "MODEL_NAME", "OPENAI_MODEL", "DEEPSEEK_MODEL", default="gpt-4o")
 WRITE_MODEL_TIMEOUT_SECONDS = int(os.getenv("WRITE_MODEL_TIMEOUT_SECONDS", os.getenv("MODEL_TIMEOUT_SECONDS", os.getenv("LLM_TIMEOUT_SECONDS", "180"))) or "180")
 
+# Creative-team advisory model. Qwen uses the OpenAI-compatible DashScope API;
+# deployments in another region can override the endpoint without code changes.
+QWEN_API_KEY = os.getenv("QWEN_API_KEY", "")
+QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen-plus")
+QWEN_BASE_URL = os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+QWEN_TIMEOUT_SECONDS = int(os.getenv("QWEN_TIMEOUT_SECONDS", "180") or "180")
+
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "api")
 
 OLLAMA_CLOUD_BASE_URL = os.getenv("OLLAMA_CLOUD_BASE_URL", "https://ollama.com/api")

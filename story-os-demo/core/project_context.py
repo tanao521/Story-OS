@@ -52,6 +52,23 @@ class ProjectContext:
     narrative_events_dir: Path
     narrative_state_dir: Path
     narrative_snapshots_dir: Path
+    model_runs_dir: Path
+    model_preferences_path: Path
+    model_cost_limits_path: Path
+    agents_dir: Path
+    agent_runs_dir: Path
+    agent_workflows_dir: Path
+    creative_loop_dir: Path
+    reflections_dir: Path
+    creative_health_dir: Path
+    creative_issues_dir: Path
+    creative_proposals_dir: Path
+    creative_experiments_dir: Path
+    creative_patterns_dir: Path
+    creative_evolution_dir: Path
+    creative_outcomes_dir: Path
+    creative_events_dir: Path
+    creative_audit_dir: Path
 
     def relative_path(self, path: Path) -> str:
         """Return a safe project-relative display path."""
@@ -82,6 +99,16 @@ def get_project_context(project_root: str | Path | None = None) -> ProjectContex
         pipeline_runs_dir=data / "pipeline_runs", jobs_dir=data / "jobs", archive_dir=data / "archive",
         logs_dir=root / "logs", config_dir=root / ".story_os", legacy_chapters_dir=root / "chapters",
         narrative_memory_dir=data / "narrative_memory", narrative_events_dir=data / "narrative_memory" / "events", narrative_state_dir=data / "narrative_memory" / "state", narrative_snapshots_dir=data / "narrative_memory" / "snapshots",
+        model_runs_dir=data / "model_runs", model_preferences_path=data / "model_preferences.json",
+        model_cost_limits_path=data / "model_cost_limits.json",
+        agents_dir=data / "agents", agent_runs_dir=data / "agents" / "runs",
+        agent_workflows_dir=data / "agents" / "workflows",
+        creative_loop_dir=data / "creative_loop", reflections_dir=data / "creative_loop" / "reflections",
+        creative_health_dir=data / "creative_loop" / "health", creative_issues_dir=data / "creative_loop" / "issues",
+        creative_proposals_dir=data / "creative_loop" / "proposals", creative_experiments_dir=data / "creative_loop" / "experiments",
+        creative_patterns_dir=data / "creative_loop" / "patterns", creative_evolution_dir=data / "creative_loop" / "evolution",
+        creative_outcomes_dir=data / "creative_loop" / "outcomes", creative_events_dir=data / "creative_loop" / "events",
+        creative_audit_dir=data / "creative_loop" / "audit",
     )
 
 

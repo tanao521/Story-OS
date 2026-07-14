@@ -8,7 +8,7 @@ ACTIVE_JOB_STATUSES = {"queued", "running", "cancel_requested"}
 TERMINAL_JOB_STATUSES = {
     "completed", "completed_with_warnings", "failed", "cancelled", "interrupted", "waiting_for_review"
 }
-RETRYABLE_JOB_STATUSES = {"failed", "cancelled", "interrupted", "completed_with_warnings"}
+RETRYABLE_JOB_STATUSES = {"failed", "cancelled", "interrupted", "completed_with_warnings", "recoverable_failed"}
 
 
 def now_iso() -> str:
@@ -37,7 +37,8 @@ def make_job(*, project_id: str, project_root: str, job_type: str,
         "updated_at": timestamp, "progress": {"current": 0, "total": 0, "percent": 0},
         "current_step": "", "steps": [], "message": "Task created.", "warnings": [],
         "errors": [], "result": {}, "cancel_requested": False, "retry_of": retry_of,
-        "attempt": attempt, "logs": [],
+        "attempt": attempt, "logs": [], "heartbeat_at": timestamp, "worker_id": "",
+        "progress_message": "Task created.",
     }
 
 

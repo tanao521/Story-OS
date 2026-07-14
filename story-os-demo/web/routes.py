@@ -12,6 +12,7 @@ from fastapi.templating import Jinja2Templates
 import commands
 from core.setup_wizard import create_story_project
 from core.project_context import get_project_context
+from core.errors import StoryOSError, public_error
 from system.narrative_memory_service import EventNotFound, NarrativeMemoryService, NarrativeMemoryError
 from system.project_manager import get_project_manager, ProjectManagerError
 from system.job_manager import get_job_manager, JobError, JobNotFoundError, JobStateError
@@ -36,6 +37,18 @@ from system.story_qa import answer_from_memory, answer_from_state, answer_from_s
 from system.text_diff import build_text_diff
 from system.todo_manager import create_todo, list_todos, update_todo_status
 from system.version_manager import VersionArchiveError, archive_version, list_versions, read_version_payload
+from llm.model_gateway import ModelGateway, get_model_gateway
+from llm.model_models import ModelGatewayError
+from llm.prompt_registry import PromptRegistry
+from system.backup_service import BackupService
+from system.diagnostics_service import DiagnosticsService
+from system.health_checker import HealthChecker
+from system.app_logging import recent_logs
+from agents.registry import AgentRegistry
+from agents.workflow import WorkflowEngine
+from agents.executor import AgentExecutor
+from agents.memory_scope import scoped_context
+from system.context_builder import build_working_context
 from web.schemas import AskRequest, ManualSaveRequest, ProjectCreateRequest, ReviewApproveRequest, TodoCreateRequest, VersionArchiveRequest, VersionSelectRequest
 from web.view_models import api_error, api_ok
 
@@ -70,6 +83,8 @@ def api_response(
     }
     if extra:
         payload.update(extra)
+    if not ok:
+        payload["error"] = {"code": (errors or ["SYS_ERROR"])[0], "message": message or "The operation failed.", "details": {}, "recoverable": True, "suggestions": []}
     return payload
 
 
@@ -228,6 +243,43 @@ def api_memory_health(full: bool = False) -> JSONResponse:
         return api_ok(result=report)
 
     return guarded(action)
+
+
+@router.get("/api/quality-reports/status")
+def api_quality_reports_status(chapter_id: int | None = None) -> JSONResponse:
+    from system.memory_repair_service import MemoryRepairService
+    return guarded(lambda: api_ok(result=MemoryRepairService(get_project_context()).quality_status(chapter_id)))
+
+
+@router.post("/api/quality-reports/repair")
+async def api_repair_quality_reports(request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    payload = payload if isinstance(payload, dict) else {}
+    chapter = payload.get("chapter_id")
+    try:
+        chapter = int(chapter) if chapter is not None else None
+    except (TypeError, ValueError):
+        return JSONResponse(api_error("\u7ae0\u8282\u7f16\u53f7\u65e0\u6548\u3002", ["INVALID_CHAPTER_ID"]), status_code=422)
+    return guarded(lambda: command_response(commands.repair_current_quality_report_command(chapter_id=chapter, force=bool(payload.get("force", False)))))
+
+
+@router.get("/api/vector-index/status")
+def api_vector_index_status() -> JSONResponse:
+    from system.memory_repair_service import MemoryRepairService
+    return guarded(lambda: api_ok(result=MemoryRepairService(get_project_context()).vector_status()))
+
+
+@router.post("/api/vector-index/initialize")
+async def api_initialize_vector_index(request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    payload = payload if isinstance(payload, dict) else {}
+    return guarded(lambda: command_response(commands.initialize_vector_index_command(rebuild=bool(payload.get("rebuild", False)))))
 
 
 
@@ -923,8 +975,63 @@ async def nm_override(kind:str,request:Request):
 
 # Reconstructed phase 2-6 API bridge.  Services remain the sole business authority.
 def _ok(result=None,message=""): return JSONResponse({"ok":True,"message":message,"result":result or {},"warnings":[],"errors":[]})
-def _fail(message,code,status=400): return JSONResponse({"ok":False,"message":message,"result":{},"warnings":[],"errors":[code]},status_code=status)
+def _fail(message,code,status=400):
+ return JSONResponse({"ok":False,"message":message,"result":{},"warnings":[],"errors":[code],"error":{"code":code,"message":message,"details":{},"recoverable":status < 500,"suggestions":[]}},status_code=status)
 def _ctx(): return get_project_context()
+
+def _agent_context(chapter_id: int | None = None, draft_text: str = "") -> dict[str, Any]:
+ """The web layer, not an agent, builds the approved context snapshot."""
+ context=_ctx(); store=DataStore(context)
+ state=store.read_json('data/state.json',default={},expected_type=dict) or {}
+ memory=store.read_json('data/memory/memory_index.json',default={},expected_type=dict) or {}
+ story=store.read_json('data/story_spec.json',default={},expected_type=dict) or {}
+ characters=store.read_json('data/characters.json',default={},expected_type=dict) or {}
+ world=store.read_json('data/world_bible.json',default={},expected_type=dict) or {}
+ snapshot=build_working_context(state,memory,'',story,characters,world)
+ snapshot.update({'characters':characters,'chapter_plan':store.read_json('data/next_chapter_plan.json',default={},expected_type=dict) or {},'context_ref':f"context:{chapter_id or snapshot.get('next_chapter_id',1)}"})
+ if draft_text: snapshot['draft_text']=draft_text
+ return snapshot
+
+
+@router.get('/api/system/health')
+def p_system_health(): return _ok(HealthChecker(_ctx()).check())
+@router.get('/api/system/diagnostics')
+def p_system_diagnostics(): return _ok(DiagnosticsService(_ctx()).snapshot())
+@router.post('/api/system/check')
+def p_system_check(): return _ok(HealthChecker(_ctx()).check(),'System check completed.')
+@router.get('/api/system/logs')
+def p_system_logs(level:str|None=None,limit:int=100): return _ok({'entries':recent_logs(_ctx(),level=level,limit=limit)})
+@router.get('/api/system/errors')
+def p_system_errors(limit:int=100): return _ok({'entries':recent_logs(_ctx(),level='ERROR',limit=limit)})
+@router.post('/api/system/export-report')
+def p_system_export_report(): return _ok(DiagnosticsService(_ctx()).export(),'Diagnostic report exported.')
+
+
+def _project_context_for_id(project_id:str):
+ project=get_project_manager().get_project(project_id)
+ root=Path.cwd() if project.get('project_root')=='.' else Path.cwd()/str(project.get('project_root',''))
+ return get_project_context(root)
+@router.get('/api/projects/{project_id}/health')
+def p_project_health(project_id:str):
+ try:return _ok(HealthChecker(_project_context_for_id(project_id)).check())
+ except ProjectManagerError as exc:return _fail('Project not found.','PROJECT_NOT_FOUND',404)
+@router.post('/api/projects/{project_id}/backup')
+def p_project_backup(project_id:str):
+ try:return _ok({'backup':BackupService(_project_context_for_id(project_id)).create('manual')},'Project backup created.')
+ except ProjectManagerError:return _fail('Project not found.','PROJECT_NOT_FOUND',404)
+ except StoryOSError as exc:return _fail(str(exc),exc.code,409)
+@router.get('/api/projects/{project_id}/backups')
+def p_project_backups(project_id:str):
+ try:return _ok({'backups':BackupService(_project_context_for_id(project_id)).list()})
+ except ProjectManagerError:return _fail('Project not found.','PROJECT_NOT_FOUND',404)
+@router.post('/api/projects/{project_id}/restore')
+async def p_project_restore(project_id:str,request:Request):
+ try:
+  payload=await request.json(); backup_id=str(payload.get('backup_id','')); files=payload.get('files')
+  if not backup_id:return _fail('backup_id is required.','DATA_BACKUP_NOT_FOUND',422)
+  return _ok({'restore':BackupService(_project_context_for_id(project_id)).restore(backup_id,files=files if isinstance(files,list) else None)},'Project data restored.')
+ except ProjectManagerError:return _fail('Project not found.','PROJECT_NOT_FOUND',404)
+ except StoryOSError as exc:return _fail(str(exc),exc.code,409)
 async def _create_revision_check_job(revision_id:str,request:Request,job_type:str) -> JSONResponse:
  try:
   revision=RevisionService(_ctx()).get_revision(revision_id)
@@ -939,6 +1046,52 @@ async def _create_revision_check_job(revision_id:str,request:Request,job_type:st
 def p_projects():
  try:return _ok(get_project_manager().list_projects())
  except Exception as e:return _fail(str(e),'PROJECT_ERROR')
+@router.get('/api/agents')
+def p_agents(): return _ok({'agents':AgentRegistry(_ctx()).list()})
+@router.get('/api/agents/{agent_id}')
+def p_agent(agent_id:str):
+ try:return _ok({'agent':AgentRegistry(_ctx()).get(agent_id).public()})
+ except KeyError:return _fail('Agent not found.','AGENT_NOT_FOUND',404)
+@router.put('/api/agents/{agent_id}')
+async def p_agent_update(agent_id:str,request:Request):
+ try:
+  data=await request.json(); return _ok({'agent':AgentRegistry(_ctx()).update(agent_id,data if isinstance(data,dict) else {})},'Agent configuration saved.')
+ except KeyError:return _fail('Agent not found.','AGENT_NOT_FOUND',404)
+@router.get('/api/workflows')
+def p_workflows(): return _ok({'workflows':WorkflowEngine(_ctx()).definitions()})
+@router.post('/api/workflows/run')
+async def p_workflow_run(request:Request):
+ try:
+  data=await request.json(); data=data if isinstance(data,dict) else {}
+  chapter_id=data.get('chapter_id'); draft=str(data.get('draft_text',''))
+  snapshot=_agent_context(int(chapter_id) if chapter_id else None,draft); snapshot['allow_model_calls']=bool(data.get('allow_model_calls',False))
+  params={'workflow_id':str(data.get('workflow_id','chapter_creative_v1')),'context_snapshot':snapshot,'decisions':data.get('decisions') if isinstance(data.get('decisions'),dict) else {}}
+  if data.get('run_id'): params={'workflow_run_id':str(data['run_id']),'decisions':params['decisions'],'context_snapshot':params['context_snapshot']}
+  job=get_job_manager().create_job('agent_workflow',params,context=_ctx())
+  return _ok({'job':job},'Creative workflow task created.')
+ except KeyError as exc:return _fail('Workflow not found.',str(exc).strip("'"),404)
+ except JobError as exc:return _fail(str(exc),getattr(exc,'code','JOB_ERROR'),409)
+@router.get('/api/workflows/{workflow_id}/runs')
+def p_workflow_runs(workflow_id:str): return _ok({'runs':WorkflowEngine(_ctx()).runs(workflow_id)})
+@router.get('/api/creative/reviews')
+def p_creative_reviews(limit:int=30):
+ return _ok({'traces':[row for row in AgentExecutor(_ctx()).traces(limit=limit) if row.get('agent_id') in {'reader_simulator','editor','continuity_checker'}]})
+@router.post('/api/creative/debate')
+async def p_creative_debate(request:Request):
+ data=await request.json(); data=data if isinstance(data,dict) else {}
+ return _ok({'debate':WorkflowEngine(_ctx()).debate(_agent_context(data.get('chapter_id'),str(data.get('draft_text',''))))},'Creative debate prepared for author review.')
+@router.post('/api/reader/simulate')
+async def p_reader_simulate(request:Request):
+ data=await request.json(); data=data if isinstance(data,dict) else {}
+ snapshot=_agent_context(data.get('chapter_id'),str(data.get('draft_text',''))); snapshot['allow_model_calls']=True
+ trace=AgentExecutor(_ctx()).execute('reader_simulator',snapshot)
+ return _ok({'review':trace['result'],'trace_id':trace['trace_id']})
+@router.post('/api/character/simulate')
+async def p_character_simulate(request:Request):
+ data=await request.json(); data=data if isinstance(data,dict) else {}
+ snapshot=_agent_context(data.get('chapter_id'),str(data.get('draft_text',''))); snapshot['allow_model_calls']=True
+ trace=AgentExecutor(_ctx()).execute('character_simulator',snapshot)
+ return _ok({'simulation':trace['result'],'trace_id':trace['trace_id']})
 @router.get('/api/projects/active')
 def p_active(): return _ok({'project':get_project_manager().get_active_project()})
 @router.post('/api/projects/{project_id}/activate')
@@ -952,6 +1105,76 @@ async def p_job(request:Request):
  except JobError as e:return _fail(str(e),getattr(e,'code','JOB_ERROR'),409)
 @router.get('/api/jobs')
 def p_jobs(): return _ok({'jobs':get_job_manager().list_jobs(context=_ctx())})
+
+
+# Phase 8 model centre.  Routing, tracing and persistence remain in llm services.
+def _gateway() -> ModelGateway: return get_model_gateway(_ctx())
+def _model_error(exc: Exception, status: int = 409) -> JSONResponse:
+ return _fail(str(exc),getattr(exc,'code','MODEL_GATEWAY_ERROR'),status)
+@router.get('/api/models/providers')
+def p_model_providers():
+ try:
+  models=_gateway().registry.models(); providers={m.provider for m in models}
+  return _ok({'providers':[{'provider':p,'models':sum(1 for m in models if m.provider==p)} for p in sorted(providers)]})
+ except ModelGatewayError as e:return _model_error(e)
+@router.get('/api/models')
+def p_models():
+ try:return _ok({'models':[model.public() for model in _gateway().registry.models()]})
+ except ModelGatewayError as e:return _model_error(e)
+@router.get('/api/models/routes')
+def p_model_routes():
+ try:return _ok({'routes':{key:value.to_dict() for key,value in _gateway().registry.routes().items()}})
+ except ModelGatewayError as e:return _model_error(e)
+@router.put('/api/models/routes')
+async def p_model_routes_update(request:Request):
+ try:
+  data=await request.json(); routes=data.get('routes',data) if isinstance(data,dict) else None
+  return _ok({'routes':{key:value.to_dict() for key,value in _gateway().registry.update_routes(routes).items()}},'Model routes saved.')
+ except ModelGatewayError as e:return _model_error(e,422)
+@router.get('/api/models/health')
+def p_model_health():
+ try:return _ok({'health':_gateway().health()})
+ except ModelGatewayError as e:return _model_error(e)
+@router.post('/api/models/{model_key}/health-check')
+def p_model_health_check(model_key:str):
+ try:return _ok({'health':_gateway().health_check(model_key)})
+ except ModelGatewayError as e:return _model_error(e,404 if getattr(e,'code','')=='MODEL_NOT_FOUND' else 409)
+@router.get('/api/models/pricing')
+def p_model_pricing(): return _ok({'pricing':_gateway().registry.pricing()})
+@router.put('/api/models/pricing')
+async def p_model_pricing_update(request:Request):
+ try:return _ok({'pricing':_gateway().registry.update_pricing(await request.json())},'Model pricing saved.')
+ except ModelGatewayError as e:return _model_error(e,422)
+@router.get('/api/models/limits')
+def p_model_limits(): return _ok({'limits':_gateway().registry.limits()})
+@router.put('/api/models/limits')
+async def p_model_limits_update(request:Request):
+ try:return _ok({'limits':_gateway().registry.update_limits(await request.json())},'Project model limits saved.')
+ except ModelGatewayError as e:return _model_error(e,422)
+@router.get('/api/models/usage')
+def p_model_usage(): return _ok(_gateway().recorder.usage_summary())
+@router.get('/api/models/runs')
+def p_model_runs(task_type:str|None=None,model_key:str|None=None,status:str|None=None,limit:int=50):
+ return _ok({'runs':_gateway().recorder.list(task_type=task_type,model_key=model_key,status=status,limit=limit)})
+@router.get('/api/models/runs/{run_id}')
+def p_model_run(run_id:str):
+ run=_gateway().recorder.get(run_id)
+ return _ok({'run':run}) if run else _fail('Model run not found.','MODEL_RUN_NOT_FOUND',404)
+@router.post('/api/models/runs/{run_id}/retry')
+def p_model_run_retry(run_id:str):
+ run=_gateway().recorder.get(run_id)
+ if not run:return _fail('Model run not found.','MODEL_RUN_NOT_FOUND',404)
+ if run.get('status') not in {'failed','cancelled'}:return _fail('Only failed or cancelled model calls can be retried.','MODEL_RUN_NOT_RETRYABLE',409)
+ if run.get('job_id'):
+  try:return _ok({'job':get_job_manager().retry_job(str(run['job_id']),context=_ctx())},'Retry task created from the owning model run.')
+  except JobError as e:return _fail(str(e),getattr(e,'code','JOB_ERROR'),409)
+ return _fail('The original prompt is intentionally not persisted; retry the owning task.','PROMPT_NOT_PERSISTED',409)
+@router.get('/api/prompts')
+def p_prompts(): return _ok({'prompts':PromptRegistry().list()})
+@router.get('/api/prompts/{prompt_id}')
+def p_prompt(prompt_id:str):
+ prompt=PromptRegistry().get(prompt_id)
+ return _ok({'prompt':prompt}) if prompt else _fail('Prompt not found.','PROMPT_NOT_FOUND',404)
 @router.get('/api/jobs/active')
 def p_active_jobs(): return _ok({'jobs':get_job_manager().active_jobs(context=_ctx())})
 @router.get('/api/jobs/{job_id}')
