@@ -1,0 +1,11 @@
+.narrative-evaluation-center { display: grid; gap: 18px; scroll-margin-top: 84px; }
+.narrative-evaluation-center .panel-heading p { max-width: 660px; margin: 7px 0 0; color: var(--muted); line-height: 1.65; }
+.evaluation-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.evaluation-summary { display: grid; grid-template-columns: repeat(4, minmax(110px, 1fr)); gap: 10px; }
+.evaluation-stat, .evaluation-gate, .evaluation-health-card, .evaluation-history-item { border: 1px solid rgba(151,190,232,.18); border-radius: 11px; background: rgba(5,12,22,.42); padding: 12px; }
+.evaluation-stat span, .evaluation-health-card small { display: block; color: var(--muted); font-size: 12px; }
+.evaluation-stat strong { display: block; margin-top: 5px; font-size: 22px; }
+.evaluation-gate { grid-column: span 2; }
+.evaluation-gate.pass { border-color: rgba(101,218,157,.44); }.evaluation-gate.attention { border-color: rgba(255,189,114,.48); }.evaluation-gate.blocked,.evaluation-gate.invalid { border-color: rgba(255,108,130,.56); }
+.evaluation-table-wrap { overflow-x: auto; }.evaluation-table { width: 100%; border-collapse: collapse; font-size: 13px; }.evaluation-table th,.evaluation-table td { padding: 10px 8px; border-bottom: 1px solid rgba(151,190,232,.14); text-align: left; vertical-align: top; }.evaluation-table th { color: var(--muted); font-size: 11px; text-transform: uppercase; }.evaluation-table details summary { cursor: pointer; color: var(--cyan); }.evaluation-issues { margin: 4px 0 0; padding-left: 18px; }.evaluation-issues li { margin: 3px 0; }.evaluation-health-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }.evaluation-health-card strong { display: block; margin-top: 5px; }.evaluation-history-list { display: grid; gap: 8px; }.evaluation-history-item { display: flex; justify-content: space-between; gap: 12px; align-items: center; }.evaluation-history-item p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }.evaluation-tag { display:inline-flex; border-radius:999px; padding:4px 8px; font-size:12px; background:rgba(71,222,244,.1); color:#dffbff; }
+@media (max-width: 760px) { .evaluation-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }.evaluation-gate { grid-column: span 2; }.evaluation-health-grid { grid-template-columns: 1fr; } }

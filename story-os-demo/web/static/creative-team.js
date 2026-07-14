@@ -1,26 +1,156 @@
-(()=>{
-  const $=id=>document.getElementById(id),esc=v=>String(v??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
-  let activeRun=null;
-  const roleName={story_director:"&#25925;&#20107;&#23548;&#28436;",plot_architect:"&#21095;&#24773;&#26550;&#26500;&#24072;",character_psychologist:"&#35282;&#33394;&#24515;&#29702;&#39038;&#38382;",world_builder:"&#19990;&#30028;&#35266;&#39038;&#38382;",writer:"&#20889;&#20316;&#39038;&#38382;",editor:"&#32534;&#36753;&#39038;&#38382;",continuity_checker:"&#36830;&#32493;&#24615;&#26816;&#26597;&#21592;",reader_simulator:"&#35835;&#32773;&#27169;&#25311;&#22120;",character_simulator:"&#35282;&#33394;&#27169;&#25311;&#22120;",market_analyst:"&#24066;&#22330;&#20998;&#26512;&#24072;",audience_analyst:"&#35835;&#32773;&#20998;&#26512;&#24072;",story_strategist:"&#25925;&#20107;&#31574;&#30053;&#24072;",retention_analyst:"&#30041;&#23384;&#20998;&#26512;&#24072;",author_assistant:"&#20316;&#32773;&#21161;&#25163;"};
-  const roleNote={story_director:"&#26126;&#30830;&#26412;&#31456;&#21019;&#20316;&#31616;&#25253;&#65292;&#19981;&#30452;&#25509;&#29983;&#25104;&#27491;&#25991;&#12290;",plot_architect:"&#20026;&#20316;&#32773;&#30830;&#35748;&#32780;&#25286;&#35299;&#31456;&#33410;&#33410;&#25293;&#12290;",character_psychologist:"&#26816;&#26597;&#20154;&#29289;&#21160;&#26426;&#19982;&#21487;&#33021;&#21453;&#24212;&#12290;",world_builder:"&#20381;&#25454;&#26082;&#23450;&#19990;&#30028;&#35266;&#25552;&#20986;&#24314;&#35758;&#65292;&#19981;&#25913;&#20889;&#35774;&#23450;&#12290;",writer:"&#25552;&#20379;&#21487;&#23457;&#38405;&#30340;&#27491;&#25991;&#26041;&#21521;&#12290;",editor:"&#25552;&#20986;&#28165;&#26224;&#24230;&#19982;&#33410;&#22863;&#25913;&#36827;&#24314;&#35758;&#12290;",continuity_checker:"&#26631;&#35760;&#20107;&#23454;&#19982;&#22240;&#26524;&#20914;&#31361;&#12290;",reader_simulator:"&#32473;&#20986;&#22810;&#31867;&#35835;&#32773;&#30340;&#21453;&#39304;&#12290;",character_simulator:"&#36827;&#34892;&#21463;&#38480;&#30340;&#35282;&#33394;&#34892;&#20026;&#25512;&#28436;&#12290;",market_analyst:"&#20998;&#26512;&#39064;&#26448;&#20449;&#21495;&#12289;&#23450;&#20301;&#19982;&#21019;&#20316;&#39118;&#38505;&#12290;",audience_analyst:"&#27169;&#25311;&#35835;&#32773;&#39044;&#26399;&#65292;&#19981;&#20351;&#29992;&#30495;&#23454;&#29992;&#25143;&#25968;&#25454;&#12290;",story_strategist:"&#23558;&#20998;&#26512;&#36716;&#20026;&#30001;&#20316;&#32773;&#36873;&#25321;&#30340;&#25925;&#20107;&#31574;&#30053;&#12290;",retention_analyst:"&#26631;&#35760;&#24320;&#31687;&#19982;&#32467;&#23614;&#30340;&#27169;&#25311;&#27969;&#22833;&#39118;&#38505;&#12290;",author_assistant:"&#32467;&#21512;&#20316;&#32773;&#20559;&#22909;&#21644;&#36164;&#20135;&#25552;&#20379;&#32534;&#36753;&#24335;&#25552;&#37266;&#12290;"};
-  const stateName={pending:"&#31561;&#24453;&#25191;&#34892;",running:"&#25191;&#34892;&#20013;",completed:"&#24050;&#23436;&#25104;",waiting_for_human:"&#31561;&#24453;&#20316;&#32773;&#30830;&#35748;",failed:"&#25191;&#34892;&#22833;&#36133;"};
-  const stepName={direct:"&#24418;&#25104;&#21019;&#20316;&#31616;&#25253;",plan:"&#25552;&#20986;&#31456;&#33410;&#33410;&#25293;",character:"&#25512;&#28436;&#35282;&#33394;&#34892;&#20026;",write:"&#32473;&#20986;&#20889;&#20316;&#26041;&#21521;",edit:"&#32473;&#20986;&#32534;&#36753;&#24314;&#35758;",read:"&#35835;&#32773;&#21453;&#39304;",continuity:"&#36830;&#32493;&#24615;&#24314;&#35758;"};
-  const legacyProposalText={
-    "Advance the current chapter with a clear consequence.":"\u63a8\u52a8\u672c\u7ae0\u53d1\u5c55\uff0c\u5e76\u8ba9\u4e3b\u89d2\u9762\u5bf9\u6e05\u6670\u4e14\u4f1a\u6539\u53d8\u5c40\u9762\u7684\u540e\u679c\u3002",
-    "Advance the current chapter.":"\u63a8\u52a8\u672c\u7ae0\u53d1\u5c55\uff0c\u5e76\u8ba9\u4e3b\u89d2\u9762\u5bf9\u6e05\u6670\u4e14\u4f1a\u6539\u53d8\u5c40\u9762\u7684\u540e\u679c\u3002",
-    "Keep the chapter aligned with the active story promise.":"\u8ba9\u672c\u7ae0\u59cb\u7ec8\u5151\u73b0\u5f53\u524d\u6545\u4e8b\u5df2\u7ecf\u5efa\u7acb\u7684\u6838\u5fc3\u627f\u8bfa\u3002",
-    "Confirm the creative brief before drafting.":"\u8bf7\u786e\u8ba4\u8fd9\u4efd\u521b\u4f5c\u7b80\u62a5\uff0c\u518d\u8fdb\u5165\u540e\u7eed\u7684\u60c5\u8282\u8bbe\u8ba1\u3002"
+(() => {
+  const $ = id => document.getElementById(id);
+  const esc = value => String(value ?? "").replace(/[&<>"]/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[char]));
+  let activeRun = null;
+
+  const roleName = {story_director: "故事导演", plot_architect: "剧情架构师", character_psychologist: "角色心理顾问", world_builder: "世界观顾问", writer: "写作顾问", editor: "编辑顾问", continuity_checker: "连续性检查员", reader_simulator: "读者模拟器", character_simulator: "角色模拟器", market_analyst: "市场分析师", audience_analyst: "读者分析师", story_strategist: "故事策略师", retention_analyst: "留存分析师", author_assistant: "作者助手"};
+  const roleNote = {story_director: "明确本章创作简报，不直接生成正文。", plot_architect: "为作者确认而拆解章节节拍。", character_psychologist: "检查人物动机与可能反应。", world_builder: "依据既定世界观提出建议，不改写设定。", writer: "提供可审阅的正文方向。", editor: "提出清晰度与节奏改进建议。", continuity_checker: "标记事实与因果冲突。", reader_simulator: "给出多类读者的反馈。", character_simulator: "进行受限的角色行为推演。", market_analyst: "分析题材信号、定位与创作风险。", audience_analyst: "模拟读者预期，不使用真实用户数据。", story_strategist: "将分析转为由作者选择的故事策略。", retention_analyst: "标记开篇与结尾的模拟流失风险。", author_assistant: "结合作者偏好和资产提供编辑式提醒。"};
+  const stateName = {pending: "等待执行", running: "执行中", completed: "已完成", waiting_for_human: "等待作者确认", failed: "执行失败"};
+  const stepName = {direct: "形成创作简报", plan: "提出章节节拍", character: "推演角色行为", write: "给出写作方向", edit: "给出编辑建议", read: "读者反馈", continuity: "连续性建议"};
+  const legacyProposalText = {
+    "Advance the current chapter with a clear consequence.": "推动本章发展，并让主角面对清晰且会改变局面的后果。",
+    "Advance the current chapter.": "推动本章发展，并让主角面对清晰且会改变局面的后果。",
+    "Keep the chapter aligned with the active story promise.": "让本章始终兑现当前故事已经建立的核心承诺。",
+    "Confirm the creative brief before drafting.": "请确认这份创作简报，再进入后续的情节设计。"
   };
-  function localize(value){if(typeof value==="string")return legacyProposalText[value]||value;if(Array.isArray(value))return value.map(localize);if(value&&typeof value==="object")return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,localize(item)]));return value}
-  async function api(url,method="GET",body){const r=await fetch(url,{method,headers:body?{"Content-Type":"application/json"}:{},body:body?JSON.stringify(body):undefined}),d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error?.message||d.message||"Request failed");return d.result||{}}
-  function roster(agents){$("creative-team-roster").innerHTML=agents.map(a=>'<article class="agent-card"><i class="agent-status '+(a.enabled?"":"off")+'"></i><b>'+(roleName[a.id]||esc(a.name))+'</b><small>'+(roleNote[a.id]||esc(a.description))+'</small><button class="btn btn-link btn-compact" data-agent-toggle="'+esc(a.id)+'" data-enabled="'+a.enabled+'">'+(a.enabled?"&#26242;&#20572;":"&#21551;&#29992;")+'</button></article>').join("")||'<div class="empty-state">&#26242;&#26080;&#21487;&#29992;&#21019;&#20316;&#35282;&#33394;&#12290;</div>';document.querySelectorAll("[data-agent-toggle]").forEach(b=>b.addEventListener("click",async()=>{try{await api('/api/agents/'+b.dataset.agentToggle,"PUT",{enabled:b.dataset.enabled!=="true"});refresh()}catch(e){$("creative-team-feedback").textContent=e.message}}))}
-  function field(label,value){const localized=localize(value);if(localized===undefined||localized===null||localized==="")return "";const body=Array.isArray(localized)?'<ul>'+localized.map(x=>'<li>'+esc(typeof x==="string"?x:JSON.stringify(x))+'</li>').join("")+'</ul>':typeof localized==="object"?'<pre>'+esc(JSON.stringify(localized,null,2))+'</pre>':'<p>'+esc(localized)+'</p>';return '<div class="proposal-field"><span>'+label+'</span>'+body+'</div>'}
-  function proposal(step){const r=step&&step.result||{},fields=[];if(!step)return "";if(!Object.keys(r).length)return '<section class="meeting-proposal"><span class="eyebrow">&#26087;&#20250;&#35758;&#35760;&#24405;</span><h4>&#36825;&#26465;&#20250;&#35758;&#22312;&#26087;&#29256;&#36827;&#31243;&#20013;&#34987;&#26242;&#20572;&#65292;&#27809;&#26377;&#29983;&#25104;&#21487;&#38405;&#30340;&#26041;&#26696;&#12290;</h4><p class="proposal-impact">&#35831;&#37325;&#26032;&#29983;&#25104;&#19968;&#22330;&#20250;&#35758;&#65292;&#31995;&#32479;&#20250;&#20808;&#23637;&#31034;&#26041;&#26696;&#20877;&#35831;&#20320;&#30830;&#35748;&#12290;</p><button class="btn btn-secondary btn-compact" data-restart-meeting>&#37325;&#26032;&#29983;&#25104;&#21487;&#30830;&#35748;&#26041;&#26696;</button></section>';if(r.model_advisory)fields.push(field("&#21315;&#38382;&#29983;&#25104;&#30340;&#21019;&#20316;&#24314;&#35758;",r.model_advisory));if(r.creative_brief)fields.push(field("&#21019;&#20316;&#31616;&#25253;",r.creative_brief));if(r.decision)fields.push(field("&#25191;&#34892;&#21407;&#21017;",r.decision));if(r.goal)fields.push(field("&#26412;&#31456;&#30446;&#26631;",r.goal));if(r.beats)fields.push(field("&#24314;&#35758;&#33410;&#25293;",r.beats));if(r.human_checkpoint)fields.push(field("&#20316;&#32773;&#35201;&#30830;&#35748;&#30340;&#20107;",r.human_checkpoint));if(!fields.length)fields.push(field("&#24314;&#35758;&#20869;&#23481;",r));return '<section class="meeting-proposal"><span class="eyebrow">&#24453;&#20316;&#32773;&#30830;&#35748;</span><h4>&#35831;&#20808;&#38405;&#35835;&#36825;&#20221;&#26041;&#26696;&#65292;&#20877;&#20915;&#23450;&#26159;&#21542;&#35748;&#21487;</h4>'+fields.join("")+'<p class="proposal-impact">&#30830;&#35748;&#21518;&#65306;&#22242;&#38431;&#21482;&#20250;&#36827;&#20837;&#19979;&#19968;&#27493;&#24314;&#35758;&#65292;&#19981;&#20250;&#33258;&#21160;&#20889;&#20837;&#27491;&#25991;&#12289;&#25552;&#20132;&#31456;&#33410;&#25110;&#25913;&#20889;&#35774;&#23450;&#12290;</p><button class="btn btn-primary btn-compact" data-confirm-proposal>&#35748;&#21487;&#26041;&#26696;&#65292;&#36827;&#20837;&#19979;&#19968;&#27493;</button></section>'}
-  function meeting(run){if(!run){$("creative-meeting-record").innerHTML='<p class="empty-state">&#24320;&#22987;&#20250;&#35758;&#21518;&#65292;&#31995;&#32479;&#20250;&#20808;&#23637;&#31034;&#24453;&#30830;&#35748;&#30340;&#26041;&#26696;&#12290</p>';return}activeRun=run;const current=(run.steps||[]).find(s=>s.id===run.current_step),rows=(run.steps||[]).map(s=>'<div class="meeting-step '+esc(s.status)+'"><b>'+(stepName[s.id]||esc(s.label))+'</b><br><small>'+(stateName[s.status]||esc(s.status))+'</small></div>').join("");$("creative-meeting-record").innerHTML='<p class="meeting-title">&#21019;&#20316;&#20250;&#35758; · '+(stateName[run.status]||esc(run.status))+'</p>'+proposal(current)+'<div class="meeting-track">'+rows+'</div>';$("creative-team-run").innerHTML=run.status==="waiting_for_human"?"&#35748;&#21487;&#26041;&#26696;&#24182;&#32487;&#32493;":"&#24320;&#22987;&#21019;&#20316;&#20250;&#35758;";$("creative-meeting-record").querySelector("[data-confirm-proposal]")?.addEventListener("click",continueRun);$("creative-meeting-record").querySelector("[data-restart-meeting]")?.addEventListener("click",startFresh)}
-  async function refresh(){try{const[a,w]=await Promise.all([api("/api/agents"),api("/api/workflows/chapter_creative_v1/runs")]);roster(a.agents||[]);meeting((w.runs||[])[0]||null)}catch(e){$("creative-meeting-record").textContent=e.message}}
-  async function continueRun(){if(!activeRun)return;await api("/api/workflows/run","POST",{run_id:activeRun.run_id,decisions:{[activeRun.current_step]:true}});refresh()}
-  async function startFresh(){try{const result=await api("/api/workflows/run","POST",{workflow_id:"chapter_creative_v1",allow_model_calls:true});$("creative-meeting-record").innerHTML='<p class="empty-state">&#21315;&#38382;&#21019;&#20316;&#20250;&#35758;&#24050;&#25552;&#20132;&#65306;'+esc(result.job?.job_id||"")+'&#12290;&#27491;&#22312;&#29983;&#25104;&#21487;&#38405;&#26041;&#26696;&#8230;</p>';setTimeout(refresh,800);setTimeout(refresh,1800)}catch(e){$("creative-meeting-record").innerHTML='<p class="empty-state">&#26080;&#27861;&#29983;&#25104;&#26041;&#26696;&#65306;'+esc(e.message)+'</p>'}}
-  async function run(){if(activeRun&&activeRun.status==="waiting_for_human")return continueRun();await startFresh()}
-  async function action(path){try{$("creative-team-feedback").textContent=JSON.stringify(await api(path,"POST",path.includes("reader")?{draft_text:""}:{}),null,2)}catch(e){$("creative-team-feedback").textContent=e.message}}
-  document.addEventListener("DOMContentLoaded",()=>{$("creative-team-run")?.addEventListener("click",run);$("creative-team-debate")?.addEventListener("click",()=>action("/api/creative/debate"));$("creative-team-reader")?.addEventListener("click",()=>action("/api/reader/simulate"));$("creative-team-character")?.addEventListener("click",()=>action("/api/character/simulate"));window.addEventListener("storyos:project-changed",()=>{activeRun=null;refresh()});refresh()});
+
+  function localize(value) {
+    if (typeof value === "string") return legacyProposalText[value] || value;
+    if (Array.isArray(value)) return value.map(localize);
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, localize(item)]));
+    return value;
+  }
+
+  async function api(url, method = "GET", body) {
+    const response = await fetch(url, {method, headers: body ? {"Content-Type": "application/json"} : {}, body: body ? JSON.stringify(body) : undefined});
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) throw new Error(payload.error?.message || payload.message || "请求失败");
+    return payload.result || {};
+  }
+
+  function roster(agents) {
+    $("creative-team-roster").innerHTML = agents.map(agent => `<article class="agent-card"><i class="agent-status ${agent.enabled ? "" : "off"}"></i><b>${roleName[agent.id] || esc(agent.name)}</b><small>${roleNote[agent.id] || esc(agent.description)}</small><button class="btn btn-link btn-compact" data-agent-toggle="${esc(agent.id)}" data-enabled="${agent.enabled}">${agent.enabled ? "暂停" : "启用"}</button></article>`).join("") || '<div class="empty-state">暂无可用创作角色。</div>';
+    document.querySelectorAll("[data-agent-toggle]").forEach(button => button.addEventListener("click", async () => {
+      try {
+        await api(`/api/agents/${button.dataset.agentToggle}`, "PUT", {enabled: button.dataset.enabled !== "true"});
+        refresh();
+      } catch (error) {
+        $("creative-team-feedback").textContent = error.message;
+      }
+    }));
+  }
+
+  function field(label, value) {
+    const localized = localize(value);
+    if (localized === undefined || localized === null || localized === "") return "";
+    const body = Array.isArray(localized) ? `<ul>${localized.map(item => `<li>${esc(typeof item === "string" ? item : JSON.stringify(item))}</li>`).join("")}</ul>` : typeof localized === "object" ? `<pre>${esc(JSON.stringify(localized, null, 2))}</pre>` : `<p>${esc(localized)}</p>`;
+    return `<div class="proposal-field"><span>${label}</span>${body}</div>`;
+  }
+
+  function proposalFields(result) {
+    const fields = [];
+    if (result.model_advisory_error?.message) fields.push(field("模型状态", result.model_advisory_error.message));
+    if (result.model_advisory) fields.push(field("模型生成的创作建议", result.model_advisory));
+    if (result.creative_brief) fields.push(field("创作简报", result.creative_brief));
+    if (result.decision) fields.push(field("执行原则", result.decision));
+    if (result.goal) fields.push(field("本章目标", result.goal));
+    if (result.beats) fields.push(field("建议节拍", result.beats));
+    if (result.human_checkpoint) fields.push(field("作者要确认的事", result.human_checkpoint));
+    if (!fields.length) fields.push(field("建议内容", result));
+    return fields.join("");
+  }
+
+  function proposal(step) {
+    if (!step) return "";
+    const result = step.result || {};
+    if (!Object.keys(result).length) return '<section class="meeting-proposal"><span class="eyebrow">旧会议记录</span><h4>这场会议没有保存可审阅的方案。</h4><p class="proposal-impact">请重新生成一场会议；系统会先展示方案，再请你确认。</p><button class="btn btn-secondary btn-compact" data-restart-meeting>重新生成可确认方案</button></section>';
+    return `<section class="meeting-proposal"><span class="eyebrow">待作者确认</span><h4>请先阅读这份方案，再决定是否认可</h4>${proposalFields(result)}<p class="proposal-impact">确认后，团队只会进入下一步建议；不会自动写入正文、提交章节或改写设定。</p><button class="btn btn-primary btn-compact" data-confirm-proposal>认可方案，进入下一步</button></section>`;
+  }
+
+  function meetingResults(run) {
+    const completed = (run.steps || []).filter(step => step.status === "completed" && step.result && Object.keys(step.result).length);
+    if (!completed.length) return "";
+    return `<section class="meeting-results"><h4>本次会议已生成的建议</h4>${completed.map((step, index) => `<details class="meeting-result" ${index === completed.length - 1 ? "open" : ""}><summary>${stepName[step.id] || esc(step.label)}</summary>${proposalFields(step.result)}</details>`).join("")}</section>`;
+  }
+
+  function meeting(run) {
+    if (!run) {
+      $("creative-meeting-record").innerHTML = '<p class="empty-state">开始会议后，系统会先展示待确认的方案。</p>';
+      return;
+    }
+    activeRun = run;
+    const current = (run.steps || []).find(step => step.id === run.current_step);
+    const rows = (run.steps || []).map(step => `<div class="meeting-step ${esc(step.status)}"><b>${stepName[step.id] || esc(step.label)}</b><br><small>${stateName[step.status] || esc(step.status)}</small></div>`).join("");
+    $("creative-meeting-record").innerHTML = `<p class="meeting-title">创作会议 · ${stateName[run.status] || esc(run.status)}</p>${proposal(current)}${meetingResults(run)}<div class="meeting-track">${rows}</div>`;
+    $("creative-team-run").textContent = run.status === "waiting_for_human" ? "认可方案并继续" : "开始创作会议";
+    $("creative-meeting-record").querySelector("[data-confirm-proposal]")?.addEventListener("click", continueRun);
+    $("creative-meeting-record").querySelector("[data-restart-meeting]")?.addEventListener("click", startFresh);
+  }
+
+  async function refresh() {
+    try {
+      const [agents, workflows] = await Promise.all([api("/api/agents"), api("/api/workflows/chapter_creative_v1/runs")]);
+      roster(agents.agents || []);
+      meeting((workflows.runs || [])[0] || null);
+    } catch (error) {
+      $("creative-meeting-record").textContent = error.message;
+    }
+  }
+
+  async function continueRun() {
+    if (!activeRun) return;
+    try {
+      await api("/api/workflows/run", "POST", {run_id: activeRun.run_id, decisions: {[activeRun.current_step]: true}});
+      setTimeout(refresh, 350);
+    } catch (error) {
+      $("creative-team-feedback").textContent = error.message;
+    }
+  }
+
+  async function startFresh() {
+    try {
+      const result = await api("/api/workflows/run", "POST", {workflow_id: "chapter_creative_v1", allow_model_calls: true});
+      $("creative-meeting-record").innerHTML = `<p class="empty-state">创作会议已提交：${esc(result.job?.job_id || "")}。正在生成可审阅方案…</p>`;
+      setTimeout(refresh, 800);
+      setTimeout(refresh, 1800);
+    } catch (error) {
+      $("creative-meeting-record").innerHTML = `<p class="empty-state">无法生成方案：${esc(error.message)}</p>`;
+    }
+  }
+
+  async function run() {
+    if (activeRun && activeRun.status === "waiting_for_human") return continueRun();
+    await startFresh();
+  }
+
+  async function action(path, label, button) {
+    const feedback = $("creative-team-feedback");
+    const previous = button?.textContent;
+    if (button) button.disabled = true;
+    feedback.textContent = `${label}正在生成…`;
+    try {
+      const result = await api(path, "POST", path.includes("reader") ? {draft_text: ""} : {});
+      const content = result.review || result.simulation || result.debate || result;
+      feedback.textContent = `${label}\n\n${JSON.stringify(localize(content), null, 2)}`;
+    } catch (error) {
+      feedback.textContent = `${label}失败：${error.message}`;
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = previous;
+      }
+    }
+  }
+
+  document.addEventListener("DOMContentLoaded", () => {
+    $("creative-team-run")?.addEventListener("click", run);
+    $("creative-team-debate")?.addEventListener("click", event => action("/api/creative/debate", "提案比较", event.currentTarget));
+    $("creative-team-reader")?.addEventListener("click", event => action("/api/reader/simulate", "读者模拟", event.currentTarget));
+    $("creative-team-character")?.addEventListener("click", event => action("/api/character/simulate", "角色模拟", event.currentTarget));
+    window.addEventListener("storyos:project-changed", () => {
+      activeRun = null;
+      refresh();
+    });
+    refresh();
+  });
 })();

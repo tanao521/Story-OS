@@ -14,6 +14,7 @@ def test_creative_team_contract_is_present():
     for token in ("creative-team-panel", "creative-team-roster", "creative-meeting-record", "creative-team-reader", "creative-team-character"):
         assert token in markup
     assert "/api/workflows/run" in script and "/api/creative/debate" in script and "waiting_for_human" in script
+    assert "meetingResults" in script and "model_advisory_error" in script
 
 
 def test_checkpoint_shows_its_proposal_before_author_confirmation(tmp_path):

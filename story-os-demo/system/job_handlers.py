@@ -60,6 +60,9 @@ def _run_job_bound(job: dict[str, Any], context: ProjectContext, emit: Emit,
         return _run_command("quality-check", commands.quality_check_command, emit, cancellation_requested)
     if job_type == "memory_health":
         return _run_command("memory-health", commands.memory_health_command, emit, cancellation_requested)
+    if job_type == "quality_improvement":
+        from evaluation_engine.improvement_service import ImprovementService
+        return ImprovementService(context).run(str((job.get("parameters") or {})["improvement_id"]), job_id=str(job.get("job_id") or ""), emit=emit, cancelled=cancellation_requested, route_snapshots=dict((job.get("parameters") or {}).get("model_routing") or {}))
     if job_type == "generate_quality_report":
         from system.memory_repair_service import MemoryRepairService
         from system.revision_service import RevisionService

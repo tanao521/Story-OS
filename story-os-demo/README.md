@@ -1,5 +1,22 @@
 # Story OS Demo
 
+## 阶段 15.1：叙事评估中心
+
+叙事评估中心是既有专业检查器的统一只读入口。它聚合质量报告、剧情连贯性、角色状态、Reader Simulation 与规划健康；不会调用新的 LLM、修改正文、候选版本、计划或正史。
+
+- 统一报告只写入项目隔离目录 `data/evaluations/`，使用原子写入；`GET` 请求不会落盘。
+- `chapter-default-v1` 固定包含十个一级维度。缺少证据时维度分数为 `null`，不会被当作 0 分；总分只按有效维度重新归一化。
+- `gate_status`（`pass`、`attention`、`blocked`、`invalid`）与综合分数分离，阻塞性问题不能被高分掩盖。
+- 已生成报告记录正文、计划和既有报告的哈希；正文变化后会显示为 `stale`。同一 `operation_id` 会重放既有结果，不创建重复报告。
+
+API：
+
+- `GET /api/evaluations/overview`
+- `POST /api/evaluations`
+- `GET /api/evaluations?target_type=&chapter_number=&status=&limit=`
+- `GET /api/evaluations/{evaluation_id}`
+- `GET /api/evaluations/profiles`
+
 ## 阶段 14.2–14.3B：规划控制、滚动窗口、依赖图与叙事调度
 
 规划控制层是作者确认的独立数据层，不会替代或自动改写

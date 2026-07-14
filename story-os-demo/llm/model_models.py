@@ -11,7 +11,7 @@ MODEL_TASK_TYPES = {
     "generate_chapter_plan", "generate_next_chapter_plan", "write_draft", "edit_draft",
     "rewrite_revision", "quality_review", "continuity_review", "revision_impact_analysis",
     "chapter_summary", "narrative_event_extraction", "story_qa", "memory_qa",
-    "planning_analysis", "context_compression",
+    "planning_analysis", "context_compression", "chapter_quality_plan", "chapter_quality_revision",
     "creative_team_advice",
 }
 

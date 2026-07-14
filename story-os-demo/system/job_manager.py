@@ -12,7 +12,7 @@ from core.project_context import ProjectContext, bind_project_context, get_proje
 from system.data_store import DataStore
 from system.job_models import ACTIVE_JOB_STATUSES, RETRYABLE_JOB_STATUSES, make_job, make_step, now_iso, public_job
 
-SUPPORTED_JOB_TYPES = {"run_chapter", "index_vault", "sync_obsidian", "quality_check", "memory_health", "revision_quality_check", "revision_continuity_check", "revision_impact_analysis", "apply_revision", "restore_canon_version", "rebuild_chapter_summary", "reindex_chapter_memory", "sync_revised_chapter_to_obsidian", "extract_narrative_events", "rebuild_narrative_memory", "recheck_memory_conflicts", "generate_context_preview", "agent_workflow", "chapter_reflection", "full_creative_review", "generate_creative_proposal", "generate_experiment_variants", "evaluate_experiment", "detect_creative_patterns", "evaluate_strategy_outcome", "generate_quality_report", "initialize_vector_index", "incremental_vector_index", "rebuild_vector_index"}
+SUPPORTED_JOB_TYPES = {"run_chapter", "index_vault", "sync_obsidian", "quality_check", "memory_health", "revision_quality_check", "revision_continuity_check", "revision_impact_analysis", "apply_revision", "restore_canon_version", "rebuild_chapter_summary", "reindex_chapter_memory", "sync_revised_chapter_to_obsidian", "extract_narrative_events", "rebuild_narrative_memory", "recheck_memory_conflicts", "generate_context_preview", "agent_workflow", "chapter_reflection", "full_creative_review", "generate_creative_proposal", "generate_experiment_variants", "evaluate_experiment", "detect_creative_patterns", "evaluate_strategy_outcome", "generate_quality_report", "initialize_vector_index", "incremental_vector_index", "rebuild_vector_index", "quality_improvement"}
 STEP_LABELS = {
     "build-context": "Build writing context", "plan-next": "Plan next chapter",
     "write-draft": "Write draft", "prepare-review": "Prepare review",
@@ -29,6 +29,7 @@ STEP_LABELS = {
     "detect-creative-patterns": "Create creative pattern candidate", "evaluate-strategy-outcome": "Evaluate strategy outcome",
     "generate-quality-report": "\u751f\u6210\u5f53\u524d\u6b63\u53f2\u8d28\u91cf\u62a5\u544a", "initialize-vector-index": "\u521d\u59cb\u5316\u672c\u5730\u5411\u91cf\u7d22\u5f15",
     "incremental-vector-index": "\u66f4\u65b0\u672c\u5730\u5411\u91cf\u7d22\u5f15", "rebuild-vector-index": "\u91cd\u5efa\u672c\u5730\u5411\u91cf\u7d22\u5f15",
+    "improvement-plan": "Build restricted improvement plan", "improvement-candidate": "Generate local candidate", "improvement-evaluate": "Re-evaluate candidate", "improvement-compare": "Compare candidate",
 }
 
 
@@ -99,6 +100,13 @@ class JobManager:
         self.ensure_started()
         context = context or get_project_context()
         parameters = dict(parameters or {})
+        if job_type == "quality_improvement" and "model_routing" not in parameters:
+            from llm.model_gateway import get_model_gateway
+            gateway = get_model_gateway(context)
+            parameters["model_routing"] = {
+                "chapter_quality_plan": gateway.freeze_route("chapter_quality_plan"),
+                "chapter_quality_revision": gateway.freeze_route("chapter_quality_revision"),
+            }
         if job_type in {"generate_quality_report", "initialize_vector_index", "incremental_vector_index", "rebuild_vector_index"}:
             parameters.setdefault("created_by", "user")
             parameters.setdefault("source_version", str(parameters.get("canon_version_id") or ""))
@@ -134,7 +142,7 @@ class JobManager:
                 if existing:
                     return public_job(existing)
             chapter_id = parameters.get("chapter_id")
-            if job_type in {"run_chapter", "apply_revision", "restore_canon_version"} and chapter_id is not None:
+            if job_type in {"run_chapter", "apply_revision", "restore_canon_version", "quality_improvement"} and chapter_id is not None:
                 conflict = self._active_chapter_operation(context, int(chapter_id))
                 if conflict:
                     raise JobStateError(f"CHAPTER_OPERATION_CONFLICT:{conflict['job_id']}")
@@ -386,7 +394,7 @@ class JobManager:
         return None
 
     def _active_chapter_operation(self, context: ProjectContext, chapter_id: int) -> dict[str, Any] | None:
-        protected = {"run_chapter", "apply_revision", "restore_canon_version"}
+        protected = {"run_chapter", "apply_revision", "restore_canon_version", "quality_improvement"}
         return next((job for job in self._all_jobs(context) if job.get("job_type") in protected and int((job.get("parameters") or {}).get("chapter_id", -1)) == chapter_id and job.get("status") in ACTIVE_JOB_STATUSES), None)
 
     def _all_jobs(self, context: ProjectContext) -> list[dict[str, Any]]:
@@ -459,7 +467,7 @@ class JobManager:
             "revision_quality_check": ["revision-quality"], "revision_continuity_check": ["revision-continuity"],
             "revision_impact_analysis": ["revision-impact"], "apply_revision": ["apply-revision"],
             "restore_canon_version": ["restore-canon"], "rebuild_chapter_summary": ["rebuild-summary"],
-            "reindex_chapter_memory": ["reindex-chapter"], "sync_revised_chapter_to_obsidian": ["sync-revised-chapter"], "extract_narrative_events":["extract-events"], "rebuild_narrative_memory":["rebuild-narrative"], "recheck_memory_conflicts":["recheck-conflicts"], "generate_context_preview":["context-preview"], "agent_workflow":["agent-workflow"], "chapter_reflection":["chapter-reflection"], "full_creative_review":["full-creative-review"], "generate_creative_proposal":["creative-proposal"], "generate_experiment_variants":["experiment-variants"], "evaluate_experiment":["evaluate-experiment"], "detect_creative_patterns":["detect-creative-patterns"], "evaluate_strategy_outcome":["evaluate-strategy-outcome"], "generate_quality_report":["generate-quality-report"], "initialize_vector_index":["initialize-vector-index"], "incremental_vector_index":["incremental-vector-index"], "rebuild_vector_index":["rebuild-vector-index"],
+            "reindex_chapter_memory": ["reindex-chapter"], "sync_revised_chapter_to_obsidian": ["sync-revised-chapter"], "extract_narrative_events":["extract-events"], "rebuild_narrative_memory":["rebuild-narrative"], "recheck_memory_conflicts":["recheck-conflicts"], "generate_context_preview":["context-preview"], "agent_workflow":["agent-workflow"], "chapter_reflection":["chapter-reflection"], "full_creative_review":["full-creative-review"], "generate_creative_proposal":["creative-proposal"], "generate_experiment_variants":["experiment-variants"], "evaluate_experiment":["evaluate-experiment"], "detect_creative_patterns":["detect-creative-patterns"], "evaluate_strategy_outcome":["evaluate-strategy-outcome"], "generate_quality_report":["generate-quality-report"], "initialize_vector_index":["initialize-vector-index"], "incremental_vector_index":["incremental-vector-index"], "rebuild_vector_index":["rebuild-vector-index"], "quality_improvement":["improvement-plan", "improvement-candidate", "improvement-evaluate", "improvement-compare"],
         }[job_type]
         return [make_step(name, STEP_LABELS[name]) for name in names]
 

@@ -20,6 +20,7 @@ DEFAULT_TASK_ROUTE = {
     "revision_impact_analysis": "deepseek", "chapter_summary": "deepseek",
     "narrative_event_extraction": "deepseek", "story_qa": "deepseek",
     "memory_qa": "deepseek", "planning_analysis": "deepseek", "context_compression": "deepseek",
+    "chapter_quality_plan": "write_model", "chapter_quality_revision": "write_model",
     "creative_team_advice": "qwen",
 }
 
