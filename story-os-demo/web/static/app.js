@@ -574,6 +574,7 @@ function valueOf(id) { return (document.getElementById(id)?.value || "").trim();
 function listValueOf(id) { return valueOf(id).replace(/，/g, ",").split(/[\n,]/).map((item) => item.trim()).filter(Boolean); }
 function versionLabel(item) { if (!item) return "无"; return item.version_label || item.label || `${item.source_type || ""}_v${String(item.version || 0).padStart(3, "0")}`; }
 function formatScore(value) { if (value === null || value === undefined || value === "") return "未评估"; const numeric = Number(value); return Number.isFinite(numeric) ? numeric.toFixed(2) : String(value); }
+async function qualityCheckCurrentVersion() { const target = currentVersion; if (!target || !["draft", "edited", "manual", "committed"].includes(target.source_type)) return logMessage("请先查看一个正文版本，再进行质量评估。", "warning"); let result; await runWithBusy(async () => { result = await apiPost("/api/quality-check", { source_type: target.source_type, version: Number(target.version), assessment_only: true }); logApiResult("当前版本质量评估", result); }); if (result && result.ok !== false) await loadQualityReport(target.source_type, target.version); }
 function riskLevel(score) { if (score === null || score === undefined) return "unknown"; const value = Number(score); if (value >= 0.8) return "low"; if (value >= 0.65) return "medium"; return "high"; }
 function stageLabel(stage) { return stage || "unknown"; }
 function lastItem(items) { return items.length ? items[items.length - 1] : null; }

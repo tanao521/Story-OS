@@ -6,6 +6,7 @@ from typing import Any
 
 import commands
 import main
+import web.routes as routes
 from system.quality_checker import build_quality_report, save_quality_report
 from system.review_gate import find_current_review_target
 from system.version_manager import select_version
@@ -126,3 +127,37 @@ def test_quality_check_does_not_call_deepseek(monkeypatch: Any, tmp_path: Path) 
 
     assert result["status"] == "success"
     assert result["outputs"]["report"]["overall_score"] >= 0
+
+
+def test_quality_check_supports_committed_chapter(monkeypatch: Any, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    prepare_project(tmp_path)
+    committed = tmp_path / "data" / "chapters" / "chapter_001.md"
+    committed.parent.mkdir(parents=True, exist_ok=True)
+    committed.write_text("# Opening\n\nCommitted chapter text.", encoding="utf-8")
+
+    result = commands.quality_check_command(committed_chapter=1, allow_refinement=False)
+
+    report = result["outputs"]["report"]
+    assert result["status"] == "success"
+    assert report["source_type"] == "committed"
+    assert report["source_version"] == 1
+    assert Path(report["json_path"]).exists()
+
+
+def test_committed_quality_report_is_read_by_its_own_chapter_id(monkeypatch: Any, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    prepare_project(tmp_path)
+    committed = tmp_path / "data" / "chapters" / "chapter_001.md"
+    committed.parent.mkdir(parents=True, exist_ok=True)
+    committed.write_text("# Opening\n\nCommitted chapter text.", encoding="utf-8")
+    plan_path = tmp_path / "data" / "next_chapter_plan.json"
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    plan["chapter_id"] = 2
+    write_json(plan_path, plan)
+
+    result = commands.quality_check_command(committed_chapter=1, allow_refinement=False)
+    _, response, _ = routes.quality_report_response("committed", 1)
+
+    assert result["status"] == "success"
+    assert response["exists"] is True

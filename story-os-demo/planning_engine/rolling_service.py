@@ -68,6 +68,9 @@ class RollingWindowService:
         health = self.check_window_health()
         view = copy.deepcopy(window)
         view["effective_status"] = health["status"]
+        from .scheduling_service import NarrativeSchedulingService
+        scheduler = NarrativeSchedulingService(self.context)
+        view["schedule_summary"] = {slot["slot_id"]: scheduler.by_slot(slot["slot_id"]) for slot in self._all_slots(window)}
         return {"materialized": True, "window": view, "anchor_suggestion": anchor, "configuration_suggestion": window.get("configuration", {}), "near_range": self._range(anchor["next_chapter_number"], int(window.get("configuration", {}).get("near_horizon_size", 5))), "mid_range": self._range(anchor["next_chapter_number"] + int(window.get("configuration", {}).get("near_horizon_size", 5)), int(window.get("configuration", {}).get("mid_horizon_size", 10))), "blueprint_slot_suggestions": blueprint_slot_suggestions(self.context, anchor, sum(int(window.get("configuration", {}).get(key, default)) for key, default in (("near_horizon_size", 5), ("mid_horizon_size", 10)))), "far_horizon_suggestion": far_horizon_projection(self.context, data, anchor), "warnings": health["warnings"], "health": health}
 
     def initialize(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -199,6 +202,13 @@ class RollingWindowService:
         window["far_horizon"] = far_horizon; window["source_refs"] = self._window_source_refs(data, far_horizon); window["source_snapshot"] = self._source_snapshot(data); window["status"] = "active"
         self._ensure_window_capacity(window); self._refresh_slot_locks(window)
         saved = self._save(window, "rolling_window_rolled_forward", old, payload, preview["elapsed_slot_ids"])
+        try:
+            from .scheduling_service import NarrativeSchedulingService
+            elapsed = NarrativeSchedulingService(self.context).mark_elapsed_slots(preview["elapsed_slot_ids"])
+            if elapsed.get("changed"):
+                saved["schedule_elapsed"] = elapsed
+        except PlanningControlError as error:
+            saved.setdefault("warnings", []).append(f"SCHEDULE_ELAPSED_WARNING:{error.code}")
         return {"preview": preview, "applied": True, "window": saved}
 
     def reanchor(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -223,7 +233,15 @@ class RollingWindowService:
         for slot in self._all_slots(window):
             if int(slot["planned_chapter_number"]) < target: slot["status"] = "elapsed"
         window["anchor"] = {key: value for key, value in anchor.items() if key != "warnings"}; self._reclassify(window, target); window["far_horizon"] = far_horizon; window["source_refs"] = self._window_source_refs(data, far_horizon); window["source_snapshot"] = self._source_snapshot(data); window["status"] = "active"; self._ensure_window_capacity(window); self._refresh_slot_locks(window)
-        return {"preview": preview, "applied": True, "window": self._save(window, "rolling_window_reanchored", old, payload, preview["affected_slot_ids"])}
+        saved = self._save(window, "rolling_window_reanchored", old, payload, preview["affected_slot_ids"])
+        try:
+            from .scheduling_service import NarrativeSchedulingService
+            elapsed = NarrativeSchedulingService(self.context).mark_elapsed_slots(preview["affected_slot_ids"])
+            if elapsed.get("changed"):
+                saved["schedule_elapsed"] = elapsed
+        except PlanningControlError as error:
+            saved.setdefault("warnings", []).append(f"SCHEDULE_ELAPSED_WARNING:{error.code}")
+        return {"preview": preview, "applied": True, "window": saved}
 
     def refresh_sources(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         payload = payload or {}

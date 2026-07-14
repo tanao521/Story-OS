@@ -51,6 +51,23 @@ from system.version_manager import (
 )
 
 
+def _refresh_current_context_after_commit(paths: dict[str, Path], state: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
+    """Persist a fresh context without changing the commit workflow stage."""
+    memory_index = load_json(str(paths["memory_index"]))
+    story_spec = load_json(str(paths["story_spec"])) if paths["story_spec"].exists() else {}
+    characters = load_json(str(paths["characters"])) if paths["characters"].exists() else {}
+    world_bible = load_json(str(paths["world_bible"])) if paths["world_bible"].exists() else {}
+    context = build_working_context(state, memory_index, _build_context_query(state, paths), story_spec, characters, world_bible)
+    try:
+        planning = load_planning(get_project_context())
+        current = int(state.get("current_chapter", 0) or 0) + 1
+        chapter_plan = next((item for item in planning.get("chapters", []) if int(item.get("chapter_number", item.get("chapter_id", -1)) or -1) == current), None)
+        context["planning_context"] = {"chapter_plan": chapter_plan or {}, "active_threads": [item for item in planning.get("plot_threads", []) if item.get("status") == "active"], "open_foreshadowing": [item for item in planning.get("foreshadowing", []) if item.get("status") not in {"resolved", "abandoned"}]}
+    except Exception:
+        context["planning_context"] = {}
+    json_path, markdown_path = save_current_context(context)
+    return context, json_path, markdown_path
+
 def build_context_command() -> dict[str, Any]:
     paths = _paths()
     if not paths["state"].exists():
@@ -443,13 +460,15 @@ def quality_check_command(
     draft_version: int | None = None,
     edited_version: int | None = None,
     manual_version: int | None = None,
+    committed_chapter: int | None = None,
+    allow_refinement: bool = True,
 ) -> dict[str, Any]:
     paths = _paths()
     if not paths["next_chapter_plan"].exists():
         return _failed("quality-check", "缺少 data/next_chapter_plan.json，请先运行 python main.py plan-next。")
     chapter_plan = load_json(str(paths["next_chapter_plan"]))
     chapter_id = int(chapter_plan.get("chapter_id", 1) or 1)
-    source_infos = _resolve_quality_sources(chapter_id, all_versions, draft_version, edited_version, manual_version)
+    source_infos = _resolve_quality_sources(chapter_id, all_versions, draft_version, edited_version, manual_version, committed_chapter)
     if not source_infos:
         return _failed("quality-check", "未找到可评估的当前章版本，请先运行 write-draft 或 edit-draft。")
 
@@ -460,10 +479,18 @@ def quality_check_command(
     reports: list[dict[str, Any]] = []
     refinements: list[dict[str, Any]] = []
     for source_info in source_infos:
-        source = read_version_payload(source_info) if source_info.get("version") else load_json(str(source_info["json_path"]))
         source_type = str(source_info.get("source_type", ""))
-        source_version = int(source_info.get("version", source.get("version", 0)) or 0)
+        source_version = int(source_info.get("version", 0) or 0)
         source_path = str(source_info.get("json_path", ""))
+        if source_type == "committed":
+            source = {
+                "chapter_id": int(source_info.get("chapter_id", source_version) or source_version),
+                "chapter_title": str(source_info.get("chapter_title", "")),
+                "draft_text": Path(source_path).read_text(encoding="utf-8"),
+                "generation": {"mode": "committed", "model": "", "fallback_used": False},
+            }
+        else:
+            source = read_version_payload(source_info) if source_info.get("version") else load_json(source_path)
         report = build_quality_report(
             source,
             source_type,
@@ -485,7 +512,7 @@ def quality_check_command(
         # Quality assessment must remain deterministic and non-blocking by
         # default.  AI refinement is an explicit opt-in workflow, never an
         # implicit follow-up to a normal quality check.
-        auto_refine = bool(getattr(config, "AUTO_REFINE_AFTER_QUALITY", False))
+        auto_refine = source_type != "committed" and allow_refinement and bool(getattr(config, "AUTO_REFINE_AFTER_QUALITY", False))
         if auto_refine and (flags or suggestions) and report.get("overall_score", 1.0) is not None:
             try:
                 from core.draft_editor_refine import refine_draft_with_quality_report
@@ -641,6 +668,21 @@ def commit_chapter_command() -> dict[str, Any]:
     save_json(result["summary_path"], result["summary"])
     save_json(str(_paths()["state"]), state)
     warnings = list(result.get("warnings", [])) + source_warnings
+    context_json_path = ""
+    context_markdown_path = ""
+    try:
+        context, context_json_path, context_markdown_path = _refresh_current_context_after_commit(paths, state)
+        state["context"] = {
+            "created": True,
+            "json_path": context_json_path,
+            "markdown_path": context_markdown_path,
+            "recent_raw_chapters": 3,
+            "older_chapters_strategy": "summary_only",
+        }
+        save_json(str(paths["state"]), state)
+        warnings.extend(context.get("warnings", []))
+    except Exception as exc:
+        warnings.append(f"Writing context refresh failed; run build-context to retry: {str(exc)[:160]}")
     reflection_job = None
     try:
         from system.job_manager import get_job_manager
@@ -664,6 +706,8 @@ def commit_chapter_command() -> dict[str, Any]:
             "source_used": result.get("source_used"),
             "source_version": result.get("source_version"),
             "source_path": result.get("source_path"),
+            "context_json_path": context_json_path,
+            "context_markdown_path": context_markdown_path,
             "creative_reflection_job_id": reflection_job.get("job_id") if reflection_job else None,
         },
         warnings=warnings,
@@ -981,7 +1025,23 @@ def _resolve_quality_sources(
     draft_version: int | None,
     edited_version: int | None,
     manual_version: int | None,
+    committed_chapter: int | None = None,
 ) -> list[dict[str, Any]]:
+    if committed_chapter is not None:
+        chapter_path = Path("data") / "chapters" / f"chapter_{int(committed_chapter):03d}.md"
+        if not chapter_path.exists():
+            return []
+        chapter_text = chapter_path.read_text(encoding="utf-8")
+        title = chapter_text.splitlines()[0].lstrip("#").strip() if chapter_text.strip() else ""
+        return [{
+            "chapter_id": int(committed_chapter),
+            "chapter_title": title,
+            "source_type": "committed",
+            "version": int(committed_chapter),
+            "version_label": f"chapter_{int(committed_chapter):03d}",
+            "json_path": chapter_path.as_posix(),
+            "markdown_path": chapter_path.as_posix(),
+        }]
     versions = load_versions_index(chapter_id)
     if all_versions:
         return list(versions.get("drafts", [])) + list(versions.get("edited", [])) + list(versions.get("manual", []))

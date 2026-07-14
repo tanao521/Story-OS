@@ -2,5 +2,6 @@
 
 from .control_service import PlanningControlError, PlanningControlService
 from .dependency_service import PlanningDependencyService
+from .scheduling_service import NarrativeSchedulingService
 
 __all__ = ["PlanningControlError", "PlanningControlService"]

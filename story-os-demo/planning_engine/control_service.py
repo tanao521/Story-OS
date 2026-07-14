@@ -35,7 +35,7 @@ class PlanningControlService:
     def overview(self) -> dict[str, Any]:
         data = self._read()
         projection = self.sources.blueprint_projection()
-        return {"materialized": self.context.planning_control_dir.exists(), "saved_strategy": data["strategy"], "suggested_projection": projection, "authority_order": self.sources.authority_order(), "milestones": data["milestones"], "volume_contracts": data["volume_contracts"], "phase_contracts": data["phase_contracts"], "rolling_window": data["rolling_window"], "dependencies": data["dependencies"], "locks": data["locks"], "conflicts": data["conflicts"], "versions": self.versions.list()}
+        return {"materialized": self.context.planning_control_dir.exists(), "saved_strategy": data["strategy"], "suggested_projection": projection, "authority_order": self.sources.authority_order(), "milestones": data["milestones"], "volume_contracts": data["volume_contracts"], "phase_contracts": data["phase_contracts"], "rolling_window": data["rolling_window"], "dependencies": data["dependencies"], "schedules": data["schedules"], "locks": data["locks"], "conflicts": data["conflicts"], "versions": self.versions.list()}
 
     def get_strategy(self) -> dict[str, Any] | None:
         return self._read()["strategy"]
@@ -185,7 +185,7 @@ class PlanningControlService:
         if replay:
             return {"overview": self.overview(), "replayed": True, "window": copy.deepcopy(replay.get("result_window") or {})}
         restored = copy.deepcopy(record.get("snapshot", {}))
-        for key, default in {"strategy": None, "milestones": [], "volume_contracts": [], "phase_contracts": [], "rolling_window": None, "dependencies": None, "locks": [], "conflicts": [], "metadata": {}}.items():
+        for key, default in {"strategy": None, "milestones": [], "volume_contracts": [], "phase_contracts": [], "rolling_window": None, "dependencies": None, "schedules": None, "locks": [], "conflicts": [], "metadata": {}}.items():
             restored.setdefault(key, default)
         self._validate_restore_locks(current, restored)
         if isinstance(restored.get("rolling_window"), dict):
@@ -288,7 +288,7 @@ class PlanningControlService:
     def _read(self) -> dict[str, Any]:
         def collection(path: Any) -> list[dict[str, Any]]:
             return self.store.read_json(path, default=[], expected_type=list) or []
-        return {"strategy": self.store.read_json(self.context.planning_strategy_path, default=None, expected_type=dict), "milestones": collection(self.context.planning_milestones_path), "volume_contracts": collection(self.context.volume_contracts_path), "phase_contracts": collection(self.context.phase_contracts_path), "rolling_window": self.store.read_json(self.context.rolling_window_path, default=None, expected_type=dict), "dependencies": self.store.read_json(self.context.planning_dependencies_path, default=None, expected_type=dict), "locks": collection(self.context.planning_locks_path), "conflicts": collection(self.context.planning_conflicts_path), "metadata": self.store.read_json(self.context.planning_metadata_path, default={}, expected_type=dict) or {}}
+        return {"strategy": self.store.read_json(self.context.planning_strategy_path, default=None, expected_type=dict), "milestones": collection(self.context.planning_milestones_path), "volume_contracts": collection(self.context.volume_contracts_path), "phase_contracts": collection(self.context.phase_contracts_path), "rolling_window": self.store.read_json(self.context.rolling_window_path, default=None, expected_type=dict), "dependencies": self.store.read_json(self.context.planning_dependencies_path, default=None, expected_type=dict), "schedules": self.store.read_json(self.context.planning_schedules_path, default=None, expected_type=dict), "locks": collection(self.context.planning_locks_path), "conflicts": collection(self.context.planning_conflicts_path), "metadata": self.store.read_json(self.context.planning_metadata_path, default={}, expected_type=dict) or {}}
 
     def _write(self, data: dict[str, Any], event: str, entity_type: str, entity_id: str, old: Any, new: Any, previous: dict[str, Any]) -> None:
         snapshot = self._snapshot(previous)
@@ -318,6 +318,8 @@ class PlanningControlService:
                 self.store.write_json(self.context.rolling_window_path, data["rolling_window"])
             if data.get("dependencies") is not None or self.store.exists(self.context.planning_dependencies_path):
                 self.store.write_json(self.context.planning_dependencies_path, data.get("dependencies"))
+            if data.get("schedules") is not None or self.store.exists(self.context.planning_schedules_path):
+                self.store.write_json(self.context.planning_schedules_path, data.get("schedules"))
             self.store.write_json(self.context.planning_locks_path, data["locks"])
             self.store.write_json(self.context.planning_conflicts_path, data["conflicts"])
             self.store.write_json(self.context.planning_metadata_path, metadata)
@@ -326,7 +328,7 @@ class PlanningControlService:
 
     @staticmethod
     def _snapshot(data: dict[str, Any]) -> dict[str, Any]:
-        return {key: copy.deepcopy(data.get(key)) for key in ("strategy", "milestones", "volume_contracts", "phase_contracts", "rolling_window", "dependencies", "locks", "conflicts", "metadata")}
+        return {key: copy.deepcopy(data.get(key)) for key in ("strategy", "milestones", "volume_contracts", "phase_contracts", "rolling_window", "dependencies", "schedules", "locks", "conflicts", "metadata")}
 
     def _collection(self, collection: str) -> tuple[str, str]:
         if collection not in self.COLLECTIONS:
@@ -385,6 +387,15 @@ class PlanningControlService:
             after_item = after if isinstance(after, dict) else next((item for item in after if item.get(key) == lock.get("entity_id")), None)
             field = lock.get("field")
             if before_item and (not after_item or field == "*" or before_item.get(field) != after_item.get(field)):
+                raise PlanningControlError("PLANNING_VERSION_RESTORE_CONFLICT")
+        for lock in current.get("locks", []):
+            if not lock.get("active") or lock.get("entity_type") != "narrative_schedule":
+                continue
+            before_items = (current.get("schedules") or {}).get("schedules", [])
+            after_items = (restored.get("schedules") or {}).get("schedules", [])
+            before_item = next((item for item in before_items if item.get("schedule_id") == lock.get("entity_id")), None)
+            after_item = next((item for item in after_items if item.get("schedule_id") == lock.get("entity_id")), None)
+            if before_item and (not after_item or lock.get("field") == "*" or before_item.get(lock.get("field")) != after_item.get(lock.get("field"))):
                 raise PlanningControlError("PLANNING_VERSION_RESTORE_CONFLICT")
         for lock in current.get("locks", []):
             if not lock.get("active") or lock.get("entity_type") not in {"planning_dependency", "custom_planning_node"}:

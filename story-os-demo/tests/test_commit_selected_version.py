@@ -101,3 +101,47 @@ def test_commit_falls_back_when_selected_version_missing(monkeypatch: Any, tmp_p
     assert result["outputs"]["source_used"] == "edited"
     assert result["outputs"]["source_version"] == 1
     assert result["warnings"]
+
+
+def test_commit_refreshes_recent_context_without_changing_commit_stage(monkeypatch: Any, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    prepare_project(tmp_path)
+    state_path = tmp_path / "data" / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["current_chapter"] = 4
+    write_json(state_path, state)
+    write_json(
+        tmp_path / "data" / "next_chapter_plan.json",
+        {
+            "chapter_id": 5,
+            "chapter_title": "Chapter five",
+            "chapter_goal": "goal",
+            "conflict_design": {"main_conflict": "conflict"},
+            "climax_design": {"climax_event": "climax"},
+            "required_context": {"characters_to_use": [], "world_rules_to_use": []},
+        },
+    )
+    chapters = []
+    for chapter_id in range(1, 5):
+        chapter_path = tmp_path / "data" / "chapters" / f"chapter_{chapter_id:03d}.md"
+        summary_path = tmp_path / "data" / "summaries" / f"chapter_{chapter_id:03d}_summary.json"
+        chapter_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        chapter_path.write_text(f"# Chapter {chapter_id}", encoding="utf-8")
+        write_json(summary_path, {"chapter_id": chapter_id, "chapter_title": f"Chapter {chapter_id}"})
+        chapters.append({"chapter_id": chapter_id, "title": f"Chapter {chapter_id}", "chapter_path": chapter_path.as_posix(), "summary_path": summary_path.as_posix()})
+    write_json(tmp_path / "data" / "memory" / "memory_index.json", {"memory_version": "0.6", "chapters": chapters})
+    write_json(
+        tmp_path / "data" / "drafts" / "chapter_005_draft_v001.json",
+        {"chapter_id": 5, "chapter_title": "Chapter five", "version": 1, "version_label": "draft_v001", "draft_text": "chapter five text"},
+    )
+    select_version(5, "draft", 1, tmp_path / "data")
+
+    result = commands.commit_chapter_command()
+
+    context = json.loads((tmp_path / "data" / "context" / "current_context.json").read_text(encoding="utf-8"))
+    saved_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert result["status"] == "success"
+    assert result["outputs"]["context_json_path"].endswith("data/context/current_context.json")
+    assert [item["chapter_id"] for item in context["recent_chapters"]] == [3, 4, 5]
+    assert saved_state["current_stage"] == "chapter_committed"

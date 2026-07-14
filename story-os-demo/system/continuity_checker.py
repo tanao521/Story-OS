@@ -2,6 +2,7 @@
 
 import json
 import re
+from hashlib import sha256
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,10 @@ from typing import Any
 import config
 
 WINDOW_CHARS = 800
+
+
+def continuity_content_hash(text: str) -> str:
+    return sha256(str(text or "").encode("utf-8")).hexdigest()
 
 
 def check_chapter_continuity(previous_text: str, current_text: str) -> dict[str, Any]:
@@ -118,15 +123,45 @@ def load_continuity_report(
     source_type: str,
     source_version: int,
     data_dir: str | Path = "data",
+    content_hash: str = "",
+    previous_content_hash: str = "",
 ) -> dict[str, Any]:
     json_path, _ = continuity_report_paths(chapter_id, source_type, source_version, data_dir)
-    if not json_path.exists():
+    direct = _read_continuity_report(json_path)
+    if _continuity_report_matches(direct, content_hash, previous_content_hash):
+        return direct
+    if not content_hash:
+        return {}
+    directory = Path(data_dir) / "continuity_reports"
+    pattern = f"chapter_{chapter_id:03d}_*_continuity.json"
+    for candidate in sorted(directory.glob(pattern), key=lambda path: path.stat().st_mtime, reverse=True):
+        if candidate == json_path:
+            continue
+        payload = _read_continuity_report(candidate)
+        if _continuity_report_matches(payload, content_hash, previous_content_hash):
+            return payload
+    return {}
+
+
+def _read_continuity_report(path: Path) -> dict[str, Any]:
+    if not path.exists():
         return {}
     try:
-        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _continuity_report_matches(report: dict[str, Any], content_hash: str, previous_content_hash: str) -> bool:
+    if not report:
+        return False
+    if not content_hash:
+        return True
+    return (
+        report.get("content_hash") == content_hash
+        and report.get("previous_content_hash") == previous_content_hash
+    )
 
 
 def _render_continuity_report_markdown(report: dict[str, Any]) -> str:

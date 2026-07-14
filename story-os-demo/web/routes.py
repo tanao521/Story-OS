@@ -23,6 +23,7 @@ from system.chapter_archive import ChapterArchiveError, archive_chapter
 from system.data_store import DataStore
 from system.continuity_checker import (
     check_chapter_continuity,
+    continuity_content_hash,
     load_continuity_report,
     save_continuity_report,
 )
@@ -338,6 +339,15 @@ async def api_save_or_plan_next_chapter(request: Request) -> JSONResponse:
     return guarded(action)
 
 
+def _continuity_source_hashes(chapter_id: int, current_text: str) -> tuple[str, str]:
+    previous_text = ""
+    if chapter_id > 1:
+        previous_path = Path("data") / "chapters" / f"chapter_{chapter_id - 1:03d}.md"
+        if previous_path.exists():
+            previous_text = previous_path.read_text(encoding="utf-8")
+    return continuity_content_hash(current_text), continuity_content_hash(previous_text)
+
+
 @router.get("/api/continuity-report")
 def api_get_continuity_report(
     source_type: str = Query(..., pattern="^(draft|edited|manual|committed)$"),
@@ -346,7 +356,15 @@ def api_get_continuity_report(
     def action() -> dict[str, Any]:
         current = build_version_content(source_type, version)
         chapter_id = int(current.get("chapter_id", 0) or 0)
-        report = load_continuity_report(chapter_id, source_type, version, "data")
+        current_hash, previous_hash = _continuity_source_hashes(chapter_id, str(current.get("text", "")))
+        report = load_continuity_report(
+            chapter_id,
+            source_type,
+            version,
+            "data",
+            content_hash=current_hash,
+            previous_content_hash=previous_hash,
+        )
         if not report:
             return api_ok(result={"exists": False, "chapter_id": chapter_id, "source_type": source_type, "source_version": version})
         return api_ok(result={"exists": True, **report})
@@ -378,7 +396,9 @@ async def api_continuity_check(request: Request) -> JSONResponse:
         previous_path = Path("data") / "chapters" / f"chapter_{chapter_id - 1:03d}.md"
         if not previous_path.exists():
             return api_ok("缺少上一已提交章节，暂无法检查。", {"status": "not_applicable", "message": "缺少上一已提交章节，暂无法检查。"})
-        result = check_chapter_continuity(previous_path.read_text(encoding="utf-8"), str(current.get("text", "")))
+        previous_text = previous_path.read_text(encoding="utf-8")
+        current_text = str(current.get("text", ""))
+        result = check_chapter_continuity(previous_text, current_text)
         warnings = list(result.pop("warnings", [])) if isinstance(result, dict) else []
         report = {
             "chapter_id": chapter_id,
@@ -386,6 +406,8 @@ async def api_continuity_check(request: Request) -> JSONResponse:
             "source_version": version,
             "source_path": current.get("json_path", ""),
             "previous_chapter_id": chapter_id - 1,
+            "content_hash": continuity_content_hash(current_text),
+            "previous_content_hash": continuity_content_hash(previous_text),
             **result,
         }
         json_path, markdown_path = save_continuity_report(report, "data")
@@ -425,15 +447,18 @@ async def api_quality_check(request: Request) -> JSONResponse:
             return command_response(commands.quality_check_command())
         source_type = str(payload.get("source_type", ""))
         version = int(payload.get("version", 0) or 0)
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, Any] = {"allow_refinement": not bool(payload.get("assessment_only", False))}
         if source_type == "draft":
             kwargs["draft_version"] = version
         elif source_type == "edited":
             kwargs["edited_version"] = version
         elif source_type == "manual":
             kwargs["manual_version"] = version
+        elif source_type == "committed":
+            kwargs["committed_chapter"] = version
+            kwargs["allow_refinement"] = False
         else:
-            return api_error("\u672a\u77e5\u7248\u672c\u7c7b\u578b\u3002", ["source_type must be draft, edited, or manual"])
+            return api_error("\u672a\u77e5\u7248\u672c\u7c7b\u578b\u3002", ["source_type must be draft, edited, manual, or committed"])
         return command_response(commands.quality_check_command(**kwargs))
 
     return guarded(action)
@@ -696,7 +721,7 @@ def build_version_content(source_type: str, version: int) -> dict[str, Any]:
 
 
 def quality_report_response(source_type: str, version: int) -> tuple[str, dict[str, Any], list[str] | None]:
-    chapter_id = current_target_chapter()
+    chapter_id = version if source_type == "committed" else current_target_chapter()
     report = load_quality_report(chapter_id, source_type, version, "data")
     json_path, markdown_path = quality_report_paths(chapter_id, source_type, version, "data")
     if not report:

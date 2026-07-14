@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from core.project_context import get_project_context
 from planning_engine import PlanningControlError, PlanningControlService, PlanningDependencyService
+from planning_engine.scheduling_service import NarrativeSchedulingService
 from planning_engine.rolling_service import RollingWindowService
 from web.view_models import api_error, api_ok
 
@@ -24,6 +25,10 @@ def rolling() -> RollingWindowService:
 
 def dependencies() -> PlanningDependencyService:
     return PlanningDependencyService(get_project_context())
+
+
+def schedules() -> NarrativeSchedulingService:
+    return NarrativeSchedulingService(get_project_context())
 
 
 def failure(error: PlanningControlError, status: int = 409) -> JSONResponse:
@@ -52,6 +57,83 @@ def dependency_failure(error: PlanningControlError) -> JSONResponse:
     else:
         status = 409
     return JSONResponse(api_error(str(error), [error.code], details=error.details), status_code=status)
+
+
+def schedule_failure(error: PlanningControlError) -> JSONResponse:
+    if error.code.endswith("NOT_FOUND"):
+        status = 404
+    elif error.code in {"NARRATIVE_SCHEDULE_INVALID_SUBJECT", "NARRATIVE_SCHEDULE_INVALID_ACTION", "NARRATIVE_SCHEDULE_INVALID_SLOT", "NARRATIVE_SCHEDULE_SLOT_IN_PAST", "NARRATIVE_SCHEDULE_INVALID_TRANSITION"}:
+        status = 400
+    elif error.code == "NARRATIVE_SCHEDULE_WRITE_FAILED":
+        status = 422
+    else:
+        status = 409
+    return JSONResponse(api_error(str(error), [error.code], details=error.details), status_code=status)
+
+
+@router.get("/schedules")
+def list_schedules(request: Request) -> dict[str, Any]:
+    return api_ok(result=schedules().list(dict(request.query_params)))
+
+
+@router.get("/schedules/health")
+def schedules_health() -> dict[str, Any]:
+    return api_ok(result=schedules().health())
+
+
+@router.post("/schedules/validate")
+def validate_schedules() -> dict[str, Any]:
+    return api_ok(result=schedules().validate())
+
+
+@router.get("/schedules/timeline")
+def schedule_timeline(subject_type: str, subject_id: str) -> dict[str, Any]:
+    return api_ok(result=schedules().timeline(subject_type, subject_id))
+
+
+@router.get("/schedules/by-slot/{slot_id}")
+def schedules_by_slot(slot_id: str) -> dict[str, Any]:
+    return api_ok(result=schedules().by_slot(slot_id))
+
+
+@router.post("/schedules")
+async def create_schedule(request: Request) -> JSONResponse:
+    try:
+        return JSONResponse(api_ok("叙事调度已保存；它不会自动移动章节或改变正史。", {"schedule": schedules().create(await body(request))}), status_code=201)
+    except PlanningControlError as error:
+        return schedule_failure(error)
+
+
+@router.get("/schedules/{schedule_id}")
+def get_schedule(schedule_id: str) -> JSONResponse:
+    try:
+        return JSONResponse(api_ok(result={"schedule": schedules().get(schedule_id)}))
+    except PlanningControlError as error:
+        return schedule_failure(error)
+
+
+@router.put("/schedules/{schedule_id}")
+async def update_schedule(schedule_id: str, request: Request) -> JSONResponse:
+    try:
+        return JSONResponse(api_ok("叙事调度已更新。", {"schedule": schedules().update(schedule_id, await body(request))}))
+    except PlanningControlError as error:
+        return schedule_failure(error)
+
+
+@router.post("/schedules/{schedule_id}/transition")
+async def transition_schedule(schedule_id: str, request: Request) -> JSONResponse:
+    try:
+        return JSONResponse(api_ok("叙事调度状态已更新。", {"schedule": schedules().transition(schedule_id, await body(request))}))
+    except PlanningControlError as error:
+        return schedule_failure(error)
+
+
+@router.post("/schedules/{schedule_id}/rebind")
+async def rebind_schedule(schedule_id: str, request: Request) -> JSONResponse:
+    try:
+        return JSONResponse(api_ok("叙事调度已重新绑定到作者选择的章节槽位。", {"schedule": schedules().rebind(schedule_id, await body(request))}))
+    except PlanningControlError as error:
+        return schedule_failure(error)
 
 
 @router.get("/dependencies")

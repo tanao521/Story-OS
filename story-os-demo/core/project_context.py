@@ -80,6 +80,7 @@ class ProjectContext:
     planning_control_versions_dir: Path
     rolling_window_path: Path
     planning_dependencies_path: Path
+    planning_schedules_path: Path
 
     def relative_path(self, path: Path) -> str:
         """Return a safe project-relative display path."""
@@ -131,6 +132,7 @@ def get_project_context(project_root: str | Path | None = None) -> ProjectContex
         planning_control_versions_dir=data / "planning_control" / "versions",
         rolling_window_path=data / "planning_control" / "rolling_window.json",
         planning_dependencies_path=data / "planning_control" / "dependencies.json",
+        planning_schedules_path=data / "planning_control" / "schedules.json",
     )
 
 

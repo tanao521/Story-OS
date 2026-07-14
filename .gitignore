@@ -34,3 +34,4 @@ pytest-*/
 scratch/
 _tmp*
 temp_*
+story-os-demo/backups/
