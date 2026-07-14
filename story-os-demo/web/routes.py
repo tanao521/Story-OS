@@ -20,7 +20,7 @@ from system.planning_service import load_planning, overview as planning_overview
 from system.revision_service import RevisionService, RevisionError
 
 from system.chapter_archive import ChapterArchiveError, archive_chapter
-from system.data_store import DataStore
+from system.data_store import DataStore, DataWriteError
 from system.continuity_checker import (
     check_chapter_continuity,
     continuity_content_hash,
@@ -38,6 +38,11 @@ from system.story_qa import answer_from_memory, answer_from_state, answer_from_s
 from system.text_diff import build_text_diff
 from system.todo_manager import create_todo, list_todos, update_todo_status
 from system.version_manager import VersionArchiveError, archive_version, list_versions, read_version_payload
+from evaluation_engine import EvaluationError, EvaluationService
+from evaluation_engine.improvement_policy import ImprovementPolicyError
+from evaluation_engine.improvement_service import ImprovementService
+from evaluation_engine.candidate_adoption_service import CandidateAdoptionError, CandidateAdoptionService
+from evaluation_engine.candidate_partial_adoption_service import PartialAdoptionError, CandidatePartialAdoptionService
 from llm.model_gateway import ModelGateway, get_model_gateway
 from llm.model_models import ModelGatewayError
 from llm.prompt_registry import PromptRegistry
@@ -244,6 +249,214 @@ def api_memory_health(full: bool = False) -> JSONResponse:
         return api_ok(result=report)
 
     return guarded(action)
+
+
+# Stage 15.1: a read-only aggregation boundary over existing reports and planning health.
+def _evaluation_failure(error: EvaluationError) -> JSONResponse:
+    status = 404 if error.code in {"EVALUATION_TARGET_NOT_FOUND", "EVALUATION_PROFILE_NOT_FOUND"} else 422 if error.code == "EVALUATION_INSUFFICIENT_EVIDENCE" else 409 if error.code in {"EVALUATION_TARGET_CHANGED", "EVALUATION_ALREADY_EXISTS"} else 500
+    return JSONResponse(api_error(str(error), [error.code]), status_code=status)
+
+
+def _improvement_failure(error: ImprovementPolicyError) -> JSONResponse:
+    status = 404 if error.code == "IMPROVEMENT_NOT_FOUND" else 409 if error.code in {"IMPROVEMENT_SOURCE_CHANGED", "CHAPTER_OPERATION_CONFLICT", "IMPROVEMENT_CANDIDATE_LIMIT"} else 422
+    return JSONResponse(api_error(str(error), [error.code]), status_code=status)
+
+
+def _adoption_failure(error: CandidateAdoptionError) -> JSONResponse:
+    status = 404 if error.code == "IMPROVEMENT_NOT_FOUND" else 409 if error.code in {"CANDIDATE_SOURCE_CHANGED", "DRAFT_VERSION_REVISION_CONFLICT", "DRAFT_VERSION_LOCK_CONFLICT", "CANDIDATE_ALREADY_ADOPTED", "CANDIDATE_ALREADY_DISCARDED", "CANDIDATE_ADOPTION_PREVIEW_STALE"} else 422
+    return JSONResponse(api_error(str(error), [error.code]), status_code=status)
+
+
+def _partial_adoption_failure(error: PartialAdoptionError) -> JSONResponse:
+    if error.code in {"IMPROVEMENT_NOT_FOUND", "PARTIAL_ADOPTION_PREVIEW_NOT_FOUND"}: status = 404
+    elif error.code in {"PARTIAL_ADOPTION_SOURCE_CHANGED", "PARTIAL_ADOPTION_PREVIEW_STALE", "PARTIAL_ADOPTION_RESULT_HASH_MISMATCH", "PARTIAL_ADOPTION_ALREADY_COMPLETED", "DRAFT_VERSION_LOCK_CONFLICT"}: status = 409
+    else: status = 422
+    return JSONResponse(api_error(str(error), [error.code]), status_code=status)
+
+
+@router.get("/api/evaluations/overview")
+def api_evaluations_overview() -> JSONResponse:
+    try:
+        return JSONResponse(api_ok(result=EvaluationService(get_project_context()).overview()))
+    except EvaluationError as error:
+        return _evaluation_failure(error)
+
+
+@router.get("/api/evaluations/profiles")
+def api_evaluation_profiles() -> dict[str, Any]:
+    from evaluation_engine.profiles import profiles
+    return api_ok(result={"profiles": profiles()})
+
+
+@router.get("/api/evaluations")
+def api_evaluations_list(
+    target_type: str = "", chapter_number: int | None = None, status: str = "", limit: int = 30,
+) -> JSONResponse:
+    try:
+        return JSONResponse(api_ok(result={"evaluations": EvaluationService(get_project_context()).list_reports(target_type=target_type, chapter_number=chapter_number, status=status, limit=limit)}))
+    except EvaluationError as error:
+        return _evaluation_failure(error)
+
+
+@router.post("/api/evaluations")
+async def api_evaluation_generate(request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        return JSONResponse(api_error("Evaluation request must be a JSON object.", ["EVALUATION_SOURCE_INVALID"]), status_code=400)
+    try:
+        report, replayed = EvaluationService(get_project_context()).generate(payload)
+        return JSONResponse(api_ok("统一叙事评估报告已生成；未调用模型或修改正文。", {"evaluation": report, "replayed": replayed}), status_code=200)
+    except EvaluationError as error:
+        return _evaluation_failure(error)
+
+
+@router.get("/api/evaluations/{evaluation_id}")
+def api_evaluation_detail(evaluation_id: str) -> JSONResponse:
+    try:
+        return JSONResponse(api_ok(result={"evaluation": EvaluationService(get_project_context()).detail(evaluation_id)}))
+    except EvaluationError as error:
+        return _evaluation_failure(error)
+
+
+# Stage 15.2A: request a restricted candidate only. This API never activates or applies it.
+@router.post("/api/evaluations/{evaluation_id}/improvements")
+async def api_evaluation_improvement_create(evaluation_id: str, request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        return JSONResponse(api_error("Improvement request must be a JSON object.", ["INVALID_REQUEST"]), status_code=400)
+    try:
+        context = get_project_context(); service = ImprovementService(context)
+        improvement, replayed = service.prepare(evaluation_id, payload, get_job_manager().active_jobs(context=context))
+        if replayed:
+            return JSONResponse(api_ok(result={"improvement": service.public(improvement), "replayed": True}))
+        job = get_job_manager().create_job("quality_improvement", {"improvement_id": improvement["improvement_id"], "chapter_id": improvement["chapter_id"]}, context=context)
+        return JSONResponse(api_ok("受限候选修订任务已创建；不会覆盖或提交正文。", {"improvement": service.public(improvement), "job": job, "replayed": False}), status_code=202)
+    except ImprovementPolicyError as error:
+        return _improvement_failure(error)
+    except JobError as error:
+        return JSONResponse(api_error(str(error), [getattr(error, "code", "JOB_ERROR")]), status_code=409)
+
+
+@router.get("/api/evaluations/improvements/{improvement_id}")
+def api_evaluation_improvement_detail(improvement_id: str) -> JSONResponse:
+    try:
+        service = ImprovementService(get_project_context())
+        return JSONResponse(api_ok(result={"improvement": service.public(service.get(improvement_id))}))
+    except ImprovementPolicyError as error:
+        return _improvement_failure(error)
+
+
+@router.get("/api/evaluations/improvements/{improvement_id}/plan")
+def api_evaluation_improvement_plan(improvement_id: str) -> JSONResponse:
+    try:
+        item = ImprovementService(get_project_context()).get(improvement_id)
+        return JSONResponse(api_ok(result={"plan": item.get("plan"), "state": item.get("state")}))
+    except ImprovementPolicyError as error:
+        return _improvement_failure(error)
+
+
+@router.get("/api/evaluations/improvements/{improvement_id}/candidate")
+def api_evaluation_improvement_candidate(improvement_id: str) -> JSONResponse:
+    try:
+        service = ImprovementService(get_project_context()); item = service.get(improvement_id)
+        candidate = item.get("candidate") or {}
+        content = service.store.read_markdown(str(candidate.get("content_path") or ""), default="") if candidate else ""
+        return JSONResponse(api_ok(result={"candidate": service.public(item).get("candidate"), "content": content, "state": item.get("state")}))
+    except ImprovementPolicyError as error:
+        return _improvement_failure(error)
+
+
+@router.get("/api/evaluations/improvements/{improvement_id}/diff")
+def api_evaluation_improvement_diff(improvement_id: str) -> JSONResponse:
+    try:
+        item = ImprovementService(get_project_context()).get(improvement_id)
+        return JSONResponse(api_ok(result={"diff": (item.get("candidate") or {}).get("diff"), "state": item.get("state")}))
+    except ImprovementPolicyError as error:
+        return _improvement_failure(error)
+
+
+@router.get("/api/evaluations/improvements/{improvement_id}/comparison")
+def api_evaluation_improvement_comparison(improvement_id: str) -> JSONResponse:
+    try:
+        item = ImprovementService(get_project_context()).get(improvement_id)
+        return JSONResponse(api_ok(result={"comparison": item.get("comparison"), "evaluation": item.get("evaluation"), "state": item.get("state")}))
+    except ImprovementPolicyError as error:
+        return _improvement_failure(error)
+
+
+@router.post("/api/evaluations/improvements/{request_id}/adoption-preview")
+def api_candidate_adoption_preview(request_id: str) -> JSONResponse:
+    try:
+        return JSONResponse(api_ok(result={"preview": CandidateAdoptionService(get_project_context()).preview(request_id)}))
+    except (CandidateAdoptionError, ImprovementPolicyError) as error:
+        return _adoption_failure(error)
+
+
+@router.post("/api/evaluations/improvements/{request_id}/partial-adoption-preview")
+async def api_candidate_partial_adoption_preview(request_id: str, request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict): return JSONResponse(api_error("Partial-adoption preview request must be a JSON object.", ["INVALID_REQUEST"]), status_code=400)
+    try:
+        preview = CandidatePartialAdoptionService(get_project_context()).preview(request_id, payload)
+        return JSONResponse(api_ok(result={"preview": preview, "result_diff": preview["result_diff"], "selected_patch_count": len(preview["selected_patch_ids"]), "unselected_patch_count": len(preview["unselected_patch_ids"])}))
+    except (PartialAdoptionError, ImprovementPolicyError) as error:
+        return _partial_adoption_failure(error)
+    except DataWriteError as error:
+        return JSONResponse(api_error(str(error), ["PARTIAL_ADOPTION_WRITE_FAILED"]), status_code=500)
+
+
+@router.post("/api/evaluations/improvements/{request_id}/partial-adopt")
+async def api_candidate_partial_adopt(request_id: str, request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict): return JSONResponse(api_error("Partial-adoption request must be a JSON object.", ["INVALID_REQUEST"]), status_code=400)
+    try:
+        result, replayed = CandidatePartialAdoptionService(get_project_context()).adopt(request_id, payload)
+        item = result["request"]
+        return JSONResponse(api_ok("Selected patches were adopted into a new work-text version; canon is unchanged.", {**result, "replayed": replayed, "candidate_id": (item.get("candidate") or {}).get("candidate_id"), "previous_version_id": (result.get("new_version") or {}).get("parent_version_id"), "new_version_id": (result.get("new_version") or {}).get("version_id"), "selected_patch_ids": (item.get("partial_adoption") or {}).get("selected_patch_ids", []), "unselected_patch_ids": (item.get("partial_adoption") or {}).get("unselected_patch_ids", []), "candidate_status": item.get("state"), "canon_changed": False, "evaluation_status": "stale"}))
+    except (PartialAdoptionError, ImprovementPolicyError) as error:
+        return _partial_adoption_failure(error)
+    except DataWriteError as error:
+        return JSONResponse(api_error(str(error), ["PARTIAL_ADOPTION_WRITE_FAILED"]), status_code=500)
+
+
+@router.post("/api/evaluations/improvements/{request_id}/adopt")
+async def api_candidate_adopt(request_id: str, request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict): return JSONResponse(api_error("Adoption request must be a JSON object.", ["INVALID_REQUEST"]), status_code=400)
+    try:
+        result, replayed = CandidateAdoptionService(get_project_context()).adopt(request_id, payload)
+        return JSONResponse(api_ok("候选已晋升为新的工作正文版本；尚未提交正史。", {**result, "replayed": replayed}))
+    except (CandidateAdoptionError, ImprovementPolicyError) as error:
+        return _adoption_failure(error)
+
+
+@router.post("/api/evaluations/improvements/{request_id}/discard")
+async def api_candidate_discard(request_id: str, request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict): return JSONResponse(api_error("Discard request must be a JSON object.", ["INVALID_REQUEST"]), status_code=400)
+    try:
+        result, replayed = CandidateAdoptionService(get_project_context()).discard(request_id, payload)
+        return JSONResponse(api_ok("候选已放弃，候选正文与评估证据仍保留。", {"improvement": result, "replayed": replayed}))
+    except (CandidateAdoptionError, ImprovementPolicyError) as error:
+        return _adoption_failure(error)
 
 
 @router.get("/api/quality-reports/status")

@@ -45,12 +45,30 @@ class AgentExecutor:
         # gateway owns routing, limits, retries, and its own model-run record.
         if profile.model_task and bool(context_snapshot.get("allow_model_calls")):
             from llm.model_gateway import get_model_gateway
+            from llm.model_models import ModelGatewayError
+
             prompt = _creative_team_prompt(profile.name, visible)
-            result["model_advisory"] = get_model_gateway(self.context).generate_text(
-                profile.model_task, prompt, temperature=0.55, max_tokens=1_200, prompt_id=profile.system_prompt_id,
-                job_id=workflow_run_id or None,
-            )
-            model_reference = {"task_type": profile.model_task, "workflow_run_id": workflow_run_id}
+            try:
+                result["model_advisory"] = get_model_gateway(self.context).generate_text(
+                    profile.model_task, prompt, temperature=0.55, max_tokens=1_200, prompt_id=profile.system_prompt_id,
+                    job_id=workflow_run_id or None,
+                )
+                model_reference = {"task_type": profile.model_task, "workflow_run_id": workflow_run_id, "status": "completed"}
+            except ModelGatewayError as exc:
+                # The bounded, rule-based result above is still useful to the
+                # author.  A transient model route failure must not turn a
+                # completed meeting or a standalone simulation into a blank UI.
+                result["model_advisory_error"] = {
+                    "code": exc.code,
+                    "message": "模型建议暂时不可用，已显示基础建议。请检查模型中心后重试。",
+                    "recoverable": exc.recoverable,
+                }
+                model_reference = {
+                    "task_type": profile.model_task,
+                    "workflow_run_id": workflow_run_id,
+                    "status": "failed",
+                    "error_code": exc.code,
+                }
         # A trace is diagnostic metadata, not a second manuscript store.
         result = {key: value for key, value in result.items() if key not in {"draft_text", "prompt", "private_notes"}}
         trace = {

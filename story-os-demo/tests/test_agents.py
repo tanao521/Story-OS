@@ -78,6 +78,23 @@ def test_creative_team_model_call_is_opt_in_and_uses_scoped_context(tmp_path, mo
     assert "must not leak" not in calls[0][1]
 
 
+def test_creative_team_keeps_rule_advice_when_model_route_fails(tmp_path, monkeypatch):
+    from llm.model_models import ModelGatewayError
+
+    class Gateway:
+        def generate_text(self, *args, **kwargs):
+            raise ModelGatewayError("missing route", code="HTTP_404", recoverable=True)
+
+    monkeypatch.setattr("llm.model_gateway.get_model_gateway", lambda context: Gateway())
+    trace = AgentExecutor(get_project_context(tmp_path)).execute(
+        "reader_simulator", _snapshot() | {"allow_model_calls": True}
+    )
+
+    assert trace["result"]["reader_profiles"]
+    assert trace["result"]["model_advisory_error"]["code"] == "HTTP_404"
+    assert trace["output_reference"]["model_run_reference"]["status"] == "failed"
+
+
 def test_workflow_uses_persistent_background_job_and_waits_for_author(tmp_path):
     context = get_project_context(tmp_path)
     manager = JobManager(max_workers=1)
