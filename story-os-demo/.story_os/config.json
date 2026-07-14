@@ -6,5 +6,5 @@
     "port": 7860,
     "open_browser": true
   },
-  "use_deepseek_for_planning": true
+  "use_deepseek_for_planning": false
 }

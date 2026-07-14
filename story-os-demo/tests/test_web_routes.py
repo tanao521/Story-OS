@@ -9,6 +9,7 @@ import pytest
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
+from system.continuity_checker import continuity_content_hash, save_continuity_report
 from web.app import app
 
 
@@ -251,4 +252,70 @@ def test_quality_check_can_target_current_preview_version(monkeypatch: Any) -> N
 
     assert response.status_code == 200
     assert response.json()["ok"] is True
-    assert called == {"draft_version": 2}
+    assert called == {"draft_version": 2, "allow_refinement": True}
+
+
+def test_quality_assessment_only_disables_refinement(monkeypatch: Any) -> None:
+    called: dict[str, Any] = {}
+
+    def fake_quality_check_command(**kwargs: Any) -> dict[str, Any]:
+        called.update(kwargs)
+        return {"status": "success", "message": "done", "outputs": {"report_count": 1}, "warnings": []}
+
+    monkeypatch.setattr("web.routes.commands.quality_check_command", fake_quality_check_command)
+
+    response = client.post("/api/quality-check", json={"source_type": "draft", "version": 2, "assessment_only": True})
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert called == {"draft_version": 2, "allow_refinement": False}
+
+
+def test_committed_chapter_quality_assessment_disables_refinement(monkeypatch: Any) -> None:
+    called: dict[str, Any] = {}
+
+    def fake_quality_check_command(**kwargs: Any) -> dict[str, Any]:
+        called.update(kwargs)
+        return {"status": "success", "message": "done", "outputs": {"report_count": 1}, "warnings": []}
+
+    monkeypatch.setattr("web.routes.commands.quality_check_command", fake_quality_check_command)
+
+    response = client.post("/api/quality-check", json={"source_type": "committed", "version": 5, "assessment_only": True})
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert called == {"committed_chapter": 5, "allow_refinement": False}
+
+
+def test_committed_continuity_score_persists_until_related_text_changes(monkeypatch: Any, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    previous_text = "# Chapter five\n\nThe warning light stayed on."
+    current_text = "# Chapter six\n\nThe warning light was still on when she arrived."
+    previous_path = tmp_path / "data" / "chapters" / "chapter_005.md"
+    current_path = tmp_path / "data" / "chapters" / "chapter_006.md"
+    previous_path.parent.mkdir(parents=True, exist_ok=True)
+    previous_path.write_text(previous_text, encoding="utf-8")
+    current_path.write_text(current_text, encoding="utf-8")
+    save_continuity_report(
+        {
+            "chapter_id": 6,
+            "source_type": "draft",
+            "source_version": 1,
+            "score": 0.91,
+            "verdict": "pass",
+            "summary": "The opening carries forward the prior chapter.",
+            "issues": [],
+            "suggestions": [],
+            "content_hash": continuity_content_hash(current_text),
+            "previous_content_hash": continuity_content_hash(previous_text),
+        },
+        tmp_path / "data",
+    )
+
+    persisted = client.get("/api/continuity-report?source_type=committed&version=6").json()
+    current_path.write_text(current_text + "\n\nChanged after review.", encoding="utf-8")
+    invalidated = client.get("/api/continuity-report?source_type=committed&version=6").json()
+
+    assert persisted["result"]["exists"] is True
+    assert persisted["result"]["score"] == 0.91
+    assert invalidated["result"]["exists"] is False

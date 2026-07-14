@@ -5,7 +5,8 @@ import re
 from typing import Any
 
 import config
-from llm.deepseek_client import DeepSeekClient, DeepSeekError
+from llm.model_models import ModelGatewayError
+from llm.model_gateway import get_model_gateway
 from llm.prompts import build_edit_draft_prompt
 
 
@@ -96,12 +97,7 @@ def edit_draft(
             working_context,
         )
         try:
-            client = DeepSeekClient(
-                api_key=config.DEEPSEEK_API_KEY,
-                model=config.DEEPSEEK_MODEL,
-                base_url=config.DEEPSEEK_BASE_URL,
-            )
-            candidate = client.chat_text(prompt, temperature=0.25).strip()
+            candidate = get_model_gateway().generate_text("edit_draft", prompt, temperature=0.25, prompt_id="edit_draft").strip()
             if is_valid_edited_text(candidate, original_text):
                 edited_text = candidate
                 mode = "deepseek"
@@ -109,7 +105,7 @@ def edit_draft(
                 fallback_used = False
             else:
                 warnings.append("DeepSeek 编辑结果无效，已使用本地规则编辑。")
-        except DeepSeekError as exc:
+        except ModelGatewayError as exc:
             warnings.append(f"DeepSeek 编辑不可用，已使用本地规则编辑：{_error_summary(exc)}")
     elif config.USE_DEEPSEEK_FOR_EDITING:
         warnings.append("已启用 DeepSeek 编辑，但 DEEPSEEK_API_KEY 未配置，已使用本地规则编辑。")

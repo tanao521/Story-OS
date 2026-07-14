@@ -159,6 +159,24 @@ def check_version_integrity(data_dir: Path) -> dict[str, Any]:
 
 
 def check_quality_reports(data_dir: Path) -> dict[str, Any]:
+    """Check reports against the current active canon, never a selected draft."""
+    from core.project_context import get_project_context
+    from system.memory_repair_service import MemoryRepairService
+    root = data_dir.parent if data_dir.name == "data" else data_dir
+    status = MemoryRepairService(get_project_context(root)).quality_status()
+    issues: list[dict[str, Any]] = []
+    if status["status"] in {"missing", "stale", "failed"}:
+        issues.append(_issue("quality_report_current_version", "warning", "quality", status["message"], data_dir / "quality_reports", "生成当前正史版本的 Lite 质量报告。", impact="创作健康评分的数据完整度会降低。", recoverable=True, repair_action="generate_quality_report", details=status))
+    elif status["status"] == "generating":
+        issues.append(_issue("quality_report_generating", "info", "quality", status["message"], data_dir / "quality_reports", "等待当前任务完成后重新检查。", impact="质量健康数据暂时不完整。", recoverable=True, repair_action="generate_quality_report", details=status))
+    for issue in issues:
+        if issue.get("repair_action") == "generate_quality_report":
+            issue["suggested_action"] = "\u751f\u6210\u5f53\u524d\u6b63\u53f2\u7248\u672c\u7684 Lite \u8d28\u91cf\u62a5\u544a\u3002"
+            issue["impact"] = "\u521b\u4f5c\u5065\u5eb7\u8bc4\u5206\u7684\u6570\u636e\u5b8c\u6574\u5ea6\u4f1a\u964d\u4f4e\u3002"
+    if status["status"] == "not_applicable":
+        issues.append(_issue("quality_reports_not_applicable", "info", "quality", status["message"], data_dir / "quality_reports", "Wait for an active canon chapter before generating a quality report.", details=status))
+    return _section("quality_reports", issues, checked=max(1, len(status.get("items", []))), details=status)
+
     issues: list[dict[str, Any]] = []
     checked = 0
     quality_dir = data_dir / "quality_reports"
@@ -207,6 +225,26 @@ def check_todos(data_dir: Path) -> dict[str, Any]:
 
 
 def check_vector_index(data_dir: Path) -> dict[str, Any]:
+    """Expose repairable vector states; an initialized empty index is healthy."""
+    from core.project_context import get_project_context
+    from system.memory_repair_service import MemoryRepairService
+    root = data_dir.parent if data_dir.name == "data" else data_dir
+    status = MemoryRepairService(get_project_context(root)).vector_status()
+    issues: list[dict[str, Any]] = []
+    if status["status"] in {"missing", "stale", "degraded", "failed"}:
+        issues.append(_issue("vector_index", "warning", "vector", status["message"], data_dir / "vector_index" / "metadata.json", "初始化或增量更新当前项目的本地向量索引。", impact="历史语义检索将降级为摘要和关键词检索。", recoverable=True, repair_action="initialize_vector_index", details=status))
+    elif status["status"] == "building":
+        issues.append(_issue("vector_index_building", "info", "vector", status["message"], data_dir / "vector_index" / "metadata.json", "等待索引任务完成后重新检查。", impact="语义检索暂时不可用。", recoverable=True, repair_action="initialize_vector_index", details=status))
+    elif status["status"] == "not_configured":
+        issues.append(_issue("vector_index_not_configured", "info", "vector", status["message"], data_dir / "vector_index" / "metadata.json", "安装或配置本地向量索引依赖；基础写作不受影响。", impact="语义检索不可用。", recoverable=True, repair_action="initialize_vector_index", details=status))
+    for issue in issues:
+        if issue.get("repair_action") == "initialize_vector_index":
+            issue["suggested_action"] = "\u521d\u59cb\u5316\u6216\u66f4\u65b0\u5f53\u524d\u9879\u76ee\u7684\u672c\u5730\u5411\u91cf\u7d22\u5f15\u3002"
+            issue["impact"] = "\u5386\u53f2\u8bed\u4e49\u68c0\u7d22\u5c06\u964d\u7ea7\u4e3a\u6458\u8981\u548c\u5173\u952e\u8bcd\u68c0\u7d22\u3002"
+    if status["status"] == "missing" and not (status.get("source_snapshot") or {}).get("current_canon_versions"):
+        issues.append(_issue("memory_index_missing", "info", "vector", "data/memory/memory_index.json is not initialized.", data_dir / "memory" / "memory_index.json", "Initialize the vector index after content becomes available.", details=status))
+    return _section("vector_index", issues, checked=1, details=status)
+
     issues: list[dict[str, Any]] = []
     index_path = data_dir / "memory" / "memory_index.json"
     chapter_count = len(_official_chapter_files(data_dir))
@@ -311,6 +349,7 @@ def _issue(
     path: str | Path,
     suggested_action: str,
     related_paths: list[str | Path] | None = None,
+    *, impact: str = "", recoverable: bool = False, repair_action: str = "", details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": issue_id,
@@ -320,6 +359,10 @@ def _issue(
         "path": Path(path).as_posix(),
         "suggested_action": suggested_action,
         "related_paths": [Path(item).as_posix() for item in (related_paths or [])],
+        "impact": impact,
+        "recoverable": recoverable,
+        "repair_action": repair_action,
+        "details": details or {},
     }
 
 

@@ -35,6 +35,14 @@ def build_working_context(
 
     # ── Layer 1: Global Memory (always included, compact) ──────────────
     global_memory = _build_global_memory(story_spec or {}, characters or {}, world_bible or {}, state)
+    author_global: dict[str, Any] = {}
+    try:
+        from author_memory.knowledge_retriever import AuthorKnowledgeRetriever
+        from core.project_context import get_project_context
+        rules = [str(item) for item in global_memory.get("forbidden", []) + global_memory.get("anti_ai_rules", [])]
+        author_global = AuthorKnowledgeRetriever(get_project_context()).context_for_task(query, rules)
+    except Exception:
+        author_global = {"preferences": [], "retrieved_knowledge": [], "preference_resolution": {"conflicts": []}, "source": "author_global"}
 
     # ── Layer 2: Recent Memory (1 full prev chapter + 3 summaries) ─────
     recent_chapters = get_recent_chapters(memory_index, current_chapter, limit=3)
@@ -92,6 +100,8 @@ def build_working_context(
         "current_chapter": current_chapter,
         "next_chapter_id": current_chapter + 1,
         "global_memory": global_memory,
+        "author_global": author_global,
+        "context_order": ["system_rules", "author_global", "project_rules", "story_state", "chapter_context", "current_task"],
         "recent_memory": {
             "previous_chapter_full": prev_chapter_full,
             "recent_summaries": recent_summaries,

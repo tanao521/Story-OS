@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -100,14 +101,11 @@ def _collection(data_dir: str | Path = "data") -> Any | None:
         path=str(_chroma_dir(data_dir)),
     )
     try:
-        return client.get_collection(_COLLECTION_NAME)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Could not reconstruct embedding function sentence_transformer.*")
+            return client.get_collection(_COLLECTION_NAME)
     except Exception:
-        # Create new collection with current embedding function
-        _, embedding_fn = _ensure_chromadb()
-        kwargs: dict[str, Any] = {"name": _COLLECTION_NAME}
-        if embedding_fn is not None:
-            kwargs["embedding_function"] = embedding_fn
-        return client.create_collection(**kwargs)
+        return client.create_collection(name=_COLLECTION_NAME)
 
 
 # ── public API ────────────────────────────────────────────────────────────────
@@ -150,9 +148,7 @@ def build_or_update_index(data_dir: str | Path = "data") -> dict[str, Any]:
             for md_path in sorted(chapters_dir.glob("chapter_*.md")):
                 chapter_id = _chapter_id_from_path(md_path)
                 doc_id = f"chapter_{chapter_id:03d}"
-                existing = col.get(ids=[doc_id]) if hasattr(col, "get") else None
-                if existing and existing.get("ids"):
-                    continue  # already indexed
+                _safe_delete(col, {"chapter_id": chapter_id}, warnings)
 
                 text = md_path.read_text(encoding="utf-8")
                 chunks = _chunk_text(text, chunk_size=500, overlap=100)
@@ -212,6 +208,7 @@ def build_or_update_index(data_dir: str | Path = "data") -> dict[str, Any]:
         # ── 3. index characters ────────────────────────────────────────────
         characters_path = data / "characters.json"
         if characters_path.exists():
+            _safe_delete(col, {"source_type": "character"}, warnings)
             try:
                 chars = json.loads(characters_path.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
@@ -245,6 +242,7 @@ def build_or_update_index(data_dir: str | Path = "data") -> dict[str, Any]:
         # ── 4. index world bible ───────────────────────────────────────────
         world_path = data / "world_bible.json"
         if world_path.exists():
+            _safe_delete(col, {"source_type": "world_bible"}, warnings)
             try:
                 world = json.loads(world_path.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
@@ -480,6 +478,7 @@ def _safe_add(
     warnings: list[str] = []
     if not ids:
         return warnings
+    embeddings = [_ngram_embed(doc, _EMBEDDING_DIM) for doc in docs]
     # Check if already indexed
     try:
         existing = col.get(ids=[ids[0]])
@@ -488,7 +487,7 @@ def _safe_add(
     except Exception:
         pass
     try:
-        col.add(ids=ids, documents=docs, metadatas=metas)
+        col.add(ids=ids, documents=docs, metadatas=metas, embeddings=embeddings)
         return warnings
     except Exception as exc:
         first_error = _error_text(exc)
@@ -496,7 +495,7 @@ def _safe_add(
     failed = 0
     for i, doc_id in enumerate(ids):
         try:
-            col.add(ids=[doc_id], documents=[docs[i]], metadatas=[metas[i]])
+            col.add(ids=[doc_id], documents=[docs[i]], metadatas=[metas[i]], embeddings=[embeddings[i]])
         except Exception:
             failed += 1
     if failed:
@@ -504,6 +503,16 @@ def _safe_add(
             f"向量添加失败：{failed}/{len(ids)} 条（{first_error[:120]}）"
         )
     return warnings
+
+
+def _safe_delete(col: Any, where: dict[str, Any], warnings: list[str]) -> None:
+    """Drop old source chunks before a local incremental replacement."""
+    if not hasattr(col, "delete"):
+        return
+    try:
+        col.delete(where=where)
+    except Exception as exc:
+        warnings.append(f"Vector cleanup failed: {_error_text(exc)[:120]}")
 
 
 def _safe_id(raw: str) -> str:

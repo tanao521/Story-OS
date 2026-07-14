@@ -47,7 +47,7 @@ def archive_chapter(chapter_number: int, data_dir: str | Path = "data", reason: 
         _rollback_moves(moved)
         raise
 
-    return {
+    result = {
         "chapter": chapter_number,
         "archive_dir": archive_root.as_posix(),
         "archive_meta_path": (archive_root / "archive_meta.json").as_posix(),
@@ -58,6 +58,14 @@ def archive_chapter(chapter_number: int, data_dir: str | Path = "data", reason: 
         },
         "external_cleanup": meta["external_cleanup"],
     }
+    # Advisory only: archive completion must never be blocked by planning control.
+    try:
+        from core.project_context import get_project_context
+        from planning_engine.rolling_integration import mark_rolling_window_dirty
+        result["rolling_window_notice"] = mark_rolling_window_dirty(get_project_context(root.parent), "chapter_archived")
+    except Exception as exc:
+        result["rolling_window_notice"] = {"changed": False, "warning": f"Rolling window status check failed: {str(exc)[:160]}"}
+    return result
 
 
 def is_chapter_archived(chapter_number: int, data_dir: str | Path = "data") -> bool:

@@ -5,6 +5,8 @@ from typing import Any
 import config
 from llm.deepseek_client import DeepSeekClient, DeepSeekError
 from llm.json_utils import deep_merge_missing, ensure_required_keys
+from llm.model_gateway import get_model_gateway
+from llm.model_models import ModelGatewayError
 from llm.prompts import (
     STORY_SPEC_SCHEMA,
     build_blueprint_prompt,
@@ -52,12 +54,25 @@ def should_use_deepseek_for_planning(local_config: dict[str, Any]) -> bool:
     return bool(local_config.get("use_deepseek_for_planning")) and bool(config.DEEPSEEK_API_KEY)
 
 
-def create_deepseek_client() -> DeepSeekClient:
-    return DeepSeekClient(
-        api_key=config.DEEPSEEK_API_KEY,
-        model=config.DEEPSEEK_MODEL,
-        base_url=config.DEEPSEEK_BASE_URL,
-    )
+class RoutedPlanningClient:
+    """Legacy planning-client shape backed by the phase 8 gateway."""
+    def chat_text(self, prompt: str, temperature: float = 0.4) -> str:
+        try:
+            return get_model_gateway().generate_text("planning_analysis", prompt, temperature=temperature, prompt_id="generic")
+        except ModelGatewayError as exc:
+            raise DeepSeekError(str(exc)) from exc
+
+    def chat_json(self, prompt: str, temperature: float = 0.4) -> dict[str, Any]:
+        try:
+            return get_model_gateway().generate_json("planning_analysis", prompt, temperature=temperature, prompt_id="generic")
+        except ModelGatewayError as exc:
+            raise DeepSeekError(str(exc)) from exc
+
+
+def create_deepseek_client() -> DeepSeekClient | RoutedPlanningClient:
+    # Existing planning functions keep their synchronous, injectable interface while
+    # all production requests gain routing, fallback and a sanitized trace.
+    return RoutedPlanningClient()
 
 
 def generate_story_spec_with_deepseek(

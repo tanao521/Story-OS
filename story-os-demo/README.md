@@ -1,5 +1,43 @@
 # Story OS Demo
 
+## 阶段 14.2–14.3B：规划控制、滚动窗口、依赖图与叙事调度
+
+规划控制层是作者确认的独立数据层，不会替代或自动改写
+`data/story_blueprint.json`、`data/next_chapter_plan.json`、`data/state.json`、正文、正史或叙事记忆。
+
+- 滚动窗口保存在 `data/planning_control/rolling_window.json`：首次只读不会落盘；作者确认初始化后，可维护近景（3–5 章）、中景（默认合计约 15 章）和只读远景摘要。
+- 依赖图保存在 `data/planning_control/dependencies.json`：首次只读同样不会落盘；关系固定为“前置节点 → 下游节点”，支持战略、里程碑、卷/阶段契约、章节槽位、蓝图只读节点和自定义规划节点。
+- 依赖图会检测自引用、重复有效边、直接/间接前置循环、互相阻断、缺失/取消来源和可解析的章节顺序冲突；它只提示或拒绝非法关系，绝不自动排程、移动章节或调用模型。
+- 叙事调度保存在 `data/planning_control/narrative_schedules.json`：作者可把已有主线、角色弧线或伏笔手动安排到未来章节槽位，查看主体时间线、槽位负载与依赖警告；不会自动移动章节、修改正史或调用模型。
+- 两层数据均按 `ProjectContext` 隔离，并使用规划控制版本、锁、操作幂等键和独立修订号保护并发编辑。
+
+主要接口：
+
+- `GET/POST /api/planning-control/rolling-window` 及 `/slots` 子资源
+- `GET/POST/PUT /api/planning-control/dependencies`
+- `GET /api/planning-control/dependencies/{id}`、`/health`、`/validate`、`/upstream`、`/downstream`
+- `POST /api/planning-control/dependencies/{id}/transition`
+- `GET/POST/PUT /api/planning-control/dependency-nodes` 及 `/transition`
+- `GET/POST/PUT /api/planning-control/schedules`，以及 `/health`、`/validate`、`/timeline`、`/by-slot` 和状态转换子资源
+
+页面中的“依赖关系”位于“全书战略与叙事契约”内，可创建、筛选、停用/启用/取消关系，查看图健康状态，并查询上游和下游节点。
+
+## 阶段 14.1：规划控制层
+
+规划控制层是对现有 `data/story_blueprint.json` 和 `data/next_chapter_plan.json` 的增量约束层，不替换它们，也不会推进 `state.json.current_chapter`。首次读取只返回蓝图投影；只有作者保存战略、里程碑、卷/阶段契约或锁定记录时，才会在项目内创建 `data/planning_control/`。
+
+主要接口：
+
+- `GET/PUT /api/planning-control/strategy`
+- `GET/POST/PUT /api/planning-control/milestones`
+- `GET/POST/PUT /api/planning-control/volume-contracts`
+- `GET/POST/PUT /api/planning-control/phase-contracts`
+- `GET/POST /api/planning-control/locks`、`POST /api/planning-control/locks/{id}/release`
+- `GET /api/planning-control/conflicts`、`POST /api/planning-control/conflicts/scan`
+- `GET /api/planning-control/versions`、`POST /api/planning-control/versions/{id}/restore`
+
+所有写入由作者操作触发，并以独立快照保存版本；版本恢复只恢复控制层数据，不修改蓝图、当前章节计划、正文或正史。
+
 Story OS Demo 是一个个人用的轻量级 AI 小说工作流系统 Demo。
 
 ## v1.5: API ??? draft generation
@@ -574,6 +612,60 @@ Web 控制台支持基于 draft / edited / manual 版本进行人工改稿，并
 - Web 不显示 API Key，也不会读取或展示 .env 原文。
 
 ## Project context files
+
+## Phase 11: Commercial writing analytics
+
+The local-only analytics centre adds a project-scoped `data/story_analytics/`
+profile, explainable genre and audience signals, chapter scorecards, simulated
+retention risks, emotion/satisfaction markers, and a Story Market Report.
+It never crawls platforms, reads account data, predicts revenue, or promises a
+hit. Every API response includes a source label: `rule_based`,
+`ai_simulation`, or `manual_input`.
+
+Web APIs:
+
+```text
+GET  /api/analytics/project
+PUT  /api/analytics/project
+POST /api/analytics/market
+POST /api/analytics/audience
+GET  /api/analytics/chapter/{id}
+GET  /api/analytics/retention
+GET  /api/analytics/emotion
+GET  /api/analytics/satisfaction
+GET  /api/analytics/report
+```
+
+The Phase 10 team also includes Market Analyst, Audience Analyst, Story
+Strategist, and Retention Analyst in the author-gated `commercial_review_v1`
+workflow. Their notes remain advisory and never write, approve, or commit a
+chapter.
+
+## Phase 12: Author knowledge assets
+
+Author-owned knowledge is stored once at the Story OS workspace level in
+`data/author_profile/` and `data/creative_assets/`. It is intentionally
+separate from any novel project: only manually saved preferences, experiences,
+templates and idea fragments are reusable across projects. Chapters, drafts,
+project state and private project memory are never copied into this store.
+
+The Author Center supports profile and preference management, rule-based style
+signals, success/failure lessons, reusable creative assets, an idea inbox, and
+non-binding Author Copilot reminders. The Context Builder exposes this content
+as `author_global` before project rules and reports conflicts as choices rather
+than overwriting the author.
+
+```text
+GET /api/author/profile
+PUT /api/author/profile
+PUT /api/author/preferences
+GET /api/author/assets
+POST /api/author/assets
+GET /api/author/experience
+POST /api/author/failures
+POST /api/author/style/analyze
+GET /api/author/copilot
+```
 
 This project uses two local context files for Codex:
 

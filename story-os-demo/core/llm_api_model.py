@@ -67,6 +67,22 @@ def generate_with_api_model(messages: list[dict[str, Any]]) -> str:
     if not isinstance(messages, list) or not messages:
         raise RuntimeError("API 模型 messages 不能为空。")
 
+    # Web jobs bind a frozen route before entering the chapter pipeline. Keep
+    # the established synchronous CLI path below intact for legacy scripts.
+    try:
+        from llm.model_gateway import current_model_route_snapshot, get_model_gateway
+        snapshot = current_model_route_snapshot()
+        if snapshot and snapshot.get("task_type") == "write_draft":
+            prompt = "\n\n".join(str(item.get("content", "")) for item in messages if isinstance(item, dict))
+            text = get_model_gateway().generate_text("write_draft", prompt, temperature=0.7, prompt_id="chapter_draft", route_snapshot=snapshot)
+            if not text.strip() or len(text.strip()) < 100:
+                raise RuntimeError("API model returned an unusable draft.")
+            return text
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"API model request failed: {exc}") from exc
+
     try:
         import requests
     except ImportError as exc:

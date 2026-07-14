@@ -300,7 +300,7 @@ textarea { resize: vertical; min-height: 104px; line-height: 1.7; }
 .narrative-metrics > div { display:grid; gap:2px; padding:11px 13px; border-right:1px solid rgba(151,190,232,.12); background:rgba(255,255,255,.025); }
 .narrative-metrics > div:last-child { border-right:0; }
 .narrative-metrics b { color:#d8f5f3; font-size:20px; font-variant-numeric:tabular-nums; }
-.narrative-metrics span { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
+.narrative-metrics span { color:var(--muted); font-size:11px; letter-spacing:.03em; }
 .narrative-metrics .has-conflicts b { color:var(--danger); }
 .narrative-ledger-grid { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(260px,.85fr); gap:14px; }
 .narrative-ledger-grid > section { padding:12px; border:1px solid rgba(151,190,232,.14); border-radius:11px; background:rgba(5,14,24,.3); }
