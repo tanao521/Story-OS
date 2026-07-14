@@ -647,6 +647,13 @@ def commit_chapter_command() -> dict[str, Any]:
         reflection_job = get_job_manager().create_job("chapter_reflection", {"chapter_id": chapter_id, "created_by": "system"}, context=get_project_context())
     except Exception as exc:
         warnings.append(f"创作复盘待重试：{str(exc)[:160]}")
+    try:
+        from planning_engine.rolling_integration import mark_anchor_changed
+        rolling_notice = mark_anchor_changed(get_project_context(), "canon_commit")
+        if rolling_notice.get("warning") and rolling_notice.get("changed"):
+            warnings.append(str(rolling_notice["warning"]))
+    except Exception as exc:
+        warnings.append(f"Rolling window status check can be retried manually: {str(exc)[:160]}")
     return _success(
         "commit-chapter",
         "当前章已提交。",

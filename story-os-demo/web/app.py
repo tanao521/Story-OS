@@ -16,6 +16,7 @@ from web.routes import router
 from web.analytics_routes import router as analytics_router
 from web.author_routes import router as author_router
 from web.creative_loop_routes import router as creative_loop_router
+from web.planning_control_routes import router as planning_control_router
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -37,6 +38,7 @@ app.include_router(router)
 app.include_router(analytics_router)
 app.include_router(author_router)
 app.include_router(creative_loop_router)
+app.include_router(planning_control_router)
 
 
 @app.exception_handler(StoryOSError)

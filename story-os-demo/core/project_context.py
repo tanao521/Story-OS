@@ -69,6 +69,17 @@ class ProjectContext:
     creative_outcomes_dir: Path
     creative_events_dir: Path
     creative_audit_dir: Path
+    planning_control_dir: Path
+    planning_strategy_path: Path
+    planning_milestones_path: Path
+    volume_contracts_path: Path
+    phase_contracts_path: Path
+    planning_locks_path: Path
+    planning_conflicts_path: Path
+    planning_metadata_path: Path
+    planning_control_versions_dir: Path
+    rolling_window_path: Path
+    planning_dependencies_path: Path
 
     def relative_path(self, path: Path) -> str:
         """Return a safe project-relative display path."""
@@ -109,6 +120,17 @@ def get_project_context(project_root: str | Path | None = None) -> ProjectContex
         creative_patterns_dir=data / "creative_loop" / "patterns", creative_evolution_dir=data / "creative_loop" / "evolution",
         creative_outcomes_dir=data / "creative_loop" / "outcomes", creative_events_dir=data / "creative_loop" / "events",
         creative_audit_dir=data / "creative_loop" / "audit",
+        planning_control_dir=data / "planning_control",
+        planning_strategy_path=data / "planning_control" / "strategy.json",
+        planning_milestones_path=data / "planning_control" / "milestones.json",
+        volume_contracts_path=data / "planning_control" / "volume_contracts.json",
+        phase_contracts_path=data / "planning_control" / "phase_contracts.json",
+        planning_locks_path=data / "planning_control" / "locks.json",
+        planning_conflicts_path=data / "planning_control" / "conflicts.json",
+        planning_metadata_path=data / "planning_control" / "metadata.json",
+        planning_control_versions_dir=data / "planning_control" / "versions",
+        rolling_window_path=data / "planning_control" / "rolling_window.json",
+        planning_dependencies_path=data / "planning_control" / "dependencies.json",
     )
 
 
