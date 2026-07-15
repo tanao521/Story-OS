@@ -74,6 +74,10 @@ def test_project_create_uses_core_create_function(monkeypatch: Any) -> None:
         }
 
     monkeypatch.setattr("web.routes.create_story_project", fake_create_story_project)
+    monkeypatch.setattr(
+        "web.routes.commands.initialize_planning_command",
+        lambda use_deepseek=False: {"status": "success", "outputs": {}, "warnings": []},
+    )
 
     data = client.post("/api/project/create", json={
         "title": "测试小说",

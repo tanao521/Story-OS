@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.templating import Jinja2Templates
 
 import commands
@@ -43,6 +43,9 @@ from evaluation_engine.improvement_policy import ImprovementPolicyError
 from evaluation_engine.improvement_service import ImprovementService
 from evaluation_engine.candidate_adoption_service import CandidateAdoptionError, CandidateAdoptionService
 from evaluation_engine.candidate_partial_adoption_service import PartialAdoptionError, CandidatePartialAdoptionService
+from evaluation_engine.planning_evaluation import PlanningEvaluationError, PlanningEvaluationService
+from evaluation_engine.planning_comparison import PlanningComparisonError, PlanningEvaluationComparisonService
+from evaluation_engine.production_service import EvaluationProductionError, EvaluationProductionService
 from llm.model_gateway import ModelGateway, get_model_gateway
 from llm.model_models import ModelGatewayError
 from llm.prompt_registry import PromptRegistry
@@ -257,6 +260,25 @@ def _evaluation_failure(error: EvaluationError) -> JSONResponse:
     return JSONResponse(api_error(str(error), [error.code]), status_code=status)
 
 
+def _planning_evaluation_failure(error: PlanningEvaluationError) -> JSONResponse:
+    if error.code in {"PLANNING_EVALUATION_SCOPE_NOT_FOUND", "PLANNING_EVALUATION_PROFILE_NOT_FOUND"}: status = 404
+    elif error.code in {"PLANNING_EVALUATION_SOURCE_CHANGED", "PLANNING_EVALUATION_OPERATION_CONFLICT"}: status = 409
+    elif error.code == "PLANNING_EVALUATION_INSUFFICIENT_EVIDENCE": status = 422
+    elif error.code == "PLANNING_EVALUATION_WRITE_FAILED": status = 500
+    else: status = 400
+    return JSONResponse(api_error(str(error), [error.code]), status_code=status)
+
+
+def _planning_comparison_failure(error: PlanningComparisonError) -> JSONResponse:
+    status = 404 if error.code == "PLANNING_COMPARISON_REPORT_NOT_FOUND" else 409 if error.code in {"PLANNING_COMPARISON_PROJECT_MISMATCH", "PLANNING_COMPARISON_TARGET_MISMATCH", "PLANNING_COMPARISON_SCOPE_MISMATCH", "PLANNING_COMPARISON_PROFILE_MISMATCH"} else 422
+    return JSONResponse(api_error(str(error), [error.code]), status_code=status)
+
+
+def _evaluation_production_failure(error: EvaluationProductionError) -> JSONResponse:
+    status = 404 if error.code.endswith("NOT_FOUND") else 409 if error.code.endswith("STALE") else 422
+    return JSONResponse(api_error(str(error), [error.code]), status_code=status)
+
+
 def _improvement_failure(error: ImprovementPolicyError) -> JSONResponse:
     status = 404 if error.code == "IMPROVEMENT_NOT_FOUND" else 409 if error.code in {"IMPROVEMENT_SOURCE_CHANGED", "CHAPTER_OPERATION_CONFLICT", "IMPROVEMENT_CANDIDATE_LIMIT"} else 422
     return JSONResponse(api_error(str(error), [error.code]), status_code=status)
@@ -290,12 +312,42 @@ def api_evaluation_profiles() -> dict[str, Any]:
 
 @router.get("/api/evaluations")
 def api_evaluations_list(
-    target_type: str = "", chapter_number: int | None = None, status: str = "", limit: int = 30,
+    target_type: str = "", chapter_number: int | None = None, volume_id: str = "", window_id: str = "", status: str = "", limit: int = 20, cursor: str = "",
 ) -> JSONResponse:
     try:
-        return JSONResponse(api_ok(result={"evaluations": EvaluationService(get_project_context()).list_reports(target_type=target_type, chapter_number=chapter_number, status=status, limit=limit)}))
+        context = get_project_context()
+        chapter_reports = [] if target_type in {"near_planning_window", "current_volume", "whole_book_planning"} else EvaluationService(context).list_reports(target_type=target_type, chapter_number=chapter_number, status=status, limit=limit)
+        planning_reports = PlanningEvaluationService(context).list_reports(target_type=target_type, volume_id=volume_id, window_id=window_id, status=status, limit=limit) if not target_type or target_type in {"near_planning_window", "current_volume", "whole_book_planning"} else []
+        reports = sorted(chapter_reports + planning_reports, key=lambda item: f"{item.get('created_at') or ''}|{item.get('evaluation_id') or ''}", reverse=True)
+        bounded = max(1, min(int(limit or 20), 100))
+        if cursor: reports = [item for item in reports if f"{item.get('created_at') or ''}|{item.get('evaluation_id') or ''}" < cursor]
+        page = reports[:bounded]
+        return JSONResponse(api_ok(result={"evaluations": page, "next_cursor": f"{page[-1].get('created_at') or ''}|{page[-1].get('evaluation_id') or ''}" if len(reports) > len(page) and page else None, "limit": bounded}))
     except EvaluationError as error:
         return _evaluation_failure(error)
+
+
+@router.get("/api/evaluations/planning/overview")
+def api_planning_evaluation_overview() -> JSONResponse:
+    try:
+        return JSONResponse(api_ok(result=PlanningEvaluationService(get_project_context()).overview()))
+    except PlanningEvaluationError as error:
+        return _planning_evaluation_failure(error)
+
+
+@router.post("/api/evaluations/planning")
+async def api_planning_evaluation_generate(request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        return JSONResponse(api_error("Planning evaluation request must be a JSON object.", ["PLANNING_EVALUATION_SCOPE_INVALID"]), status_code=400)
+    try:
+        report, replayed = PlanningEvaluationService(get_project_context()).generate(payload)
+        return JSONResponse(api_ok("Planning evaluation was generated from existing planning sources; no model or planning mutation was used.", {"evaluation": report, "replayed": replayed}))
+    except PlanningEvaluationError as error:
+        return _planning_evaluation_failure(error)
 
 
 @router.post("/api/evaluations")
@@ -318,7 +370,76 @@ def api_evaluation_detail(evaluation_id: str) -> JSONResponse:
     try:
         return JSONResponse(api_ok(result={"evaluation": EvaluationService(get_project_context()).detail(evaluation_id)}))
     except EvaluationError as error:
-        return _evaluation_failure(error)
+        try:
+            return JSONResponse(api_ok(result={"evaluation": PlanningEvaluationService(get_project_context()).detail(evaluation_id)}))
+        except PlanningEvaluationError as planning_error:
+            return _planning_evaluation_failure(planning_error) if planning_error.code != "PLANNING_EVALUATION_SCOPE_NOT_FOUND" else _evaluation_failure(error)
+
+
+@router.get("/api/evaluations/{evaluation_id}/comparison")
+def api_planning_evaluation_comparison(evaluation_id: str, baseline_evaluation_id: str | None = None) -> JSONResponse:
+    try:
+        return JSONResponse(api_ok(result={"comparison": PlanningEvaluationComparisonService(get_project_context()).comparison(evaluation_id, baseline_evaluation_id)}))
+    except PlanningComparisonError as error:
+        return _planning_comparison_failure(error)
+
+
+@router.get("/api/evaluations/{evaluation_id}/comparable-reports")
+def api_planning_evaluation_comparable_reports(evaluation_id: str) -> JSONResponse:
+    try:
+        return JSONResponse(api_ok(result={"reports": PlanningEvaluationComparisonService(get_project_context()).comparable_reports(evaluation_id)}))
+    except PlanningComparisonError as error:
+        return _planning_comparison_failure(error)
+
+
+@router.get("/api/evaluations/{evaluation_id}/planning-proposals")
+def api_planning_evaluation_proposals(evaluation_id: str) -> JSONResponse:
+    try:
+        return JSONResponse(api_ok(result=PlanningEvaluationComparisonService(get_project_context()).proposals(evaluation_id)))
+    except PlanningComparisonError as error:
+        return _planning_comparison_failure(error)
+
+
+@router.get("/api/evaluations/usage/summary")
+def api_evaluation_usage_summary(chapter_number: int | None = None, evaluation_id: str = "", improvement_request_id: str = "", candidate_id: str = "", date_from: str = "", date_to: str = "") -> JSONResponse:
+    return JSONResponse(api_ok(result=EvaluationProductionService(get_project_context()).usage_summary(chapter_number=chapter_number, evaluation_id=evaluation_id, improvement_request_id=improvement_request_id, candidate_id=candidate_id, date_from=date_from, date_to=date_to)))
+
+
+@router.get("/api/evaluations/usage/events")
+def api_evaluation_usage_events(cursor: str = "", limit: int = 20, chapter_number: int | None = None, evaluation_id: str = "", improvement_request_id: str = "", candidate_id: str = "", date_from: str = "", date_to: str = "") -> JSONResponse:
+    return JSONResponse(api_ok(result=EvaluationProductionService(get_project_context()).usage_events(cursor=cursor, limit=limit, chapter_number=chapter_number, evaluation_id=evaluation_id, improvement_request_id=improvement_request_id, candidate_id=candidate_id, date_from=date_from, date_to=date_to)))
+
+
+@router.get("/api/evaluations/maintenance/preview")
+def api_evaluation_maintenance_preview() -> JSONResponse:
+    return JSONResponse(api_ok(result=EvaluationProductionService(get_project_context()).maintenance_preview()))
+
+
+@router.post("/api/evaluations/maintenance/cleanup")
+async def api_evaluation_maintenance_cleanup(request: Request) -> JSONResponse:
+    try: payload = await request.json()
+    except Exception: payload = {}
+    if not isinstance(payload, dict): return JSONResponse(api_error("Maintenance request must be a JSON object.", ["EVALUATION_MAINTENANCE_REQUEST_INVALID"]), status_code=422)
+    try: return JSONResponse(api_ok(result=EvaluationProductionService(get_project_context()).cleanup(payload)))
+    except EvaluationProductionError as error: return _evaluation_production_failure(error)
+
+
+@router.get("/api/evaluations/{evaluation_id}/export")
+def api_evaluation_export(evaluation_id: str, format: str = "json") -> PlainTextResponse:
+    try:
+        content_type, body = EvaluationProductionService(get_project_context()).export(evaluation_id, format)
+        return PlainTextResponse(body, media_type=content_type)
+    except EvaluationProductionError as error:
+        return PlainTextResponse(json.dumps(api_error(str(error), [error.code]), ensure_ascii=False), status_code=404 if error.code.endswith("NOT_FOUND") else 422, media_type="application/json")
+
+
+@router.get("/api/evaluations/{evaluation_id}/comparison/export")
+def api_planning_comparison_export(evaluation_id: str, format: str = "markdown") -> PlainTextResponse:
+    try:
+        content_type, body = EvaluationProductionService(get_project_context()).export(evaluation_id, format, comparison=True)
+        return PlainTextResponse(body, media_type=content_type)
+    except EvaluationProductionError as error:
+        return PlainTextResponse(json.dumps(api_error(str(error), [error.code]), ensure_ascii=False), status_code=404 if error.code.endswith("NOT_FOUND") else 422, media_type="application/json")
 
 
 # Stage 15.2A: request a restricted candidate only. This API never activates or applies it.

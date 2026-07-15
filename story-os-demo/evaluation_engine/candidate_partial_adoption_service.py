@@ -212,6 +212,8 @@ class CandidatePartialAdoptionService:
         return value
 
     def _validate_payload(self, request: dict[str, Any], candidate: dict[str, Any], current: dict[str, Any], preview: dict[str, Any], payload: dict[str, Any]) -> None:
+        if len(str(payload.get("operation_id") or "")) > 128 or len(str(payload.get("review_reason") or "")) > 2000:
+            raise PartialAdoptionError("PARTIAL_ADOPTION_INPUT_INVALID", "operation_id or review_reason exceeds the allowed length.")
         if request.get("state") == "review_required" and (not bool(payload.get("author_confirm")) or not str(payload.get("review_reason") or "").strip()):
             raise PartialAdoptionError("PARTIAL_ADOPTION_REVIEW_REASON_REQUIRED", "review_required candidates need author confirmation and a reason.")
         expected = {"candidate_id": candidate["candidate_id"], "expected_current_version_id": current["version_id"], "expected_current_version_revision": current["revision"], "expected_current_content_hash": current["content_hash"], "expected_candidate_hash": candidate["content_hash"], "expected_result_content_hash": preview.get("result_content_hash")}
@@ -225,6 +227,9 @@ class CandidatePartialAdoptionService:
             raise PartialAdoptionError("PARTIAL_ADOPTION_PREVIEW_STALE", "Client patch selection does not match the preview.")
 
     def _validate_preview_request(self, candidate: dict[str, Any], payload: dict[str, Any]) -> None:
+        selected = payload.get("selected_patch_ids")
+        if selected is not None and (not isinstance(selected, list) or len(selected) > 25):
+            raise PartialAdoptionError("PARTIAL_ADOPTION_SELECTION_INVALID", "selected_patch_ids must be a list of at most 25 items.")
         if payload.get("candidate_id") not in (None, "", candidate.get("candidate_id")):
             raise PartialAdoptionError("PARTIAL_ADOPTION_PREVIEW_STALE", "Candidate does not match the partial-adoption preview request.")
 

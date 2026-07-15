@@ -8,6 +8,10 @@ import time
 
 
 def _context(tmp_path):
+    # Confirmed patterns write author-level experience data.  Mark this
+    # temporary project as its own workspace so the test never climbs to the
+    # checked-out workspace's real author assets.
+    (tmp_path / ".story_os").mkdir(exist_ok=True)
     context = get_project_context(tmp_path)
     store = DataStore(context)
     store.write_markdown("data/chapters/chapter_001.md", "林舟在雨夜发现旧钥匙，却必须在救人和保守秘密之间做出选择。")

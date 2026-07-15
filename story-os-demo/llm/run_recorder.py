@@ -33,8 +33,8 @@ class RunRecorder:
         self._save(run)
         return run
 
-    def finish(self, run: dict[str, Any], *, status: str, usage: dict[str, Any], cost: dict[str, Any], warnings: list[str] | None = None, error: str = "") -> dict[str, Any]:
-        run.update({"status": status, "finished_at": _now(), "usage": usage, "cost": cost, "warnings": [sanitize(item, 300) for item in (warnings or [])], "error": sanitize(error) if error else ""})
+    def finish(self, run: dict[str, Any], *, status: str, usage: dict[str, Any], cost: dict[str, Any], warnings: list[str] | None = None, error: str = "", latency_ms: float | None = None) -> dict[str, Any]:
+        run.update({"status": status, "finished_at": _now(), "usage": usage, "cost": cost, "warnings": [sanitize(item, 300) for item in (warnings or [])], "error": sanitize(error) if error else "", "latency_ms": round(float(latency_ms), 1) if latency_ms is not None else None})
         self._save(run)
         return run
 

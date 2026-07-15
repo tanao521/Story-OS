@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -122,7 +123,26 @@ class DataStore:
                 os.fsync(handle.fileno())
             if backup and target.exists():
                 self.backup_file(target)
-            os.replace(temp_name, target)
+            # Windows may briefly retain a handle after a reader closes a file.
+            # Retry only that narrow replace race; serialization and path errors
+            # remain visible to callers instead of being hidden by retries.
+            last_error: OSError | None = None
+            for attempt, delay in enumerate((0.0, 0.05, 0.18)):
+                if delay:
+                    time.sleep(delay)
+                try:
+                    os.replace(temp_name, target)
+                    last_error = None
+                    break
+                except PermissionError as exc:
+                    last_error = exc
+                except OSError as exc:
+                    # Windows sharing violations are exposed as winerror 32/33.
+                    if getattr(exc, "winerror", None) not in {32, 33}:
+                        raise
+                    last_error = exc
+            if last_error is not None:
+                raise last_error
             temp_name = None
         except OSError as exc:
             raise DataWriteError(f"Cannot write file atomically: {self.context.relative_path(target)}") from exc

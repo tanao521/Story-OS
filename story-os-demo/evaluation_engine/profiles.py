@@ -18,6 +18,17 @@ CHAPTER_DIMENSIONS = (
     ("ending_drive", "章末驱动力", 0.06),
 )
 
+PLANNING_DIMENSIONS = (
+    ("structural_completeness", "战略与结构完整度", .12),
+    ("causal_dependency", "因果与依赖一致性", .16),
+    ("plot_progression", "主线推进覆盖度", .14),
+    ("pacing_tension", "节奏与张力分布", .14),
+    ("character_arc", "角色弧光完整度", .12),
+    ("foreshadowing", "伏笔闭环度", .12),
+    ("chapter_load", "章节承载均衡度", .10),
+    ("milestone_alignment", "里程碑与契约对齐度", .10),
+)
+
 
 def chapter_default_profile() -> dict[str, Any]:
     return {
@@ -35,8 +46,19 @@ def chapter_default_profile() -> dict[str, Any]:
     }
 
 
+def planning_default_profile() -> dict[str, Any]:
+    return {
+        "profile_id": "planning-default-v1", "name": "长篇规划综合评估",
+        "target_type": "planning", "version": 1,
+        "dimensions": [{"dimension_id": key, "display_name": name, "weight": weight} for key, name, weight in PLANNING_DIMENSIONS],
+        "gate_rules": ["dependency_cycle", "hard_dependency_order", "payoff_before_plant", "reanchor_required", "locked_contract_conflict", "invalid_reference"],
+        "minimum_confidence": .6, "created_at": datetime.now(timezone.utc).isoformat(),
+        "scoring_rules_version": "planning-rubric-v1",
+    }
+
+
 def profiles() -> list[dict[str, Any]]:
-    return [chapter_default_profile()]
+    return [chapter_default_profile(), planning_default_profile()]
 
 
 def profile(profile_id: str) -> dict[str, Any] | None:
