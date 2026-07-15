@@ -26,6 +26,12 @@ class ImprovementService:
         self.context, self.store = context, DataStore(context)
 
     def prepare(self, evaluation_id: str, payload: dict[str, Any], active_jobs: list[dict[str, Any]] | None = None) -> tuple[dict[str, Any], bool]:
+        operation_value = str(payload.get("operation_id", "") or "").strip()
+        if len(operation_value) > 128:
+            raise ImprovementPolicyError("IMPROVEMENT_OPERATION_INVALID", "operation_id must be 128 characters or fewer.")
+        submitted_issue_ids = payload.get("issue_ids", [])
+        if submitted_issue_ids not in (None, []) and (not isinstance(submitted_issue_ids, list) or len(submitted_issue_ids) > 25 or len({str(item) for item in submitted_issue_ids}) != len(submitted_issue_ids)):
+            raise ImprovementPolicyError("IMPROVEMENT_ISSUE_SELECTION_INVALID", "issue_ids must be a unique list of at most 25 items.")
         report = self._evaluation(evaluation_id)
         if report.get("project_id") != self.context.root.name or report.get("target_type") != "chapter_draft":
             raise ImprovementPolicyError("IMPROVEMENT_SOURCE_CHANGED", "Evaluation does not belong to this project draft.")
@@ -34,13 +40,13 @@ class ImprovementService:
             raise ImprovementPolicyError("IMPROVEMENT_SOURCE_CHANGED", "The evaluated source text has changed.")
         selectable, disabled = selectable_issues(report)
         allowed = {str(item["issue_id"]) for item in selectable}
-        chosen = [str(item) for item in payload.get("issue_ids", []) if str(item)] or list(allowed)
+        chosen = [str(item) for item in submitted_issue_ids or [] if str(item)] or list(allowed)
         if not chosen or any(item not in allowed for item in chosen):
             raise ImprovementPolicyError("IMPROVEMENT_ISSUE_NOT_AUTO_FIXABLE", "Only selected auto_low_risk issues may be revised.")
         chapter = int(report.get("target_ref", {}).get("chapter_number") or 0)
         if any(job.get("job_type") == "quality_improvement" and int((job.get("parameters") or {}).get("chapter_id", -1)) == chapter for job in active_jobs or []):
             raise ImprovementPolicyError("CHAPTER_OPERATION_CONFLICT", "A quality refresh is already active for this chapter.")
-        operation_id = str(payload.get("operation_id", "")).strip()
+        operation_id = operation_value
         if operation_id:
             prior = self._find_operation(operation_id)
             if prior:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+import time
 from typing import Any
 
 from core.project_context import ProjectContext, get_project_context
@@ -47,10 +48,11 @@ class ModelGateway:
         first = self.registry.model(selected)
         self._preflight(first, request, selected)
         run = self.recorder.start(task_type=request.task_type, model_key=selected, provider=first.provider, model=first.model, prompt_id=metadata["prompt_id"], prompt_version=str(snapshot.get("prompt_version") or metadata["prompt_version"]), prompt_hash=metadata["prompt_hash"], job_id=request.job_id, chapter_id=request.chapter_id, route_snapshot=self._public_snapshot(snapshot))
+        started = time.perf_counter()
         errors: list[str] = []
         for index, model_key in enumerate(chain):
             if request.cancellation_requested and request.cancellation_requested():
-                self.recorder.finish(run, status="cancelled", usage={}, cost={}, warnings=errors, error="Cancelled at a safe model-call boundary.")
+                self.recorder.finish(run, status="cancelled", usage={}, cost={}, warnings=errors, error="Cancelled at a safe model-call boundary.", latency_ms=(time.perf_counter() - started) * 1000)
                 raise ModelGatewayError("Model call cancelled.", code="CANCELLED")
             definition = self.registry.model(model_key)
             if not definition.enabled:
@@ -70,19 +72,19 @@ class ModelGateway:
                 cost = calculate_cost(usage, self.registry.pricing_for(model_key))
                 warnings = errors + (["Token usage was estimated locally."] if usage.get("estimated") else [])
                 self.recorder.attempt(run, model_key=model_key, status="completed")
-                self.recorder.finish(run, status="completed_with_fallback" if index else "completed", usage=usage, cost=cost, warnings=warnings)
+                self.recorder.finish(run, status="completed_with_fallback" if index else "completed", usage=usage, cost=cost, warnings=warnings, latency_ms=(time.perf_counter() - started) * 1000)
                 return response
             except Exception as exc:
                 self.recorder.attempt(run, model_key=model_key, status="failed", message=str(exc))
                 errors.append(f"{model_key}: {getattr(exc, 'code', 'MODEL_ERROR')}")
                 if not is_recoverable(exc):
-                    self.recorder.finish(run, status="failed", usage={}, cost={}, warnings=errors, error=str(exc))
+                    self.recorder.finish(run, status="failed", usage={}, cost={}, warnings=errors, error=str(exc), latency_ms=(time.perf_counter() - started) * 1000)
                     raise
                 if index + 1 >= len(chain):
-                    self.recorder.finish(run, status="failed", usage={}, cost={}, warnings=errors, error=str(exc))
+                    self.recorder.finish(run, status="failed", usage={}, cost={}, warnings=errors, error=str(exc), latency_ms=(time.perf_counter() - started) * 1000)
                     raise
         error = ModelGatewayError("All configured model routes failed.", code="MODEL_ROUTE_EXHAUSTED", recoverable=True)
-        self.recorder.finish(run, status="failed", usage={}, cost={}, warnings=errors, error=str(error))
+        self.recorder.finish(run, status="failed", usage={}, cost={}, warnings=errors, error=str(error), latency_ms=(time.perf_counter() - started) * 1000)
         raise error
 
     def generate_text(self, task_type: str, prompt: str, *, temperature: float = 0.4, max_tokens: int | None = None,

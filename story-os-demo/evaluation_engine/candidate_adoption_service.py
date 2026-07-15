@@ -195,6 +195,8 @@ class CandidateAdoptionService:
         return preview
 
     def _validate_adoption_payload(self, request: dict[str, Any], preview: dict[str, Any], payload: dict[str, Any]) -> None:
+        if len(str(payload.get("operation_id") or "")) > 128 or len(str(payload.get("review_reason") or "")) > 2000:
+            raise CandidateAdoptionError("CANDIDATE_ADOPTION_INPUT_INVALID", "operation_id or review_reason exceeds the allowed length.")
         if str(payload.get("candidate_id") or "") != str(preview.get("candidate_id") or ""): raise CandidateAdoptionError("CANDIDATE_ADOPTION_PREVIEW_STALE", "Candidate does not match the preview.")
         if request.get("state") == "review_required" and (not bool(payload.get("author_confirm")) or not str(payload.get("review_reason") or "").strip()):
             raise CandidateAdoptionError("AUTHOR_REVIEW_REQUIRED", "review_required candidates need author_confirm and review_reason.")

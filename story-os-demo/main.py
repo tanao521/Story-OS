@@ -87,6 +87,9 @@ def main() -> None:
     if command == "memory-health":
         run_memory_health_command(sys.argv[2:])
         return
+    if command == "evaluation-health":
+        run_evaluation_health_command(sys.argv[2:])
+        return
     if command == "repair-quality-report":
         run_repair_quality_report_command(sys.argv[2:])
         return
@@ -181,6 +184,7 @@ def main() -> None:
     for item in [
         "status",
         "memory-health",
+        "evaluation-health",
         "repair-quality-report",
         "init-vector-index",
         "rebuild-vector-index",
@@ -234,6 +238,22 @@ def run_memory_health_command(args: list[str]) -> None:
         _wait_for_repair_jobs(quality, vector)
         return
     command_api.memory_health_command(json_output="--json" in args, full="--full" in args)
+
+
+def run_evaluation_health_command(args: list[str]) -> None:
+    import json
+    from core.project_context import get_project_context
+    from evaluation_engine.production_service import EvaluationProductionService
+    report = EvaluationProductionService(get_project_context()).health()
+    if "--json" in args:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return
+    print("Story OS Evaluation Health")
+    print(f"Status: {report['status']}")
+    print(f"Index parseable: {report['index_parseable']}")
+    print(f"Missing reports: {len(report['missing_report_references'])}")
+    print(f"Expired previews: {report['expired_preview_count']}")
+    print(f"Interrupted jobs: {report['interrupted_job_count']}")
 
 
 def run_repair_quality_report_command(args: list[str]) -> None:
