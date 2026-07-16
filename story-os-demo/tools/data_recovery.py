@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,7 @@ REQUIRED_TOP_LEVEL_KEYS = {
     "next_chapter_plan": {"plan_version"},
 }
 EXCLUDED_PARTS = {".git", ".venv", "node_modules"}
+_PYTEST_RUN_PART = re.compile(r"pytest-(?:\d+|current)$")
 
 
 def sha256(path: Path) -> str:
@@ -46,8 +48,36 @@ def _target_for(path: Path) -> str | None:
     return None
 
 
+def _is_pytest_temporary_path(path: Path) -> bool:
+    """Return whether *path* is inside a known pytest-created directory.
+
+    This is deliberately based on complete path components rather than a
+    substring search: recovery scans must still accept project names such as
+    ``pytest-novel-project`` and ``temporary-kingdom``.
+    """
+    normalized = Path(os.path.normpath(os.fspath(path)))
+    parts = [part.casefold() for part in normalized.parts]
+    if any(part.startswith(".pytest-tmp-phase-") for part in parts):
+        return True
+    if any(part.startswith("storyos-pytest-") for part in parts):
+        return True
+
+    for index, part in enumerate(parts):
+        if part.startswith("pytest-of-") and any(
+            _PYTEST_RUN_PART.fullmatch(child) for child in parts[index + 1 :]
+        ):
+            return True
+        if part.startswith("storyos-phase-") and any(
+            child in {"pytest-temp", "diagnostic-temp"} for child in parts[index + 1 :]
+        ):
+            return True
+    return False
+
+
 def _allowed(path: Path, excluded_roots: Iterable[Path]) -> bool:
-    if any(part in EXCLUDED_PARTS or part.startswith(".pytest") for part in path.parts):
+    if path.is_symlink() or _is_pytest_temporary_path(path):
+        return False
+    if any(part.casefold() in EXCLUDED_PARTS for part in path.parts):
         return False
     return not any(path == root or root in path.parents for root in excluded_roots)
 
@@ -55,11 +85,11 @@ def _allowed(path: Path, excluded_roots: Iterable[Path]) -> bool:
 def inventory(roots: Iterable[Path], expected: dict[str, str], *, excluded_roots: Iterable[Path] = ()) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for root in roots:
-        if not root.exists() or not root.is_dir():
+        if not _allowed(root, excluded_roots) or not root.exists() or not root.is_dir():
             continue
-        for directory, names, files in os.walk(root):
+        for directory, names, files in os.walk(root, followlinks=False):
             current = Path(directory)
-            names[:] = [name for name in names if name not in EXCLUDED_PARTS and not name.startswith(".pytest") and not any((current / name) == excluded or excluded in (current / name).parents for excluded in excluded_roots)]
+            names[:] = [name for name in names if _allowed(current / name, excluded_roots)]
             for filename in files:
                 path = current / filename
                 if not _allowed(path, excluded_roots):

@@ -60,6 +60,9 @@ def test_preview_is_non_mutating_and_partial_adoption_only_applies_selected_patc
     assert saved["state"] == "partially_adopted" and saved["partial_adoption"]["diff_preview_id"] == preview["preview_id"]
     replay, replayed = service.adopt(request["improvement_id"], _adopt_payload(preview))
     assert replayed and replay["new_version"]["version_id"] == "manual_v001"
+    with pytest.raises(PartialAdoptionError) as conflict:
+        service.adopt(request["improvement_id"], _adopt_payload(preview, review_reason="different request"))
+    assert conflict.value.code == "OPERATION_ID_CONFLICT"
     with pytest.raises(CandidateAdoptionError) as error:
         CandidateAdoptionService(service.context).adopt(request["improvement_id"], {"operation_id": "whole-adopt"})
     assert error.value.code == "CANDIDATE_ALREADY_PARTIALLY_ADOPTED"

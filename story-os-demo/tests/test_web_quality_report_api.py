@@ -35,9 +35,12 @@ def test_quality_report_exists(monkeypatch: Any, tmp_path: Path) -> None:
         "checks": {},
     })
 
-    data = client.get("/api/quality-report?source_type=edited&version=1").json()
+    response = client.get("/api/quality-report?source_type=edited&version=1")
+    data = response.json()
 
     assert data["result"]["exists"] is True
+    assert response.headers["X-StoryOS-Compatibility"] == "compatibility"
+    assert response.headers["X-StoryOS-Canonical-Endpoint"] == "/api/evaluations"
     assert data["result"]["scores"]["continuity"] == 0.85
     assert data["result"]["flags"]
     assert data["result"]["suggestions"]

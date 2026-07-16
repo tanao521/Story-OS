@@ -22,13 +22,14 @@ def _summary_is_stale(chapter_id: int) -> bool:
     return _artifact_is_stale("chapter_summary", chapter_id)
 
 
-def build_working_context(
+def _build_legacy_working_context(
     state: dict[str, Any],
     memory_index: dict[str, Any],
     query: str = "",
     story_spec: dict[str, Any] | None = None,
     characters: dict[str, Any] | None = None,
     world_bible: dict[str, Any] | None = None,
+    allow_vector: bool = True,
 ) -> dict[str, Any]:
     current_chapter = int(state.get("current_chapter", 0) or 0)
     total_committed = len(memory_index.get("chapters", [])) if isinstance(memory_index.get("chapters"), list) else 0
@@ -80,7 +81,7 @@ def build_working_context(
     try:
         from system.vector_memory import is_available, search_similar
 
-        if is_available() and query:
+        if query and allow_vector and is_available():
             retrieval_mode = "keyword_plus_vector"
             vector_retrieved = [item for item in search_similar(query, max_results=8) if not _artifact_is_stale("vector_memory", int(item.get("chapter_id", -1) or -1))][:5]
     except Exception:
@@ -423,3 +424,17 @@ def _render_list(items: Any) -> str:
     if not isinstance(items, list) or not items:
         return "无"
     return "\n".join(f"- {item}" for item in items)
+
+
+def build_working_context(
+    state: dict[str, Any], memory_index: dict[str, Any], query: str = "",
+    story_spec: dict[str, Any] | None = None, characters: dict[str, Any] | None = None,
+    world_bible: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Compatibility entrypoint delegating read-only assembly to the authority service."""
+    from core.project_context import get_project_context
+    from system.context_assembly_service import ContextAssemblyService
+    return ContextAssemblyService(get_project_context()).assemble(
+        state=state, memory_index=memory_index, query=query, story_spec=story_spec,
+        characters=characters, world_bible=world_bible, purpose="chapter_drafting",
+    )

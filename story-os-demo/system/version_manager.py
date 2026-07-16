@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from system.chapter_archive import is_chapter_archived
+from core.contracts import HashGuard, ProjectRef
+from core.project_context import get_project_context
 
 
 VALID_SOURCE_TYPES = {"draft", "edited", "manual"}
@@ -78,12 +80,19 @@ def save_versions_index(
     versions: dict[str, Any],
     data_dir: str | Path = "data",
 ) -> str:
-    path = _index_path(chapter_id, Path(data_dir))
-    path.parent.mkdir(parents=True, exist_ok=True)
     versions["version_index"] = versions.get("version_index", "1.5")
     versions["chapter_id"] = chapter_id
-    path.write_text(json.dumps(versions, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return path.as_posix()
+    root = Path(data_dir).expanduser().resolve()
+    context = get_project_context(root.parent)
+    relative_root = root.relative_to(context.root)
+    path = (relative_root / "versions" / f"chapter_{format_chapter_id(chapter_id)}_versions.json").as_posix()
+    operation_id = f"version-index-{chapter_id}-{HashGuard.sha256_json(versions)[:12]}"
+    from system.version_writer_facade import VersionWriterFacade
+    VersionWriterFacade(context).write_versions_index(
+        project=ProjectRef.from_context(context), chapter_id=chapter_id, index=versions,
+        operation_id=operation_id, index_path=path,
+    )
+    return (root / "versions" / f"chapter_{format_chapter_id(chapter_id)}_versions.json").as_posix()
 
 
 def load_versions_index(chapter_id: int, data_dir: str | Path = "data") -> dict[str, Any]:
@@ -303,10 +312,16 @@ def _rollback_moves(moved: list[tuple[Path, Path]]) -> None:
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_name(f".{path.name}.tmp")
-    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temp_path.replace(path)
+    """Deprecated archive-only compatibility helper; not a work-version writer."""
+    data_root = next((parent for parent in path.parents if parent.name == "data"), None)
+    root = data_root.parent if data_root is not None else path.parents[4]
+    context = get_project_context(root)
+    relative = path.resolve().relative_to(context.root).as_posix()
+    from system.version_writer_facade import VersionWriterFacade
+    VersionWriterFacade(context)._write_compat_json(
+        ProjectRef.from_context(context), relative, payload,
+        f"archive-meta-{HashGuard.sha256_json(payload)[:12]}", "archive_meta", path.stem,
+    )
 
 
 def _read_index_if_exists(chapter_id: int, root: Path) -> dict[str, Any]:

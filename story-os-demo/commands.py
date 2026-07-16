@@ -14,6 +14,7 @@ from core.draft_writer import render_draft_markdown, write_chapter_draft
 from core.next_chapter_planner import plan_next_chapter, render_next_chapter_plan_markdown
 from core.project import ensure_project_structure, resolve_current_project_root
 from core.project_context import get_project_context
+from core.contracts import HashGuard, ProjectRef
 from core.setup_wizard import build_initial_state
 from core.world_builder import generate_world_bible, render_world_bible_markdown
 from llm.planning_service import (
@@ -22,7 +23,8 @@ from llm.planning_service import (
     plan_next_chapter_with_deepseek,
     should_use_deepseek_for_planning,
 )
-from system.context_builder import build_working_context, save_current_context
+from system.context_assembly_service import ContextAssemblyService
+from system.context_builder import save_current_context
 from system.file_store import load_json, save_json, save_markdown
 from system.planning_service import load_planning
 from system.memory_health import (
@@ -49,6 +51,7 @@ from system.version_manager import (
     save_versions_index,
     select_version,
 )
+from system.version_writer_facade import VersionWriterFacade
 
 
 def _refresh_current_context_after_commit(paths: dict[str, Path], state: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
@@ -57,7 +60,11 @@ def _refresh_current_context_after_commit(paths: dict[str, Path], state: dict[st
     story_spec = load_json(str(paths["story_spec"])) if paths["story_spec"].exists() else {}
     characters = load_json(str(paths["characters"])) if paths["characters"].exists() else {}
     world_bible = load_json(str(paths["world_bible"])) if paths["world_bible"].exists() else {}
-    context = build_working_context(state, memory_index, _build_context_query(state, paths), story_spec, characters, world_bible)
+    context = ContextAssemblyService(get_project_context()).assemble(
+        state=state, memory_index=memory_index, query=_build_context_query(state, paths),
+        story_spec=story_spec, characters=characters, world_bible=world_bible,
+        purpose="chapter_drafting",
+    )
     try:
         planning = load_planning(get_project_context())
         current = int(state.get("current_chapter", 0) or 0) + 1
@@ -86,7 +93,10 @@ def build_context_command() -> dict[str, Any]:
     characters = load_json(str(paths["characters"])) if paths["characters"].exists() else {}
     world_bible = load_json(str(paths["world_bible"])) if paths["world_bible"].exists() else {}
     query = _build_context_query(state, paths)
-    context = build_working_context(state, memory_index, query, story_spec, characters, world_bible)
+    context = ContextAssemblyService(get_project_context()).assemble(
+        state=state, memory_index=memory_index, query=query, story_spec=story_spec,
+        characters=characters, world_bible=world_bible, purpose="chapter_drafting",
+    )
     try:
         planning = load_planning(get_project_context())
         current = int(state.get("current_chapter", 0) or 0) + 1
@@ -550,20 +560,13 @@ def quality_check_command(
                 vp = build_versioned_paths(chapter_id, "edited", edit_version)
                 refined["version"] = edit_version
                 refined["version_label"] = f"edited_v{edit_version:03d}"
-                save_json(vp["json_path"], refined)
-                save_markdown(vp["markdown_path"], render_edited_markdown(refined))
+                context = get_project_context()
+                VersionWriterFacade(context).write_legacy_work_version(
+                    project=ProjectRef.from_context(context), chapter_id=chapter_id, kind="edited", version=edit_version,
+                    payload=refined, markdown=render_edited_markdown(refined),
+                    operation_id=f"refined-edited-{chapter_id}-{edit_version}-{HashGuard.sha256_json(refined)[:12]}", select=False,
+                )
                 versions = load_versions_index(chapter_id)
-                versions.setdefault("edited", [])
-                versions["edited"].append({
-                    "source_type": "edited",
-                    "version": edit_version,
-                    "version_label": f"edited_v{edit_version:03d}",
-                    "json_path": vp["json_path"],
-                    "markdown_path": vp["markdown_path"],
-                    "actual_word_count": refined.get("actual_word_count", 0),
-                    "mode": "api_model",
-                    "quality_score": None,
-                })
                 save_versions_index(chapter_id, versions)
 
                 # Re-run quality check on the refined version
@@ -926,12 +929,19 @@ def _save_draft_payload(
     draft["version_label"] = f"draft_v{version:03d}"
     draft["created_at"] = _now()
     markdown = render_draft_markdown(draft)
-    save_json(version_paths["json_path"], draft)
-    save_markdown(version_paths["markdown_path"], markdown)
-    save_json(str(latest_json_path), draft)
-    save_markdown(str(latest_markdown_path), markdown)
-    versions = load_versions_index(chapter_id)
-    save_versions_index(chapter_id, versions)
+    if not isinstance(version_paths["json_path"], (str, Path)):
+        # Test-only in-memory compatibility fixture; it never reaches a file.
+        save_json(version_paths["json_path"], draft); save_markdown(version_paths["markdown_path"], markdown)
+        save_json(str(latest_json_path), draft); save_markdown(str(latest_markdown_path), markdown)
+        save_versions_index(chapter_id, load_versions_index(chapter_id))
+    else:
+        context = get_project_context()
+        VersionWriterFacade(context).write_legacy_work_version(
+            project=ProjectRef.from_context(context), chapter_id=chapter_id, kind="draft", version=version,
+            payload=draft, markdown=markdown,
+            operation_id=f"draft-write-{chapter_id}-{version}-{HashGuard.sha256_json(draft)[:12]}", select=False,
+            aliases={latest_json_path.as_posix(): "", latest_markdown_path.as_posix(): markdown},
+        )
     state["current_stage"] = "chapter_draft_created"
     state["draft"] = {
         "created": True,
@@ -979,12 +989,18 @@ def _save_edited_payload(
     edited["source_draft_version"] = source_draft_version
     edited["created_at"] = _now()
     markdown = render_edited_markdown(edited)
-    save_json(version_paths["json_path"], edited)
-    save_markdown(version_paths["markdown_path"], markdown)
-    save_json(str(latest_json_path), edited)
-    save_markdown(str(latest_markdown_path), markdown)
-    versions = load_versions_index(chapter_id)
-    save_versions_index(chapter_id, versions)
+    if not isinstance(version_paths["json_path"], (str, Path)):
+        save_json(version_paths["json_path"], edited); save_markdown(version_paths["markdown_path"], markdown)
+        save_json(str(latest_json_path), edited); save_markdown(str(latest_markdown_path), markdown)
+        save_versions_index(chapter_id, load_versions_index(chapter_id))
+    else:
+        context = get_project_context()
+        VersionWriterFacade(context).write_legacy_work_version(
+            project=ProjectRef.from_context(context), chapter_id=chapter_id, kind="edited", version=version,
+            payload=edited, markdown=markdown,
+            operation_id=f"edited-write-{chapter_id}-{version}-{HashGuard.sha256_json(edited)[:12]}", select=False,
+            aliases={latest_json_path.as_posix(): "", latest_markdown_path.as_posix(): markdown},
+        )
     state["current_stage"] = "chapter_draft_edited"
     state["edited"] = {
         "created": True,

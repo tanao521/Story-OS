@@ -5,6 +5,7 @@ from typing import Any
 
 from core.project_context import ProjectContext
 from system.data_store import DataStore
+from system.planning_mutation_service import PlanningMutationService
 
 from .models import new_id, now
 
@@ -16,7 +17,7 @@ class VersionService:
     def create(self, project_id: str, reason: str, snapshot: dict[str, Any]) -> dict[str, Any]:
         version_id = new_id("planning_control")
         record = {"schema_version": "1.0", "project_id": project_id, "version_id": version_id, "created_at": now(), "reason": reason, "snapshot": snapshot}
-        self.store.write_json(self.context.planning_control_versions_dir / f"{version_id}.json", record)
+        PlanningMutationService(self.context).legacy_write("planning_control_version", record, target_id=version_id, mutation_type="create_planning_control_version", reason=reason)
         return record
 
     def list(self) -> list[dict[str, Any]]:

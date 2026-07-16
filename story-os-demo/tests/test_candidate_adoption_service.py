@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from pathlib import Path
 
@@ -47,6 +48,9 @@ def test_qualified_candidate_creates_new_manual_work_version_without_canon_chang
     assert service.improvements.get(request["improvement_id"])["state"] == "adopted"
     replay, replayed = service.adopt(request["improvement_id"], _adopt_payload(preview, request))
     assert replayed and replay["new_version"]["version_id"] == "manual_v001"
+    with pytest.raises(CandidateAdoptionError) as conflict:
+        service.adopt(request["improvement_id"], _adopt_payload(preview, request, review_reason="different request"))
+    assert conflict.value.code == "OPERATION_ID_CONFLICT"
 
 
 def test_review_required_requires_explicit_confirmation_and_reason(tmp_path: Path) -> None:
@@ -95,6 +99,9 @@ def test_discard_replay_is_idempotent(tmp_path: Path) -> None:
     service, request, _, _ = _candidate(tmp_path); payload = {"candidate_id": "candidate_test", "expected_candidate_hash": request["candidate"]["content_hash"], "reason": "作者选择放弃", "operation_id": "discard-1"}
     first, replayed = service.discard(request["improvement_id"], payload); second, replayed_again = service.discard(request["improvement_id"], payload)
     assert first["state"] == second["state"] == "discarded" and not replayed and replayed_again
+    with pytest.raises(CandidateAdoptionError) as conflict:
+        service.discard(request["improvement_id"], {**payload, "reason": "different discard"})
+    assert conflict.value.code == "OPERATION_ID_CONFLICT"
 
 
 def test_candidate_state_write_failure_rolls_back_new_work_version(tmp_path: Path, monkeypatch) -> None:
@@ -108,3 +115,17 @@ def test_candidate_state_write_failure_rolls_back_new_work_version(tmp_path: Pat
     assert ImprovementService(service.context).get(request["improvement_id"])["state"] == "qualified"
     report = EvaluationService(service.context).detail(request["evaluation_id"])
     assert report["status"] == "current"
+
+
+def test_concurrent_whole_adoption_allows_one_authoritative_version(tmp_path: Path) -> None:
+    service, request, _, _ = _candidate(tmp_path); preview = service.preview(request["improvement_id"])
+    payloads = [_adopt_payload(preview, request, operation_id=f"concurrent-{number}") for number in (1, 2)]
+    def invoke(payload):
+        try:
+            return ("ok", service.adopt(request["improvement_id"], payload)[1])
+        except CandidateAdoptionError as error:
+            return ("error", error.code)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(invoke, payloads))
+    assert sum(1 for kind, replayed in outcomes if kind == "ok" and replayed is False) == 1
+    assert (tmp_path / "data/manual/chapter_001_manual_v001.json").exists()

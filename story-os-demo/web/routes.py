@@ -21,6 +21,7 @@ from system.revision_service import RevisionService, RevisionError
 
 from system.chapter_archive import ChapterArchiveError, archive_chapter
 from system.data_store import DataStore, DataWriteError
+from system.planning_mutation_service import PlanningMutationService
 from system.continuity_checker import (
     check_chapter_continuity,
     continuity_content_hash,
@@ -46,6 +47,7 @@ from evaluation_engine.candidate_partial_adoption_service import PartialAdoption
 from evaluation_engine.planning_evaluation import PlanningEvaluationError, PlanningEvaluationService
 from evaluation_engine.planning_comparison import PlanningComparisonError, PlanningEvaluationComparisonService
 from evaluation_engine.production_service import EvaluationProductionError, EvaluationProductionService
+from evaluation_engine.legacy_adapter import LegacyEvaluationAdapter
 from llm.model_gateway import ModelGateway, get_model_gateway
 from llm.model_models import ModelGatewayError
 from llm.prompt_registry import PromptRegistry
@@ -57,9 +59,11 @@ from agents.registry import AgentRegistry
 from agents.workflow import WorkflowEngine
 from agents.executor import AgentExecutor
 from agents.memory_scope import scoped_context
-from system.context_builder import build_working_context
+from system.context_assembly_service import ContextAssemblyService
 from web.schemas import AskRequest, ManualSaveRequest, ProjectCreateRequest, ReviewApproveRequest, TodoCreateRequest, VersionArchiveRequest, VersionSelectRequest
 from web.view_models import api_error, api_ok
+from web.api_registry import compatibility_headers
+from web.api_support import ApiRequestError, parse_pagination
 
 
 router = APIRouter()
@@ -114,6 +118,11 @@ def guarded(action: Callable[[], dict[str, Any]]) -> JSONResponse:
     except Exception as exc:
         payload = api_error("操作失败", [str(exc)])
     return JSONResponse(payload)
+
+
+def compatibility_response(payload: dict[str, Any], legacy_path: str, *, status_code: int = 200) -> JSONResponse:
+    """Mark a legacy route without altering its established JSON fields."""
+    return JSONResponse(payload, status_code=status_code, headers=compatibility_headers(legacy_path))
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -315,14 +324,16 @@ def api_evaluations_list(
     target_type: str = "", chapter_number: int | None = None, volume_id: str = "", window_id: str = "", status: str = "", limit: int = 20, cursor: str = "",
 ) -> JSONResponse:
     try:
+        page_request = parse_pagination(limit, cursor)
         context = get_project_context()
-        chapter_reports = [] if target_type in {"near_planning_window", "current_volume", "whole_book_planning"} else EvaluationService(context).list_reports(target_type=target_type, chapter_number=chapter_number, status=status, limit=limit)
-        planning_reports = PlanningEvaluationService(context).list_reports(target_type=target_type, volume_id=volume_id, window_id=window_id, status=status, limit=limit) if not target_type or target_type in {"near_planning_window", "current_volume", "whole_book_planning"} else []
+        chapter_reports = [] if target_type in {"near_planning_window", "current_volume", "whole_book_planning"} else EvaluationService(context).list_reports(target_type=target_type, chapter_number=chapter_number, status=status, limit=page_request.limit)
+        planning_reports = PlanningEvaluationService(context).list_reports(target_type=target_type, volume_id=volume_id, window_id=window_id, status=status, limit=page_request.limit) if not target_type or target_type in {"near_planning_window", "current_volume", "whole_book_planning"} else []
         reports = sorted(chapter_reports + planning_reports, key=lambda item: f"{item.get('created_at') or ''}|{item.get('evaluation_id') or ''}", reverse=True)
-        bounded = max(1, min(int(limit or 20), 100))
-        if cursor: reports = [item for item in reports if f"{item.get('created_at') or ''}|{item.get('evaluation_id') or ''}" < cursor]
-        page = reports[:bounded]
-        return JSONResponse(api_ok(result={"evaluations": page, "next_cursor": f"{page[-1].get('created_at') or ''}|{page[-1].get('evaluation_id') or ''}" if len(reports) > len(page) and page else None, "limit": bounded}))
+        if page_request.cursor: reports = [item for item in reports if f"{item.get('created_at') or ''}|{item.get('evaluation_id') or ''}" < page_request.cursor]
+        page = reports[:page_request.limit]
+        return JSONResponse(api_ok(result={"evaluations": page, "next_cursor": f"{page[-1].get('created_at') or ''}|{page[-1].get('evaluation_id') or ''}" if len(reports) > len(page) and page else None, "limit": page_request.limit}))
+    except ApiRequestError as error:
+        return JSONResponse(api_error(str(error), [error.code]), status_code=400)
     except EvaluationError as error:
         return _evaluation_failure(error)
 
@@ -639,16 +650,11 @@ async def api_build_assets(request: Request) -> JSONResponse:
 
 @router.get("/api/planning/next-chapter")
 def api_get_next_chapter_plan() -> JSONResponse:
-    def action() -> dict[str, Any]:
-        path = Path("data/next_chapter_plan.json")
-        if not path.exists():
-            return api_ok(result={"plan": {}})
-        try:
-            plan = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            return api_error("章节计划 JSON 无法解析。", [str(exc)])
-        return api_ok(result={"plan": plan if isinstance(plan, dict) else {}})
-    return guarded(action)
+    try:
+        plan = DataStore(get_project_context()).read_json("data/next_chapter_plan.json", default={}, expected_type=dict) or {}
+        return compatibility_response(api_ok(result={"plan": plan}), "/api/planning/next-chapter")
+    except Exception as exc:
+        return compatibility_response(api_error("章节计划读取失败。", [str(exc)]), "/api/planning/next-chapter", status_code=500)
 
 
 @router.post("/api/planning/next-chapter")
@@ -660,15 +666,15 @@ async def api_save_or_plan_next_chapter(request: Request) -> JSONResponse:
     if not isinstance(payload, dict) or not payload:
         return guarded(lambda: command_response(commands.plan_next_command()))
     def action() -> dict[str, Any]:
-        path = Path("data/next_chapter_plan.json")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        Path("data/next_chapter_plan.md").write_text(commands.render_next_chapter_plan_markdown(payload), encoding="utf-8")
-        state_path = Path("data/state.json")
-        state = _load_json_safe(state_path, {})
-        state["current_stage"] = "next_chapter_planned"
-        state["next_chapter_plan"] = {"created": True, "chapter_id": payload.get("chapter_id", 1), "path": "data/next_chapter_plan.json"}
-        state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        PlanningMutationService().write_bundle_legacy(
+            [
+                ("next_chapter_plan", payload),
+                ("next_chapter_plan_markdown", commands.render_next_chapter_plan_markdown(payload)),
+                ("planning_state", {"current_stage": "next_chapter_planned", "next_chapter_plan": {"created": True, "chapter_id": payload.get("chapter_id", 1), "path": "data/next_chapter_plan.json"}}),
+            ],
+            mutation_type="save_next_chapter_plan",
+            reason="save next chapter plan",
+        )
         return api_ok("章节规划已保存。", {"plan": payload, "path": "data/next_chapter_plan.json"})
     return guarded(action)
 
@@ -691,19 +697,16 @@ def api_get_continuity_report(
         current = build_version_content(source_type, version)
         chapter_id = int(current.get("chapter_id", 0) or 0)
         current_hash, previous_hash = _continuity_source_hashes(chapter_id, str(current.get("text", "")))
-        report = load_continuity_report(
-            chapter_id,
-            source_type,
-            version,
-            "data",
-            content_hash=current_hash,
-            previous_content_hash=previous_hash,
+        report = LegacyEvaluationAdapter(get_project_context()).continuity_view(
+            chapter_id=chapter_id, source_type=source_type, source_version=version,
+            content_hash=current_hash, previous_content_hash=previous_hash,
         )
-        if not report:
-            return api_ok(result={"exists": False, "chapter_id": chapter_id, "source_type": source_type, "source_version": version})
-        return api_ok(result={"exists": True, **report})
+        return api_ok(result=report)
 
-    return guarded(action)
+    try:
+        return compatibility_response(action(), "/api/continuity-report")
+    except Exception as exc:
+        return compatibility_response(api_error("操作失败", [str(exc)]), "/api/continuity-report", status_code=500)
 
 
 @router.post("/api/continuity-check")
@@ -863,7 +866,16 @@ def api_quality_report(
     source_type: str = Query(..., pattern="^(draft|edited|manual|committed)$"),
     version: int = Query(..., ge=1),
 ) -> JSONResponse:
-    return guarded(lambda: api_ok(*quality_report_response(source_type, version)))
+    def action() -> dict[str, Any]:
+        chapter_id = version if source_type == "committed" else current_target_chapter()
+        result = LegacyEvaluationAdapter(get_project_context()).quality_view(
+            chapter_id=chapter_id, source_type=source_type, source_version=version,
+        )
+        return api_ok(result=result)
+    try:
+        return compatibility_response(action(), "/api/quality-report")
+    except Exception as exc:
+        return compatibility_response(api_error("操作失败", [str(exc)]), "/api/quality-report", status_code=500)
 
 
 @router.post("/api/versions/select")
@@ -1324,7 +1336,18 @@ def nm_snapshot(chapter_id:int):
  try:return _ok({'snapshot':_nm().snapshot(chapter_id)},'Narrative snapshot saved.')
  except Exception as exc:return _fail(str(exc),'NARRATIVE_SNAPSHOT_ERROR',409)
 @router.get("/api/narrative-memory/context-preview")
-def nm_preview(chapter_id:int=1): return _ok({'preview':_nm().preview(chapter_id)})
+def nm_preview(chapter_id:int=1):
+ context=_ctx(); store=DataStore(context)
+ preview=ContextAssemblyService(context).assemble(
+  state=store.read_json('data/state.json',default={},expected_type=dict) or {},
+  memory_index=store.read_json('data/memory/memory_index.json',default={},expected_type=dict) or {},
+  query='', story_spec=store.read_json('data/story_spec.json',default={},expected_type=dict) or {},
+  characters=store.read_json('data/characters.json',default={},expected_type=dict) or {},
+  world_bible=store.read_json('data/world_bible.json',default={},expected_type=dict) or {},
+  purpose='chapter_drafting',
+ )
+ preview['context_ref']=f"context:{chapter_id or preview.get('chapter_number',1)}"
+ return _ok({'preview':preview})
 @router.post("/api/narrative-memory/overrides/{kind}")
 async def nm_override(kind:str,request:Request):
  try:
@@ -1333,9 +1356,9 @@ async def nm_override(kind:str,request:Request):
 
 
 # Reconstructed phase 2-6 API bridge.  Services remain the sole business authority.
-def _ok(result=None,message=""): return JSONResponse({"ok":True,"message":message,"result":result or {},"warnings":[],"errors":[]})
+def _ok(result=None,message=""): return JSONResponse(api_ok(message,result or {}))
 def _fail(message,code,status=400):
- return JSONResponse({"ok":False,"message":message,"result":{},"warnings":[],"errors":[code],"error":{"code":code,"message":message,"details":{},"recoverable":status < 500,"suggestions":[]}},status_code=status)
+ return JSONResponse(api_error(message,[code]),status_code=status)
 def _ctx(): return get_project_context()
 
 def _agent_context(chapter_id: int | None = None, draft_text: str = "") -> dict[str, Any]:
@@ -1346,7 +1369,10 @@ def _agent_context(chapter_id: int | None = None, draft_text: str = "") -> dict[
  story=store.read_json('data/story_spec.json',default={},expected_type=dict) or {}
  characters=store.read_json('data/characters.json',default={},expected_type=dict) or {}
  world=store.read_json('data/world_bible.json',default={},expected_type=dict) or {}
- snapshot=build_working_context(state,memory,'',story,characters,world)
+ snapshot=ContextAssemblyService(context).assemble(
+  state=state,memory_index=memory,query='',story_spec=story,characters=characters,
+  world_bible=world,purpose='chapter_drafting',
+ )
  snapshot.update({'characters':characters,'chapter_plan':store.read_json('data/next_chapter_plan.json',default={},expected_type=dict) or {},'context_ref':f"context:{chapter_id or snapshot.get('next_chapter_id',1)}"})
  if draft_text: snapshot['draft_text']=draft_text
  return snapshot

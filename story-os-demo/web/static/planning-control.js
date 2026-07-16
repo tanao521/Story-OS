@@ -1,9 +1,8 @@
 (() => {
   let overview = null;
   const $ = id => document.getElementById(id);
-  const request = async (path, options = {}) => {
-    const response = await fetch(path, options);
-    const value = await response.json();
+const request = async (path, options = {}) => {
+    const value = await window.storyosApiRequest(path, options);
     if (!value.ok) throw new Error((value.errors || [value.message])[0]);
     return value.result;
   };

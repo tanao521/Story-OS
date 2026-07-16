@@ -1,7 +1,7 @@
 (()=>{
 const state={section:'overview',data:null,dirty:false}; const host=()=>document.getElementById('outline-editor-content'); const notice=()=>document.getElementById('outline-notice');
 const labels={volumes:'Volumes',phases:'Phases',chapters:'Chapter plans',plot_threads:'Plot threads',character_arcs:'Character arcs',foreshadowing:'Foreshadowing',conflicts:'Conflict nodes',climaxes:'Climax nodes'};
-const api=async(path,method='GET',body)=>{const r=method==='GET'?await apiGet(path):await fetch(path,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}).then(x=>x.json());if(r.ok===false)throw Error((r.errors||[])[0]||r.message);return r.result||{}};
+const api=async(path,method='GET',body)=>{const r=method==='GET'?await apiGet(path):await window.storyosApiRequest(path,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});if(r.ok===false)throw Error((r.errors||[])[0]||r.message);return r.result||{}};
 function setStatus(t,c=''){const e=document.getElementById('outline-save-state');e.textContent=t;e.className='studio-save-state '+c}
 function field(key,value=''){const multi=String(value||'').length>70;return `<label class="outline-field"><span class="outline-field-label">${escapeHtml(key)}</span>${multi?`<textarea data-plan-field="${escapeHtml(key)}">${escapeHtml(value||'')}</textarea>`:`<input data-plan-field="${escapeHtml(key)}" value="${escapeHtml(value||'')}">`}</label>`}
 function entityId(kind){return {volumes:'volume_id',phases:'phase_id',chapters:'chapter_id',plot_threads:'thread_id',character_arcs:'character_arc_id',foreshadowing:'foreshadowing_id',conflicts:'conflict_id',climaxes:'climax_id'}[kind]}

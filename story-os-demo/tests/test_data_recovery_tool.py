@@ -36,6 +36,15 @@ def test_inventory_excludes_pytest_temporary_directories(tmp_path: Path) -> None
     assert inventory([source], {"story_blueprint": "", "next_chapter_plan": ""}) == []
 
 
+def test_pytest_temporary_path_filter_is_narrow() -> None:
+    assert recovery._is_pytest_temporary_path(Path("D:/repo/.pytest-tmp-phase-16/test/story_blueprint.json"))
+    assert recovery._is_pytest_temporary_path(Path("D:/temp/pytest-of-user/pytest-12/test_case0/story_blueprint.json"))
+    assert recovery._is_pytest_temporary_path(Path("D:/temp/storyos-pytest-phase-16-4bv-full-1/test/story_blueprint.json"))
+    assert recovery._is_pytest_temporary_path(Path("D:/temp/storyos-phase-16-4bv-r1-1/pytest-temp/test/story_blueprint.json"))
+    assert not recovery._is_pytest_temporary_path(Path("D:/projects/pytest-novel-project/data/story_blueprint.json"))
+    assert not recovery._is_pytest_temporary_path(Path("D:/stories/temporary-kingdom/data/story_blueprint.json"))
+
+
 def test_inventory_rejects_invalid_json_even_when_hash_matches(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(recovery, "_allowed", lambda path, excluded_roots: True)
     source = tmp_path / "source"; source.mkdir()

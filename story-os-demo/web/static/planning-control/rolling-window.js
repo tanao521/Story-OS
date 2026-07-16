@@ -3,7 +3,7 @@
   let dirty = false;
   const $ = id => document.getElementById(id);
   const esc = value => String(value ?? "").replace(/[&<>\"]/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[char]));
-  const request = async (path, options = {}) => { const response = await fetch(path, options); const value = await response.json(); if (!value.ok) throw new Error((value.errors || [value.message])[0]); return value.result; };
+  const request = async (path, options = {}) => { const value = await window.storyosApiRequest(path, options); if (!value.ok) throw new Error((value.errors || [value.message])[0]); return value.result; };
   const post = (path, payload = {}) => request(path, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
   const put = (path, payload) => request(path, {method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
   const setState = text => { const node = $("rolling-window-state"); if (node) node.textContent = text; };

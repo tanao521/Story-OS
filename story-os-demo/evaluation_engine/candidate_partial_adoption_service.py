@@ -35,7 +35,7 @@ class CandidatePartialAdoptionService:
         self.improvements = ImprovementService(context)
         self.adoptions = CandidateAdoptionService(context)
 
-    def preview(self, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _legacy_preview(self, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         request, candidate, source, current, candidate_text = self._validate_candidate(request_id)
         self._validate_preview_request(candidate, payload)
         selected = self._selected_patches(request, candidate, candidate_text, source, payload.get("selected_patch_ids"))
@@ -65,7 +65,7 @@ class CandidatePartialAdoptionService:
         self.store.write_json(self._preview_path(request_id, preview["preview_id"]), preview)
         return preview
 
-    def adopt(self, request_id: str, payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    def _legacy_adopt(self, request_id: str, payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         operation_id = str(payload.get("operation_id") or "").strip()
         if not operation_id:
             raise PartialAdoptionError("PARTIAL_ADOPTION_OPERATION_REQUIRED", "operation_id is required for partial adoption.")
@@ -73,8 +73,10 @@ class CandidatePartialAdoptionService:
         if request.get("project_id") != self.context.root.name:
             raise PartialAdoptionError("PARTIAL_ADOPTION_PROJECT_MISMATCH", "Candidate belongs to a different project.")
         if request.get("state") == "partially_adopted":
-            if request.get("partial_adoption_operation_id") == operation_id:
+            if request.get("partial_adoption_operation_id") == operation_id and request.get("partial_adoption_operation_fingerprint", payload.get("__operation_fingerprint", "")) == payload.get("__operation_fingerprint", ""):
                 return {"request": self.improvements.public(request), "new_version": request.get("partially_adopted_version"), "warnings": request.get("partial_adoption_warnings", [])}, True
+            if request.get("partial_adoption_operation_id") == operation_id:
+                raise PartialAdoptionError("OPERATION_ID_CONFLICT", "operation_id was already used for a different request.")
             raise PartialAdoptionError("PARTIAL_ADOPTION_ALREADY_COMPLETED", "Only one partial adoption is allowed for a candidate.")
         lock = self.adoptions._lock_for(int(request["chapter_id"]))
         if not lock.acquire(blocking=False):
@@ -103,7 +105,7 @@ class CandidatePartialAdoptionService:
             original_report = deepcopy(self.improvements._evaluation(str(request["evaluation_id"])))
             request.update({"state": "partially_adopted", "partially_adopted_version_id": new_version["version_id"],
                             "partially_adopted_version": new_version, "partially_adopted_at": _now(),
-                            "partial_adoption_operation_id": operation_id, "partial_adoption_preview_id": preview["preview_id"],
+                            "partial_adoption_operation_id": operation_id, "partial_adoption_operation_fingerprint": str(payload.get("__operation_fingerprint") or ""), "partial_adoption_preview_id": preview["preview_id"],
                             "partial_adoption": {"selected_patch_ids": preview["selected_patch_ids"], "unselected_patch_ids": preview["unselected_patch_ids"],
                                                  "result_content_hash": preview["result_content_hash"], "diff_preview_id": preview["preview_id"]},
                             "author_confirmation": {"author_confirm": bool(payload.get("author_confirm")), "review_reason": str(payload.get("review_reason") or "")}, "updated_at": _now()})
@@ -126,6 +128,15 @@ class CandidatePartialAdoptionService:
             return {"request": self.improvements.public(request), "new_version": new_version, "warnings": warnings}, False
         finally:
             lock.release()
+
+    # Compatibility entry points; the unified service owns orchestration.
+    def preview(self, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        from system.version_adoption_service import VersionAdoptionService
+        return VersionAdoptionService(self.context, partial_service=self).preview_partial(request_id, payload)
+
+    def adopt(self, request_id: str, payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        from system.version_adoption_service import VersionAdoptionService
+        return VersionAdoptionService(self.context, partial_service=self).adopt_partial(request_id, payload)
 
     def _validate_candidate(self, request_id: str) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], str]:
         request = self.improvements.get(request_id)

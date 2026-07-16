@@ -6,6 +6,7 @@ from typing import Any
 from uuid import uuid4
 from core.project_context import ProjectContext, get_project_context
 from system.data_store import DataStore
+from system.planning_mutation_service import PlanningMutationService
 
 ENTITY_KEYS={"volumes":"volume_id","phases":"phase_id","chapters":"chapter_id","plot_threads":"thread_id","character_arcs":"character_arc_id","foreshadowing":"foreshadowing_id","conflicts":"conflict_id","climaxes":"climax_id"}
 
@@ -31,7 +32,7 @@ def _normalize(plan):
  return plan
 
 def save_planning(plan,context=None,reason='manual save'):
- c=context or get_project_context(); store=DataStore(c); plan=_normalize(plan); plan['updated_at']=_now(); _versions(c).mkdir(parents=True,exist_ok=True); version=f"planning_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"; snapshot={'version_id':version,'created_at':_now(),'reason':reason,'planning':plan}; store.write_json(_versions(c)/f'{version}.json',snapshot,backup=False); store.write_json(_path(c),plan,backup=True); return plan
+ c=context or get_project_context(); plan=_normalize(plan); plan['updated_at']=_now(); version=f"planning_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"; snapshot={'version_id':version,'created_at':_now(),'reason':reason,'planning':plan}; mutations=PlanningMutationService(c); mutations.legacy_write('planning_version',snapshot,target_id=version,mutation_type='create_planning_version',reason=reason); mutations.legacy_write('story_planning',plan,mutation_type='save_story_planning',reason=reason); return plan
 
 def overview(context=None):
  c=context or get_project_context(); p=load_planning(c); validation=validate(p,c); state=DataStore(c).read_json(c.data_dir/'state.json',default={},expected_type=dict) or {}; return {'planning':p,'summary':{'current_chapter':state.get('current_chapter',0),'volumes':len(p['volumes']),'phases':len(p['phases']),'chapters':len(p['chapters']),'active_threads':sum(1 for x in p['plot_threads'] if x.get('status')=='active'),'open_foreshadows':sum(1 for x in p['foreshadowing'] if x.get('status') not in {'resolved','abandoned'})},'validation':validation}
@@ -69,7 +70,7 @@ def validate(p=None,context=None):
 def sync_next_plan(chapter_id,context=None):
  c=context or get_project_context(); store=DataStore(c); p=load_planning(c); ch=next((x for x in p['chapters'] if str(x.get('chapter_id'))==str(chapter_id) or str(x.get('chapter_number'))==str(chapter_id)),None)
  if not ch: raise KeyError(chapter_id)
- next_plan=store.read_json(c.data_dir/'next_chapter_plan.json',default={},expected_type=dict) or {}; next_plan.update({k:v for k,v in ch.items() if v not in (None,'',[],{})}); next_plan['chapter_id']=int(ch.get('chapter_number',ch.get('chapter_id'))); next_plan['planning_source']={'chapter_plan_id':ch.get('chapter_id'),'updated_at':_now()}; store.write_json(c.data_dir/'next_chapter_plan.json',next_plan,backup=True); return next_plan
+ next_plan=store.read_json(c.data_dir/'next_chapter_plan.json',default={},expected_type=dict) or {}; next_plan.update({k:v for k,v in ch.items() if v not in (None,'',[],{})}); next_plan['chapter_id']=int(ch.get('chapter_number',ch.get('chapter_id'))); next_plan['planning_source']={'chapter_plan_id':ch.get('chapter_id'),'updated_at':_now()}; PlanningMutationService(c).legacy_write('next_chapter_plan',next_plan,mutation_type='sync_next_chapter_plan',reason='sync next chapter plan'); return next_plan
 def list_versions(context=None):
  c=context or get_project_context(); d=_versions(c); return sorted([{'version_id':x.stem,'created_at':datetime.fromtimestamp(x.stat().st_mtime,timezone.utc).isoformat()} for x in d.glob('planning_*.json')] if d.exists() else [],key=lambda x:x['created_at'],reverse=True)
 def restore_version(version_id,context=None):

@@ -3,8 +3,7 @@
   let selected = null;
 
   async function api(path, options) {
-    const response = await fetch(path, options);
-    const body = await response.json();
+    const body = await window.storyosApiRequest(path, options);
     if (!body.ok) throw new Error((body.errors || [body.message || "Request failed."])[0]);
     return body.result || {};
   }

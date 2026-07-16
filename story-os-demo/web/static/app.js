@@ -23,6 +23,14 @@ let selectedVersion = null;
 let currentManualSource = null;
 let projectAssets = [];
 let currentAssetId = "story_spec";
+let storyosRequestGeneration = 0;
+const storyosActiveRequests = new Set();
+
+function cancelProjectScopedRequests() {
+  storyosRequestGeneration += 1;
+  storyosActiveRequests.forEach((controller) => controller.abort());
+  storyosActiveRequests.clear();
+}
 
 async function readJsonResponse(response) {
   const text = await response.text();
@@ -33,6 +41,23 @@ async function readJsonResponse(response) {
     return {};
   }
 }
+
+async function apiRequest(url, options = {}) {
+  const generation = storyosRequestGeneration;
+  const controller = new AbortController();
+  storyosActiveRequests.add(controller);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    const data = await readJsonResponse(response);
+    if (generation !== storyosRequestGeneration) throw new Error("STALE_PROJECT_RESPONSE");
+    if (!response.ok) throw new Error(formatApiError(options.method || "GET", url, response, data));
+    return data;
+  } finally {
+    storyosActiveRequests.delete(controller);
+  }
+}
+
+window.storyosApiRequest = apiRequest;
 
 function formatApiError(method, url, response, data) {
   const message = data && typeof data.message === "string" ? data.message : "";
@@ -46,21 +71,15 @@ function formatApiError(method, url, response, data) {
 }
 
 async function apiGet(url) {
-  const response = await fetch(url);
-  const data = await readJsonResponse(response);
-  if (!response.ok) throw new Error(formatApiError("GET", url, response, data));
-  return data;
+  return apiRequest(url);
 }
 
 async function apiPost(url, body = {}) {
-  const response = await fetch(url, {
+  return apiRequest(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  const data = await readJsonResponse(response);
-  if (!response.ok) throw new Error(formatApiError("POST", url, response, data));
-  return data;
 }
 
 async function initializeApp() {
@@ -764,6 +783,7 @@ document.addEventListener("input", (event) => {
 
 
 initializeDesignSystem();
+['[onclick="qualityCheck()"]', '[onclick="qualityCheckCurrentVersion()"]', '[onclick="checkContinuity()"]'].forEach((selector) => document.querySelector(selector)?.setAttribute("hidden", ""));
 initializeApp();
 toggleInspector();
 
@@ -1886,7 +1906,7 @@ function showProjectCenter(){["setup-view","dashboard-view","logs-view"].forEach
 async function loadProjectCenter(){const t=document.getElementById("project-center-list");if(!t)return;const d=await apiGet("/api/projects"),ps=d.result?.projects||[];t.innerHTML="";if(!ps.length){t.innerHTML="<section class=project-empty-state><h3>No novel projects yet</h3><button class='btn btn-primary' onclick='showSetupWizard()'>Create first project</button></section>";return;}ps.forEach(project=>renderProjectCard(t,project));}
 
 function renderProjectCard(target,project){const c=document.createElement("article");c.className="project-card"+(project.active?" is-active":"")+(project.valid?"":" is-invalid");c.innerHTML="<h3>"+escapeHtml(project.title||"Untitled project")+"</h3><p>"+escapeHtml(project.genre||"Genre not set")+"</p><p>Chapter "+(project.current_chapter??"?")+" ? "+escapeHtml(project.current_stage||"unknown")+"</p><small>"+escapeHtml(project.project_root||".")+"</small>";const b=document.createElement("button");b.className="btn btn-primary";b.textContent=project.active?"Continue writing":"Switch and open";b.disabled=!project.valid;b.onclick=()=>openProject(project.project_id);c.append(b);target.append(c);}
-async function openProject(id){const r=await apiPost("/api/projects/"+encodeURIComponent(id)+"/activate");if(!r.ok)throw new Error(r.message);showDashboard();await refreshAll();}
+async function openProject(id){const r=await apiPost("/api/projects/"+encodeURIComponent(id)+"/activate");if(!r.ok)throw new Error(r.message);window.dispatchEvent(new CustomEvent("storyos:project-changed",{detail:{projectId:id}}));showDashboard();await refreshAll();}
 
 const stage3Setup=showSetupWizard;showSetupWizard=function(){document.getElementById("project-center-view")?.classList.add("hidden");stage3Setup()};const stage3Dashboard=showDashboard;showDashboard=function(){document.getElementById("project-center-view")?.classList.add("hidden");stage3Dashboard()};openProjectSwitchDialog=showProjectCenter;setTimeout(async()=>{const s=await apiGet("/api/project/init-state");if(s.result?.next_action!=="open_dashboard")showProjectCenter();},0);
 
@@ -1898,6 +1918,17 @@ const storyJobCenter = { jobId: null, timer: null, failures: 0, history: [] };
 const storyJobTerminal = new Set(["completed", "completed_with_warnings", "failed", "cancelled", "interrupted", "waiting_for_review"]);
 const storyJobNames = {run_chapter:"Generate next chapter",index_vault:"Update vector index",sync_obsidian:"Sync Obsidian",quality_check:"Quality check",memory_health:"Memory health"};
 function stopJobPolling() { if (storyJobCenter.timer) window.clearTimeout(storyJobCenter.timer); storyJobCenter.timer = null; storyJobCenter.failures = 0; }
+function clearProjectScopedUi() {
+  cancelProjectScopedRequests();
+  stopJobPolling();
+  storyJobCenter.jobId = null;
+  selectedVersion = null;
+  currentVersion = null;
+  currentContinuityReport = null;
+}
+window.addEventListener("storyos:project-changed", clearProjectScopedUi);
+window.addEventListener("storyos:project-cleared", clearProjectScopedUi);
+window.addEventListener("pagehide", () => { cancelProjectScopedRequests(); stopJobPolling(); });
 function jobEscape(value) { return window.escapeHtml ? window.escapeHtml(String(value || "")) : String(value || ""); }
 function jobStatusLabel(status) { return ({queued:"Queued",running:"Running",cancel_requested:"Waiting to cancel",waiting_for_review:"Waiting for review",completed:"Completed",completed_with_warnings:"Completed with warnings",failed:"Failed",cancelled:"Cancelled",interrupted:"Interrupted"})[status] || status; }
 function jobStepIcon(status) { return ({completed:"[done]",completed_with_warnings:"[warn]",running:"[run]",failed:"[fail]",cancelled:"[stop]",pending:"[wait]",skipped:"[skip]"})[status] || "[wait]"; }

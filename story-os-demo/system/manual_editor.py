@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -10,9 +9,10 @@ from system.version_manager import (
     get_next_version_number,
     list_versions,
     read_version_payload,
-    save_versions_index,
-    select_version,
 )
+from core.contracts import HashGuard, ProjectRef
+from core.project_context import get_project_context
+from system.version_writer_facade import VersionWriterFacade
 
 
 TEXT_FIELD_BY_TYPE = {
@@ -123,15 +123,17 @@ def create_manual_version(
     latest_markdown_path = Path(data_dir) / "manual" / f"chapter_{chapter_id:03d}_manual.md"
     markdown = render_manual_markdown(manual)
 
-    json_path.parent.mkdir(parents=True, exist_ok=True)
-    json_path.write_text(json.dumps(manual, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    markdown_path.write_text(markdown, encoding="utf-8")
-    latest_json_path.write_text(json.dumps(manual, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    latest_markdown_path.write_text(markdown, encoding="utf-8")
-
-    versions = list_versions(chapter_id, data_dir)
-    save_versions_index(chapter_id, versions, data_dir)
-    selected = select_version(chapter_id, "manual", version, data_dir)
+    data_root = Path(data_dir).expanduser().resolve()
+    context = get_project_context(data_root.parent)
+    version_root = data_root.relative_to(context.root).as_posix()
+    latest_json_relative = latest_json_path.resolve().relative_to(context.root).as_posix()
+    latest_markdown_relative = latest_markdown_path.resolve().relative_to(context.root).as_posix()
+    result = VersionWriterFacade(context).write_legacy_work_version(
+        project=ProjectRef.from_context(context), chapter_id=chapter_id, kind="manual", version=version,
+        payload=manual, markdown=markdown,
+        operation_id=f"manual-write-{chapter_id}-{version}-{HashGuard.sha256_text(manual_text)[:12]}",
+        aliases={latest_json_relative: "", latest_markdown_relative: markdown}, version_root=version_root,
+    )
 
     return {
         "chapter_id": chapter_id,
@@ -142,7 +144,7 @@ def create_manual_version(
         "markdown_path": markdown_path.as_posix(),
         "latest_json_path": latest_json_path.as_posix(),
         "latest_markdown_path": latest_markdown_path.as_posix(),
-        "selected": bool(selected),
+        "selected": bool(result["selected"]),
         "source": {
             "source_type": source_type,
             "source_version": source_version,
