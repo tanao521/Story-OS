@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Story OS · Simulator Review Preview</title>
+  <link rel="stylesheet" href="prototype.css">
+</head>
+<body>
+  <div class="preview-ribbon">DESIGN PREVIEW · 0D3A2 · READ ONLY</div>
+  <div class="preview-shell">
+    <aside class="rail" aria-label="Story OS 模式导航">
+      <div class="brand"><span class="brand-mark">SO</span><div><strong>Story OS</strong><small>Writing Studio</small></div></div>
+      <div class="mode-label">工作模式</div>
+      <div class="mode-switch" role="group" aria-label="工作模式"><button class="mode is-active" type="button">传统写作</button><button class="mode" type="button" aria-pressed="true">模拟器</button></div>
+      <div class="rail-rule"></div>
+      <nav class="rail-nav"><a href="#review" class="is-active">⌁ <span>Panel Review</span></a><a href="#signals">◈ <span>读者信号</span></a><a href="#audit">⊙ <span>运行审计</span></a></nav>
+      <div class="rail-footer"><span class="status-dot"></span><span>本地工作区</span><code>proj-demo</code></div>
+    </aside>
+    <main class="workspace" id="review">
+      <header class="topbar"><div><span class="kicker">SIMULATOR / READER PANEL</span><h1>第 12 章 · 雨停之前</h1><p class="context">timeline-demo <span>·</span> source-demo-12 <span>·</span> 只读审阅</p></div><div class="top-actions"><label class="preview-select">设计预览<select id="fixtureSelect" aria-label="选择设计预览状态"></select></label><a id="deepLink" class="link-button" href="?mode=simulator&amp;view=reader-panel-review&amp;project=proj-demo&amp;timeline_id=timeline-demo&amp;chapter_id=12">复制深链语义</a></div></header>
+      <section id="statusBanner" class="status-banner" aria-live="polite"></section>
+      <div class="review-grid">
+        <div class="primary-column">
+          <section class="authority-panel section-block"><div class="section-head"><div><span class="section-kicker">AUTHORITATIVE PANEL</span><h2>权威读者面板</h2></div><span class="authority-stamp">◆ DETERMINISTIC</span></div><div id="authorityContent" class="authority-content"></div></section>
+          <section class="section-block"><div class="section-head"><div><span class="section-kicker">PERSONA READOUT</span><h2>Persona 对照</h2></div><span id="personaCount" class="count-label"></span></div><div id="personaGrid" class="persona-grid"></div></section>
+          <div class="lower-grid"><section class="section-block" id="signals"><div class="section-head"><div><span class="section-kicker">AGREEMENT</span><h2>一致信号</h2></div><span class="signal-glyph agree">≈</span></div><div id="agreementList"></div></section><section class="section-block conflict-block"><div class="section-head"><div><span class="section-kicker">CONFLICT</span><h2>分歧信号</h2></div><span class="signal-glyph conflict">≠</span></div><div id="conflictList"></div></section></div>
+        </div>
+        <aside class="audit-column" id="audit" aria-label="审计摘要"><section class="selection-card"><span class="section-kicker">SELECTION TRACE</span><h2>本次读取</h2><dl id="selection"></dl></section><section class="audit-card"><span class="section-kicker">AUDIT LEDGER</span><h2>运行审计</h2><div id="execution"></div></section><section class="audit-card"><span class="section-kicker">EVIDENCE COVERAGE</span><h2>证据覆盖</h2><div id="evidence"></div></section><section class="audit-card"><span class="section-kicker">USAGE / STALENESS</span><h2>用量与陈旧度</h2><div id="usage"></div></section><section class="warnings-card"><span class="section-kicker">STRUCTURED WARNINGS</span><h2>需要注意</h2><ul id="warnings"></ul></section></aside>
+      </div>
+      <footer class="prototype-footer"><span>Read-only review surface</span><span>URL: <code>/?mode=simulator&amp;view=reader-panel-review&amp;project=proj-demo&amp;timeline_id=timeline-demo&amp;chapter_id=12</code></span></footer>
+    </main>
+  </div>
+  <script src="prototype.js"></script>
+</body>
+</html>
