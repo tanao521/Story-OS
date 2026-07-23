@@ -1,5 +1,19 @@
 # Story OS Demo
 
+## Phase 0D3C4-B0：保守 Token 预算策略（Owner Gate）
+
+当前已完成 DeepSeek `deepseek-v4-flash` 的保守预算策略设计与离线验证。
+该策略是 Story OS 内部安全政策，不是 Provider 精确 Token 计数或账单估算。
+
+- 推荐 Strict Hybrid：文本上限 2,048、保守输入上限 3,584、输出上限 512、总量上限 4,096。
+- Thinking 必须显式关闭；JSON Output 需要 `response_format: {"type":"json_object"}` 和 JSON 提示词约束。
+- Production Live 仍默认关闭；真实 Provider、凭证、Token、费用和 Canary 均未启用。
+- 当前等待 Owner 决定是否授权后续 B1 实现。
+
+详见仓库根目录的 `docs/planning/PHASE_0D3C4_B0_DELIVERY_REPORT.md`、
+`docs/security/deepseek_conservative_token_budget_policy.md` 和
+`docs/planning/PHASE_0D3C4_B_INTEGRATION_BRIEF.md`。
+
 ## 阶段 15.1：叙事评估中心
 
 叙事评估中心是既有专业检查器的统一只读入口。它聚合质量报告、剧情连贯性、角色状态、Reader Simulation 与规划健康；不会调用新的 LLM、修改正文、候选版本、计划或正史。
