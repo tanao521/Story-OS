@@ -22,3 +22,10 @@ All residual risks below require Owner acceptance before implementation.
 | Empty JSON content | Official warning | One permitted call may yield unusable output | No repair/retry; safe failed result | HIGH |
 
 Risk acceptance does not make the counter exact or enable Production Live.
+# B1 control update
+
+B1 implements the planned controls for formula drift, client limit raises,
+implicit thinking, missing JSON mode, count/send divergence, asset/hash/path
+validation, safe readiness, revision invalidation, and content-free
+reconciliation. V3/V4 drift and licensing remain unresolved blockers, so the
+real Profile remains unavailable.

@@ -37,6 +37,40 @@ def resolve_current_project_root(
     if project_name:
         return get_project_context(Path.cwd() / "projects" / project_name).root
     return get_project_context(project_root).root
+
+
+def resolve_workspace_root(project_root: Path | None = None) -> Path:
+    """Resolve the Story OS workspace root from a project root.
+
+    Workspace root is the directory containing:
+    - projects/ (multi-project directory)
+    - .story_os/ (workspace configuration)
+
+    If project_root is None, resolves from current project root.
+
+    Handles:
+    - Standard workspace: workspace/projects/project-name
+    - Legacy single-project: workspace (where project files are directly)
+    - CLI executed from workspace root
+    - CLI executed from project subdirectory
+    """
+    if project_root is None:
+        project_root = resolve_current_project_root()
+
+    candidate = project_root
+
+    while candidate is not None:
+        if (candidate / ".story_os").exists() and (candidate / "projects").exists():
+            return candidate
+        if (candidate / ".story_os").exists():
+            return candidate
+        if (candidate / "projects").exists() and (candidate.parent / ".story_os").exists():
+            return candidate.parent
+        if candidate.parent == candidate:
+            break
+        candidate = candidate.parent
+
+    return project_root.parent if project_root.parent != project_root else project_root
 def ensure_project_structure(project_root: Path, form_data: dict[str, Any] | None = None) -> dict[str, Any]:
     root = Path(project_root).expanduser().resolve()
     data_dir = root / "data"

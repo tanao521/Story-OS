@@ -47,7 +47,7 @@ async function apiRequest(url, options = {}) {
   const controller = new AbortController();
   storyosActiveRequests.add(controller);
   try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
+    const response = await fetch(url, { ...options, signal: options.signal || controller.signal });
     const data = await readJsonResponse(response);
     if (generation !== storyosRequestGeneration) throw new Error("STALE_PROJECT_RESPONSE");
     if (!response.ok) throw new Error(formatApiError(options.method || "GET", url, response, data));
@@ -74,6 +74,8 @@ async function apiGet(url) {
   return apiRequest(url);
 }
 
+window.storyosApiGet = apiGet;
+
 async function apiPost(url, body = {}) {
   return apiRequest(url, {
     method: "POST",
@@ -81,6 +83,7 @@ async function apiPost(url, body = {}) {
     body: JSON.stringify(body),
   });
 }
+window.storyosApiPost = apiPost;
 
 async function initializeApp() {
   await runWithBusy(async () => {
@@ -105,6 +108,7 @@ function showDashboard() {
   document.getElementById("setup-view").classList.add("hidden");
   document.getElementById("dashboard-view").classList.remove("hidden");
   document.getElementById("logs-view").classList.remove("hidden");
+  window.dispatchEvent(new CustomEvent("storyos:dashboard-ready"));
 }
 
 async function createStoryProject() {

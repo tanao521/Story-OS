@@ -66,3 +66,10 @@ cost, credential detail, or endpoint. Consent remains disabled in B0.
 Only safe numeric deltas, revisions, model id, fingerprint, and timestamp are
 public/auditable. Prompt, text, credential, endpoint, response, paths, and raw
 exceptions are prohibited.
+# B1 implementation status
+
+The safe conservative projection is implemented with exact readiness false,
+default conservative availability false, safe asset-unavailable status,
+explicit limits/modes, unavailable cost, and disabled Consent/Live. Runtime
+activation still requires a separately approved external asset/compliance
+Gate.

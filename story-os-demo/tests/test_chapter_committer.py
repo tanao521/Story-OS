@@ -12,6 +12,7 @@ from core.chapter_committer import (
 from core.character_builder import generate_characters
 from core.draft_writer import write_chapter_draft
 from core.next_chapter_planner import plan_next_chapter
+from core.project_context import get_project_context
 from core.setup_wizard import build_initial_state
 from core.world_builder import generate_world_bible
 
@@ -116,6 +117,7 @@ def test_apply_state_updates_does_not_delete_existing_characters() -> None:
 
 
 def test_update_memory_index_generates_memory_index_structure(tmp_path, monkeypatch) -> None:
+    context = get_project_context(tmp_path)
     monkeypatch.chdir(tmp_path)
     *_, chapter_plan, draft = make_inputs()
     summary = summarize_chapter(draft, chapter_plan)
@@ -124,6 +126,7 @@ def test_update_memory_index_generates_memory_index_structure(tmp_path, monkeypa
         summary,
         "data/chapters/chapter_001.md",
         "data/summaries/chapter_001_summary.json",
+        context,
     )
 
     assert memory_index["memory_version"] == "0.6"
@@ -131,19 +134,21 @@ def test_update_memory_index_generates_memory_index_structure(tmp_path, monkeypa
 
 
 def test_commit_chapter_returns_committed_status(tmp_path, monkeypatch) -> None:
+    context = get_project_context(tmp_path)
     monkeypatch.chdir(tmp_path)
     story_spec, _, characters, world_bible, state, chapter_plan, draft = make_inputs()
 
-    result = commit_chapter(draft, chapter_plan, state, story_spec, characters, world_bible)
+    result = commit_chapter(draft, chapter_plan, state, story_spec, characters, world_bible, context)
 
     assert result["status"] == "committed"
 
 
 def test_commit_chapter_returns_summary_and_state_patch(tmp_path, monkeypatch) -> None:
+    context = get_project_context(tmp_path)
     monkeypatch.chdir(tmp_path)
     story_spec, _, characters, world_bible, state, chapter_plan, draft = make_inputs()
 
-    result = commit_chapter(draft, chapter_plan, state, story_spec, characters, world_bible)
+    result = commit_chapter(draft, chapter_plan, state, story_spec, characters, world_bible, context)
 
     assert result["summary"]
     assert result["state_patch"]
@@ -162,10 +167,11 @@ def test_duplicate_foreshadows_are_not_added_twice() -> None:
 
 
 def test_commit_chapter_only_commits_one_chapter(tmp_path, monkeypatch) -> None:
+    context = get_project_context(tmp_path)
     monkeypatch.chdir(tmp_path)
     story_spec, _, characters, world_bible, state, chapter_plan, draft = make_inputs()
 
-    result = commit_chapter(draft, chapter_plan, state, story_spec, characters, world_bible)
+    result = commit_chapter(draft, chapter_plan, state, story_spec, characters, world_bible, context)
 
     assert result["chapter_id"] == chapter_plan["chapter_id"]
     assert state["current_chapter"] == chapter_plan["chapter_id"]

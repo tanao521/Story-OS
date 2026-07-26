@@ -105,13 +105,15 @@ def refine_draft_with_quality_report(
     prev_summaries: list[dict[str, Any]] = []
     if prev_cid >= 1:
         from pathlib import Path as _Path
-        prev_chapter_path = _Path("data") / "chapters" / f"chapter_{prev_cid:03d}.md"
+        from core.project_context import get_project_context
+        ctx = get_project_context()
+        prev_chapter_path = ctx.chapters_dir / f"chapter_{prev_cid:03d}.md"
         if prev_chapter_path.exists():
             full_prev = prev_chapter_path.read_text(encoding="utf-8")
             prev_text = full_prev[-4000:] if len(full_prev) > 4000 else full_prev
         # Also load summaries
         for cid in range(max(1, prev_cid - 2), prev_cid + 1):
-            summary_path = _Path("data") / "summaries" / f"chapter_{cid:03d}_summary.json"
+            summary_path = ctx.summaries_dir / f"chapter_{cid:03d}_summary.json"
             if summary_path.exists():
                 try:
                     s = _json.loads(summary_path.read_text(encoding="utf-8"))

@@ -24,6 +24,8 @@
   <link rel="stylesheet" href="/static/creative-evolution.css?v=1">
   <link rel="stylesheet" href="/static/quality-pass.css">
   <link rel="stylesheet" href="/static/narrative-evaluation.css?v=1">
+  <link rel="stylesheet" href="/static/simulator-panel-review.css?v=0d4c-rc2">
+  <link rel="stylesheet" href="/static/simulator-narrative-turn.css?v=0d4c-1">
 </head>
 <body>
   <div class="ambient-field" aria-hidden="true"></div>
@@ -57,6 +59,10 @@
         <div class="context-item"><span>保存</span><strong id="topbar-save-status">本地</strong></div>
       </div>
       <div class="topbar-actions">
+        <div id="storyos-mode-switch" class="storyos-mode-switch" role="group" aria-label="工作模式">
+          <button type="button" data-storyos-mode="traditional" aria-pressed="true">传统写作</button>
+          <button type="button" data-storyos-mode="simulator" aria-pressed="false">模拟器</button>
+        </div>
         <button class="icon-button" id="inspector-toggle" type="button" onclick="toggleInspector()" aria-controls="context-inspector" aria-expanded="true" data-tooltip="折叠上下文检查器"><span aria-hidden="true">◫</span><span class="sr-only">折叠上下文检查器</span></button>
         <button class="icon-button" type="button" onclick="refreshAll()" data-tooltip="刷新状态"><span aria-hidden="true">↻</span><span class="sr-only">刷新状态</span></button>
       </div>
@@ -160,6 +166,149 @@
 
     <main id="dashboard-view" class="dashboard-layout hidden">
 <section class="dashboard-main">
+        <section id="simulator-panel-review" class="storyos-simulator-panel hidden" aria-labelledby="simulator-panel-review-title">
+          <header class="storyos-simulator-header">
+            <div><span class="eyebrow">Simulator / Panel Review</span><h2 id="simulator-panel-review-title">模型人格面板复核</h2><p id="simulator-panel-review-context">只读复核当前章节的确定性面板与模型补充。</p></div>
+            <button id="simulator-panel-review-refresh" class="btn btn-secondary btn-compact" type="button">重新读取</button>
+          </header>
+          <div id="simulator-context-navigator" class="storyos-context-navigator" aria-label="Simulator context navigator">
+            <div class="storyos-context-navigator-status" id="simulator-context-navigator-status" role="status">Loading context…</div>
+            <div class="storyos-context-navigator-controls">
+              <label>Project<select id="simulator-context-project" disabled></select></label>
+              <label>Timeline<select id="simulator-context-timeline" disabled></select></label>
+              <label>Chapter<select id="simulator-context-chapter" disabled></select></label>
+              <label>Source Version<select id="simulator-context-source" disabled></select></label>
+              <label>Panel Run<select id="simulator-context-run" disabled></select></label>
+            </div>
+          </div>
+          <section id="simulator-panel-run-planner" class="storyos-panel-run-planner" aria-labelledby="simulator-panel-run-planner-title">
+            <div class="storyos-panel-run-planner-head"><div><span class="eyebrow">Safe execution workflow</span><h3 id="simulator-panel-run-planner-title">Panel Run Planner</h3></div><button id="simulator-panel-run-open" class="btn btn-secondary btn-compact" type="button">Create Mock Panel Run</button></div>
+            <div id="simulator-panel-run-drawer" class="storyos-panel-run-drawer hidden" aria-live="polite">
+              <div class="storyos-panel-run-scope" id="simulator-panel-run-scope">Read-only scope loading…</div>
+              <div class="storyos-panel-run-mode"><strong>Execution mode: Mock</strong><span>Live provider calls: 0 · Provider tokens are not used</span></div>
+              <fieldset><legend>Select enabled Personas <span id="simulator-panel-persona-count">0 / 5</span></legend><div id="simulator-panel-persona-options" class="storyos-panel-persona-options"></div></fieldset>
+              <div id="simulator-panel-plan-output" class="storyos-panel-plan-output" role="status"></div>
+              <div class="storyos-panel-run-actions"><button id="simulator-panel-plan-button" class="btn btn-secondary" type="button">Plan Mock Run</button><button id="simulator-panel-run-button" class="btn btn-primary" type="button" disabled>Confirm &amp; Create Mock Run</button></div>
+              <p class="storyos-panel-run-disclaimer">This creates an immutable local Mock Panel Run record. It does not call a real model, consume provider tokens, or modify story text, Canon, Chroma, or Obsidian.</p>
+            </div>
+          </section>
+          <section id="simulator-live-consent" class="storyos-live-consent" aria-labelledby="simulator-live-consent-title">
+            <div class="storyos-live-consent-rail" aria-hidden="true"><span class="is-active"></span><span></span><span></span><span></span></div>
+            <div class="storyos-live-consent-head">
+              <div><span class="eyebrow">Live preparation / read-only</span><h3 id="simulator-live-consent-title">Live Plan &amp; Consent</h3><p>Review the server-owned scope and budget before creating a consent ticket. This phase never executes a model.</p></div>
+              <div class="storyos-live-consent-entry"><button id="simulator-live-consent-open" class="btn btn-secondary btn-compact" type="button" disabled aria-describedby="simulator-live-consent-open-reason">Open Live Plan</button><span id="simulator-live-consent-open-reason" class="storyos-live-consent-muted">Waiting for authoritative project context.</span></div>
+            </div>
+            <div id="simulator-live-consent-summary" class="storyos-live-consent-summary" role="status" aria-live="polite">Live preparation is closed. Mock remains local-only.</div>
+            <dialog id="simulator-live-consent-dialog" class="storyos-live-consent-dialog" role="dialog" aria-modal="true" aria-labelledby="simulator-live-consent-dialog-title" aria-describedby="simulator-live-consent-dialog-description">
+              <div class="storyos-live-consent-dialog-surface">
+                <header class="storyos-live-consent-dialog-head"><div><span class="eyebrow">No execution in this phase</span><h3 id="simulator-live-consent-dialog-title">Review Live Plan</h3></div><button id="simulator-live-consent-close" class="icon-button" type="button" aria-label="Close Live Plan">×</button></header>
+                <p id="simulator-live-consent-dialog-description" class="storyos-live-consent-disclaimer">Future Live execution may call a real model and may incur cost. Creating this ticket only records explicit consent; Provider calls and tokens remain 0.</p>
+                <div id="simulator-live-consent-error" class="storyos-live-consent-error" role="alert"></div>
+                <div class="storyos-live-consent-scope" id="simulator-live-consent-scope"></div>
+                <div class="storyos-live-consent-grid">
+                  <section><h4>Profile</h4><label for="simulator-live-profile">Server-owned profile</label><select id="simulator-live-profile"></select><div id="simulator-live-profile-detail" class="storyos-live-consent-muted"></div></section>
+                  <section><h4>Budget &amp; safety</h4><div id="simulator-live-budget" class="storyos-live-budget"></div></section>
+                </div>
+                <section><h4>Personas <span id="simulator-live-persona-count">0 / 5</span></h4><div id="simulator-live-persona-options" class="storyos-live-persona-options"></div></section>
+                <label class="storyos-live-consent-check"><input id="simulator-live-consent-checkbox" type="checkbox" aria-describedby="simulator-live-consent-dialog-description"><span>I understand that a future controlled phase may call a real model and incur provider cost. I am explicitly creating a consent ticket now; this phase will not execute it.</span></label>
+                <div id="simulator-live-consent-status" class="storyos-live-consent-status" role="status" aria-live="polite"></div>
+                <div id="simulator-live-ticket-result" class="storyos-live-ticket-result hidden"></div>
+                <button id="simulator-live-consent-reset" class="btn btn-secondary btn-compact hidden" type="button">Start a new consent review</button>
+                <section id="simulator-live-execution" class="storyos-live-execution hidden" aria-labelledby="simulator-live-execution-title">
+                  <div class="storyos-live-execution-heading"><div><span class="eyebrow">Controlled handoff</span><h4 id="simulator-live-execution-title">Execute one Live Panel Run</h4></div><span class="storyos-live-badge">LIVE</span></div>
+                  <p id="simulator-live-execution-capability" class="storyos-live-consent-muted">Live execution is currently disabled by the server capability gate.</p>
+                  <label class="storyos-live-execution-check"><input id="simulator-live-execution-checkbox" type="checkbox" aria-describedby="simulator-live-execution-description"><span id="simulator-live-execution-description">I confirm that I am calling the real model now; this may incur provider cost. This action creates one Live Panel Run.</span></label>
+                  <button id="simulator-live-execution-submit" class="btn btn-primary" type="button" disabled aria-describedby="simulator-live-execution-submit-reason">Execute one Live Panel Run</button>
+                  <span id="simulator-live-execution-submit-reason" class="storyos-live-consent-muted">A server-enabled capability and a fresh second confirmation are required.</span>
+                  <div id="simulator-live-execution-status" class="storyos-live-consent-status" role="status" aria-live="polite"></div>
+                  <button id="simulator-live-recovery" class="btn btn-secondary btn-compact hidden" type="button">Recover current execution</button>
+                </section>
+                <footer class="storyos-live-consent-actions"><button id="simulator-live-consent-submit" class="btn btn-primary" type="button" disabled aria-describedby="simulator-live-consent-submit-reason">Create consent ticket</button><span id="simulator-live-consent-submit-reason" class="storyos-live-consent-muted">Select a ready profile, personas, and explicit consent.</span></footer>
+              </div>
+            </dialog>
+          </section>
+          <div id="simulator-panel-review-root" class="storyos-simulator-review" aria-live="polite"></div>
+        </section>
+        <section id="narrative-turn-workspace"
+                 class="storyos-narrative-turn-workspace hidden"
+                 role="region"
+                 aria-labelledby="nt-heading"
+                 aria-busy="false"
+                 data-context-state="initial">
+          <header class="nt-situation-header">
+            <span class="nt-eyebrow">Simulator / Narrative Turn</span>
+            <h1 id="nt-heading" class="nt-heading" tabindex="-1">叙事回合工作区</h1>
+            <div id="nt-context-bar" class="nt-context-bar"></div>
+            <div id="nt-situation-meta" class="nt-situation-header-row"></div>
+            <div id="nt-situation-chips" class="nt-situation-chips"></div>
+          </header>
+          <div id="nt-status-notice" class="nt-status-notice" role="status" aria-live="polite"></div>
+          <div class="nt-workspace-layout">
+            <div class="nt-workspace-main">
+              <section id="nt-evidence-summary" class="nt-evidence-summary" aria-labelledby="nt-evidence-heading">
+                <h2 id="nt-evidence-heading">叙事态势</h2>
+                <div id="nt-evidence-body"></div>
+              </section>
+              <section id="nt-recommended-action-group" class="nt-recommended-action-group" aria-labelledby="nt-actions-heading">
+                <h2 id="nt-actions-heading">推荐行动</h2>
+                <form id="nt-action-form" class="nt-action-form"></form>
+              </section>
+              <section id="nt-custom-action-composer" class="nt-custom-action-composer" aria-labelledby="nt-custom-heading">
+                <h2 id="nt-custom-heading">自定义行动</h2>
+                <p class="nt-custom-action-policy">最多 200 个规范化字符 · NFKC · 拒绝控制字符</p>
+                <textarea id="nt-custom-action-textarea"
+                          class="nt-custom-action-textarea"
+                          rows="2"
+                          maxlength="800"
+                          autocomplete="off"
+                          spellcheck="false"
+                          aria-describedby="nt-custom-action-counter nt-custom-action-notices"
+                          placeholder="输入自定义行动…"></textarea>
+                <div class="nt-custom-action-footer">
+                  <span id="nt-custom-action-counter" class="nt-custom-action-counter">0/200</span>
+                  <button id="nt-custom-action-submit" class="nt-custom-action-submit" type="button" disabled>分析可行性</button>
+                </div>
+                <div id="nt-custom-action-notices" class="nt-custom-action-notices">
+                  <span>文本仅用于当前可行性分析；仅保留 SHA-256。</span>
+                  <span>不会作为系统命令执行。</span>
+                </div>
+              </section>
+              <section id="nt-feasibility-panel" class="nt-feasibility-panel hidden" aria-labelledby="nt-feasibility-heading">
+                <h2 id="nt-feasibility-heading">可行性分析</h2>
+                <div id="nt-feasibility-body"></div>
+              </section>
+              <section id="nt-consequence-preview" class="nt-consequence-preview hidden" aria-labelledby="nt-preview-heading">
+                <h2 id="nt-preview-heading">预计后果（定性）</h2>
+                <p class="nt-consequence-hedging-cue">以下为定性预测，不代表已发生事实。</p>
+                <div id="nt-preview-body"></div>
+              </section>
+              <section id="nt-confirm-result" class="nt-confirm-result hidden" aria-labelledby="nt-confirm-heading">
+                <h2 id="nt-confirm-heading">确认结果</h2>
+                <p id="nt-confirm-summary" class="nt-confirm-summary"></p>
+                <p class="nt-confirm-meta">
+                  状态：<span id="nt-confirm-status"></span>
+                </p>
+                <div id="nt-confirm-flags" class="nt-confirm-flags"></div>
+                <p class="nt-confirm-meta">
+                  下一上下文指纹：<code id="nt-confirm-next-fp"></code>
+                </p>
+              </section>
+              <div class="nt-primary-action-wrap">
+                <button type="button"
+                        id="nt-primary-action"
+                        class="nt-primary-action"
+                        disabled
+                        aria-disabled="true">
+                  确认行动
+                </button>
+              </div>
+            </div>
+            <aside id="nt-evidence-rail" class="nt-evidence-rail" aria-label="Narrative Turn evidence rail">
+              <h3>Evidence Rail</h3>
+              <div id="nt-evidence-rail-body"></div>
+            </aside>
+          </div>
+        </section>
         <section class="workbench-meta"><div id="workbench-meta-list" class="workbench-meta-list">Loading project state...</div><div id="status-metrics" class="hidden"></div><div id="next-action" class="hidden"></div></section><section id="knowledge-store-summary" class="knowledge-store-summary">Loading knowledge store summary...</section><section id="workbench-task-panel" class="dashboard-hero"><div class="workbench-task-copy"><span id="workbench-chapter-code" class="workbench-chapter-code">NEXT CHAPTER</span><h2 id="workbench-task-title">Loading current writing task</h2><p id="workbench-task-description">Loading project state.</p><div id="workbench-task-facts" class="workbench-task-facts"></div></div><div class="workbench-task-actions"><button id="workbench-generate-button" class="btn btn-primary" type="button" data-workbench-generate onclick="runChapter()">生成下一章</button><button class="btn btn-secondary" type="button" onclick="openOutlineEditor()">编辑章节大纲</button></div></section><section id="workbench-story-state" class="workbench-section"><div class="panel-heading"><div><span class="eyebrow">Story State</span><h2>Current story state</h2></div></div><div id="story-state-grid" class="story-state-grid">Loading...</div></section><section id="chapter-archive-panel" class="chapter-manager-panel" aria-labelledby="chapter-manager-title"><header class="chapter-manager-header"><div><span class="eyebrow">Manuscript Index</span><h2 id="chapter-manager-title">章节管理 <span id="chapter-manager-count" class="chapter-manager-count">0 章</span></h2></div><div class="chapter-manager-header-actions"><button class="btn btn-secondary" type="button" onclick="refreshAll()">刷新</button><button class="btn btn-primary" type="button" data-workbench-generate onclick="runChapter()">生成下一章</button></div></header><div class="chapter-manager-toolbar" aria-label="章节列表工具"><label class="chapter-search"><span class="sr-only">搜索章节</span><input id="chapter-manager-search" type="search" placeholder="搜索章节标题或编号" oninput="chapterManagerSetSearch(this.value)"></label><label class="chapter-filter"><span class="sr-only">状态筛选</span><select id="chapter-manager-filter" onchange="chapterManagerSetFilter(this.value)"><option value="all">全部状态</option><option value="current">当前章节</option><option value="completed">已完成</option><option value="draft">草稿</option><option value="untitled">无标题</option><option value="empty">无正文</option><option value="failed">生成失败</option></select></label><label class="chapter-sort"><span class="sr-only">排序</span><select id="chapter-manager-sort" onchange="chapterManagerSetSort(this.value)"><option value="number-desc">章节号：最新优先</option><option value="number-asc">章节号：最早优先</option><option value="updated-desc">更新时间：最新优先</option><option value="words-desc">字数：最多优先</option></select></label></div><div id="chapter-manager-list" class="chapter-manager-list" data-legacy-list-id="chapter-archive-list" aria-live="polite"><div class="chapter-manager-empty">正在读取章节…</div></div></section>
 
         <section id="outline-editor-panel" class="outline-studio panel" aria-labelledby="outline-editor-title">
@@ -336,6 +485,11 @@
     </dialog>
   <script src="/static/recovery-api.js?v=1"></script>
   <script src="/static/app.js?v=12"></script>
+  <script src="/static/simulator-panel-review.js?v=0d3b1-rc2-3"></script>
+  <script src="/static/simulator-context-navigator.js?v=0d4c-rc2"></script>
+  <script src="/static/simulator-panel-run.js?v=0d3c1-1"></script>
+  <script src="/static/simulator-live-consent.js?v=0d3c2-b-1"></script>
+  <script src="/static/simulator-narrative-turn.js?v=0d4c-rc2"></script>
   <script src="/static/narrative-evaluation.js?v=1"></script>
   <script src="/static/planning-recovery.js?v=3"></script>
   <script src="/static/planning-control.js?v=1"></script>

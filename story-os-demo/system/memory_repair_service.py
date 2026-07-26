@@ -133,7 +133,24 @@ class MemoryRepairService:
             "last_error": None,
         })
         self._write_vector_metadata(metadata)
-        result = build_or_update_index(self.context.data_dir)
+        from system.vector_sync_run_store import VectorSyncRunStore, VectorSyncOperationType, VectorSyncStatus
+        from system.vector_index_lifecycle import rebuild_project_index
+        
+        sync_store = VectorSyncRunStore(self.context)
+        sync_run = sync_store.create(
+            operation_type=VectorSyncOperationType.REPAIR,
+            project_id=self.context.root.name or "default",
+            timeline_id="main",
+        )
+        
+        sync_store.update_status(sync_run.operation_id, VectorSyncStatus.RUNNING)
+        
+        result = rebuild_project_index(self.context, timeline_id="main")
+        
+        if result.get("status") == "success":
+            sync_store.update_status(sync_run.operation_id, VectorSyncStatus.COMPLETED)
+        else:
+            sync_store.update_status(sync_run.operation_id, VectorSyncStatus.FAILED, result.get("message", "Unknown error"))
         if result.get("status") == "failed":
             message = str(result.get("message") or "\u5411\u91cf\u7d22\u5f15\u6784\u5efa\u5931\u8d25\u3002")
             metadata.update({

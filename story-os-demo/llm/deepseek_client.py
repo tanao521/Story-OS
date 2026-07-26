@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import requests
-
 from llm.json_utils import extract_json_from_text
 
 
@@ -32,6 +30,7 @@ class DeepSeekClient:
             "temperature": temperature,
         }
         try:
+            import requests
             response = requests.post(self._chat_url(), headers=headers, json=payload, timeout=60)
             response.raise_for_status()
             data = response.json()

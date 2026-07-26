@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from core.chapter_committer import commit_chapter, render_committed_chapter_markdown
+from core.project_context import get_project_context
 
 
 def make_plan() -> dict[str, Any]:
@@ -31,6 +32,7 @@ def make_state() -> dict[str, Any]:
 
 def test_commit_uses_edited_text_when_edited_payload_exists(monkeypatch: Any, tmp_path: Any) -> None:
     monkeypatch.chdir(tmp_path)
+    context = get_project_context(tmp_path)
     edited = {
         "chapter_id": 1,
         "chapter_title": "测试章",
@@ -38,7 +40,7 @@ def test_commit_uses_edited_text_when_edited_payload_exists(monkeypatch: Any, tm
         "edited_text": "编辑版正文",
     }
 
-    result = commit_chapter(edited, make_plan(), make_state(), {}, {}, {})
+    result = commit_chapter(edited, make_plan(), make_state(), {}, {}, {}, context)
     markdown = render_committed_chapter_markdown(edited)
 
     assert result["source_used"] == "edited"
@@ -48,13 +50,14 @@ def test_commit_uses_edited_text_when_edited_payload_exists(monkeypatch: Any, tm
 
 def test_commit_uses_draft_text_when_edited_payload_missing(monkeypatch: Any, tmp_path: Any) -> None:
     monkeypatch.chdir(tmp_path)
+    context = get_project_context(tmp_path)
     draft = {
         "chapter_id": 1,
         "chapter_title": "测试章",
         "draft_text": "草稿正文",
     }
 
-    result = commit_chapter(draft, make_plan(), make_state(), {}, {}, {})
+    result = commit_chapter(draft, make_plan(), make_state(), {}, {}, {}, context)
     markdown = render_committed_chapter_markdown(draft)
 
     assert result["source_used"] == "draft"
@@ -63,6 +66,7 @@ def test_commit_uses_draft_text_when_edited_payload_missing(monkeypatch: Any, tm
 
 def test_commit_result_contains_source_used(monkeypatch: Any, tmp_path: Any) -> None:
     monkeypatch.chdir(tmp_path)
+    context = get_project_context(tmp_path)
     result = commit_chapter(
         {"chapter_id": 1, "chapter_title": "测试章", "draft_text": "草稿正文"},
         make_plan(),
@@ -70,6 +74,7 @@ def test_commit_result_contains_source_used(monkeypatch: Any, tmp_path: Any) -> 
         {},
         {},
         {},
+        context,
     )
 
     assert "source_used" in result
@@ -78,6 +83,7 @@ def test_commit_result_contains_source_used(monkeypatch: Any, tmp_path: Any) -> 
 
 def test_commit_still_commits_only_current_chapter_and_advances(monkeypatch: Any, tmp_path: Any) -> None:
     monkeypatch.chdir(tmp_path)
+    context = get_project_context(tmp_path)
     state = make_state()
 
     result = commit_chapter(
@@ -87,6 +93,7 @@ def test_commit_still_commits_only_current_chapter_and_advances(monkeypatch: Any
         {},
         {},
         {},
+        context,
     )
 
     assert result["chapter_id"] == 1

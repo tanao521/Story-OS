@@ -114,8 +114,7 @@ class RevisionService:
         chapter = _chapter_path(chapter_id)
         text = self.store.read_markdown(chapter, default=None)
         if text is None:
-            raise CanonVersionNotFoundError("Committed chapter file does not exist.")
-        # Gentle legacy adoption: copy to the version area, never move or edit the old chapter.
+            return {"schema_version": "1.0", "chapter_id": chapter_id, "current_version_id": "", "versions": []}
         version_id = f"legacy-chapter-{chapter_id:03d}"
         record = self._canon_record(chapter_id, 1, version_id, _canon_file_path(chapter_id, 1), text, "legacy")
         record["active"] = True
@@ -307,11 +306,55 @@ class RevisionService:
                 except DataWriteError: pass
                 revision.update({"status": "failed", "updated_at": _now()}); self._save_revision(revision); raise
             self._mark_derived_stale(chapter, active["canon_version_id"], version_id)
+            
+            vector_sync_warnings = []
+            try:
+                from system.vector_sync_run_store import VectorSyncRunStore, VectorSyncOperationType, VectorSyncStatus
+                from system.vector_index_lifecycle import index_chapter
+                
+                sync_store = VectorSyncRunStore(self.context)
+                sync_run = sync_store.create(
+                    operation_type=VectorSyncOperationType.CANON_RESTORE,
+                    project_id=self.context.root.name or "default",
+                    timeline_id="main",
+                    chapter_id=chapter,
+                    canon_revision_id=revision_id,
+                )
+                
+                sync_store.update_status(sync_run.operation_id, VectorSyncStatus.RUNNING)
+                
+                content = self.store.read_markdown(_chapter_path(chapter), strict=True) or ""
+                result = index_chapter(self.context, chapter, content, canon_revision_id=revision_id)
+                
+                if result.get("status") == "success":
+                    sync_store.update_status(sync_run.operation_id, VectorSyncStatus.COMPLETED)
+                else:
+                    sync_store.update_status(sync_run.operation_id, VectorSyncStatus.FAILED, result.get("message", "Unknown error"))
+                    vector_sync_warnings.append(f"Vector index sync failed: {result.get('message', 'Unknown error')}. Operation ID: {sync_run.operation_id}")
+            except Exception as exc:
+                try:
+                    from system.vector_sync_run_store import VectorSyncRunStore, VectorSyncOperationType, VectorSyncStatus
+                    sync_store = VectorSyncRunStore(self.context)
+                    sync_run = sync_store.create(
+                        operation_type=VectorSyncOperationType.CANON_RESTORE,
+                        project_id=self.context.root.name or "default",
+                        timeline_id="main",
+                        chapter_id=chapter,
+                        canon_revision_id=revision_id,
+                    )
+                    sync_store.update_status(sync_run.operation_id, VectorSyncStatus.FAILED, str(exc))
+                except Exception:
+                    pass
+                vector_sync_warnings.append(f"Vector index sync failed: {str(exc)[:160]}")
+            
             try:
                 from system.narrative_memory_service import NarrativeMemoryService
                 NarrativeMemoryService(self.context).invalidate_from(chapter)
             except Exception as exc:
                 revision.setdefault("warnings", []).append(f"Narrative memory rebuild required: {str(exc)[:160]}")
+            
+            if vector_sync_warnings:
+                revision.setdefault("warnings", []).extend(vector_sync_warnings)
             revision.update({"status": "completed", "completed_at": _now(), "updated_at": _now()}); self._save_revision(revision)
             self._audit("revision_applied", "revision", revision_id, chapter, "success", f"Activated {version_id}; prior canon retained.")
             warnings = ["Summary, vector memory, and planning-derived artifacts are marked stale and need rebuilding."]
@@ -330,6 +373,60 @@ class RevisionService:
                 warnings.append(f"Rolling window status check can be retried manually: {str(exc)[:160]}")
             return {"chapter_id": chapter, "canon_version": new, "revision": revision, "creative_reflection_job": reflection_job, "warnings": warnings}
         finally: lock.release()
+
+    def create_and_apply_revision(self, chapter_id: int, content: str, metadata: dict[str, Any]) -> dict[str, Any]:
+        chapter = chapter_id
+        lock = self._lock_for(chapter)
+        if not lock.acquire(blocking=False):
+            raise ChapterOperationConflict("A conflicting operation is already running for this chapter.")
+        try:
+            index = self._canon_index(chapter)
+            number = max((int(item["version_number"]) for item in index["versions"]), default=0) + 1
+            version_id = f"canon-chapter-{chapter:03d}-v{number:03d}"
+            content_path = _canon_file_path(chapter, number)
+            source = metadata.get("source_type", "commit")
+            source_version_id = metadata.get("source_version_id", "")
+
+            new_record = self._canon_record(
+                chapter, number, version_id, content_path, content, source,
+                revision_id=_id("commit"),
+                replaces_version_id=next((item["canon_version_id"] for item in index["versions"] if item.get("active")), ""),
+            )
+            new_record["active"] = True
+            new_record["activated_at"] = _now()
+            new_record["source_hash"] = metadata.get("source_hash", "")
+
+            original = self.store.read_markdown(_chapter_path(chapter), default="")
+
+            try:
+                self.store.write_markdown(content_path, content)
+                self.store.write_markdown(_chapter_path(chapter), content, backup=True)
+                for item in index["versions"]:
+                    if item.get("active"):
+                        item["active"] = False
+                        item["deactivated_at"] = _now()
+                index["versions"].append(new_record)
+                index["current_version_id"] = version_id
+                self.store.write_json(_canon_index_path(chapter), index, backup=True)
+            except Exception:
+                try:
+                    self.store.write_markdown(_chapter_path(chapter), original, backup=False)
+                except DataWriteError:
+                    pass
+                raise
+
+            self._mark_derived_stale(chapter, "", version_id)
+
+            self._audit("canon_committed", "canon_version", version_id, chapter, "success", f"Direct commit activated {version_id}.")
+            return {"revision_id": version_id, "canon_version": new_record, "warnings": []}
+        finally:
+            lock.release()
+
+    def get_current_revision(self, chapter_id: int) -> dict[str, Any] | None:
+        try:
+            return self.active_canon(chapter_id)
+        except CanonVersionNotFoundError:
+            return None
 
     def restore_canon(self, chapter_id: int, version_id: str, *, confirmed_risks: bool = False) -> dict[str, Any]:
         target = self.get_canon_version(chapter_id, version_id)

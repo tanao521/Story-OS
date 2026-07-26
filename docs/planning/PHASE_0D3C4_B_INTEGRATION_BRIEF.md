@@ -37,3 +37,9 @@ Until a choice is explicit:
 - exact availability remains false;
 - Production Live remains default-off;
 - no Canary is permitted.
+# B1 implementation note
+
+The Owner authorized the Strict policy in B1. The policy/evaluator, disabled
+external provisioning seam, canonical request controls, safe readiness, and
+content-free reconciliation are implemented. Real asset provisioning,
+Production Live, Canary, and B2 remain unauthorized.

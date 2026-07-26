@@ -10,6 +10,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from system.continuity_checker import continuity_content_hash, save_continuity_report
+from system.project_manager import ProjectManagerError
 from web.app import app
 
 
@@ -33,6 +34,86 @@ def test_status_returns_200(monkeypatch: Any) -> None:
 
     assert response.status_code == 200
     assert response.json()["full"] is True
+
+
+def test_simulator_context_rejects_unknown_project(monkeypatch: Any) -> None:
+    class FakeManager:
+        def get_project(self, project_id: str) -> dict[str, Any]:
+            raise ProjectManagerError("not found")
+
+    monkeypatch.setattr("web.routes.get_project_manager", lambda: FakeManager())
+    response = client.get("/api/simulator/context?project_id=missing-project")
+    assert response.status_code == 404
+    assert response.json()["errors"] == ["PROJECT_NOT_FOUND"]
+
+
+def test_persona_options_are_safe_and_deterministically_ordered() -> None:
+    response = client.get("/api/reader-persona/options")
+    assert response.status_code == 200
+    personas = response.json()["result"]["personas"]
+    assert personas and all(set(item) == {"persona_id", "display_name", "short_description", "enabled", "deterministic_order"} for item in personas)
+    assert [item["deterministic_order"] for item in personas] == list(range(1, len(personas) + 1))
+
+
+def test_legacy_live_routes_reject_path_and_force_bypass_before_context_resolution() -> None:
+    legacy_panel = client.post(
+        "/api/reader-persona/model-panel/runs",
+        json={
+            "mode": "live", "project_root": "C:/not-a-project", "chapter_id": 1,
+            "persona_ids": ["hook_driven_reader"], "allow_model_call": True,
+            "execution_profile": "live", "max_provider_calls": 1, "force": True,
+        },
+    )
+    assert legacy_panel.status_code == 400
+    assert legacy_panel.json()["errors"] == ["LIVE_REQUIRES_CONSENT_TICKET"]
+
+    legacy_single = client.post(
+        "/api/simulator/reader/personas/model/run",
+        json={"mode": "live", "project_root": "C:/not-a-project", "chapter_id": 1, "persona_id": "hook_driven_reader"},
+    )
+    assert legacy_single.status_code == 400
+    assert legacy_single.json()["errors"] == ["LIVE_REQUIRES_CONSENT_TICKET"]
+
+    ticket_route = client.post(
+        "/api/reader-persona/model-panel/live/runs",
+        json={"project_key": "ignored", "ticket_id": "ignored", "force": True},
+    )
+    assert ticket_route.status_code == 400
+    assert ticket_route.json()["errors"] == ["FORBIDDEN_LIVE_INPUT"]
+
+
+def test_controlled_live_run_is_server_default_off_and_requires_header(monkeypatch: Any) -> None:
+    monkeypatch.delenv("STORYOS_LIVE_EXECUTION_UI_ENABLED", raising=False)
+    disabled = client.post(
+        "/api/reader-persona/model-panel/live/runs",
+        json={"project_key": "unknown-project", "ticket_id": "ticket"},
+    )
+    assert disabled.status_code == 403
+    assert disabled.json()["errors"] == ["LIVE_EXECUTION_DISABLED"]
+
+    body_key = client.post(
+        "/api/reader-persona/model-panel/live/runs",
+        json={"project_key": "unknown-project", "ticket_id": "ticket", "idempotency_key": "body-key"},
+    )
+    assert body_key.status_code == 400
+    assert body_key.json()["errors"] == ["FORBIDDEN_LIVE_INPUT"]
+
+    monkeypatch.setenv("STORYOS_LIVE_EXECUTION_UI_ENABLED", "1")
+    enabled = client.post(
+        "/api/reader-persona/model-panel/live/runs",
+        json={"project_key": "unknown-project", "ticket_id": "ticket"},
+        headers={"X-StoryOS-Idempotency-Key": "header-key"},
+    )
+    assert enabled.status_code == 400
+    assert enabled.json()["errors"] == ["PROJECT_NOT_FOUND"]
+
+
+def test_live_profile_projection_exposes_only_safe_capability(monkeypatch: Any) -> None:
+    monkeypatch.delenv("STORYOS_LIVE_EXECUTION_UI_ENABLED", raising=False)
+    response = client.get("/api/reader-persona/live/profiles")
+    assert response.status_code == 200
+    capability = response.json()["result"]["capability"]
+    assert capability == {"enabled": False, "status": "disabled", "safe_error_code": "LIVE_EXECUTION_DISABLED"}
 
 
 def test_run_chapter_uses_auto_commit_false(monkeypatch: Any) -> None:

@@ -122,3 +122,8 @@ Output. Each fixture gets one call, no retry/fallback, complete Provider usage,
 and no observed underestimation beyond the approved reserve. Evaluate maximum
 underestimation, not only mean error. Any reserve breach fails the policy;
 sample insufficiency cannot relax it.
+# B1 implementation status
+
+The Strict policy is implemented as an immutable server contract. Default
+availability remains false until a compliant external Layer-A asset passes all
+provisioning Gates. Exact readiness remains separate and false for this mode.

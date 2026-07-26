@@ -14,3 +14,4 @@
 | Loading/Error/Empty states | live region / section replacement | loading skeleton; 404 retains context; no write controls | status + `.empty` |
 
 Production flow: parse URL → select `/review` for chapter or `/runs/{id}/review` for explicit id → call existing `apiGet` with project context → abort stale requests using existing `storyosRequestGeneration` → render banner → authority → ordered cards → signals → audit. Use `textContent`/escaping, never unsafe `innerHTML` for contract text. A 404 is an error container, not a fallback selection.
+Responsive implementation note (RC2): at <=900px the review and audit regions are a single vertical flow; at <=760px controls and authority metrics use min-width-safe tracks. Status enums remain fixture/API values, but `source_missing` is rendered as the readable UI label `来源缺失`.

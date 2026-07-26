@@ -31,6 +31,7 @@ data/
 .DS_Store
 Thumbs.db
 pytest-*/
+storyos-pytest-*/
 scratch/
 _tmp*
 temp_*

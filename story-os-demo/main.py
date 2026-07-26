@@ -9,11 +9,6 @@ import commands as command_api
 import config
 from config import DATA_DIR
 from core.blueprint_generator import generate_blueprint, render_blueprint_markdown
-from core.chapter_committer import (
-    commit_chapter,
-    render_committed_chapter_markdown,
-)
-from core.character_builder import generate_characters, render_characters_markdown
 from core.draft_editor import edit_draft, render_edited_markdown
 from core.draft_writer import render_draft_markdown, write_chapter_draft
 from core.next_chapter_planner import (
@@ -76,32 +71,32 @@ from system.todo_manager import (
 from system.validators import validate_story_spec
 
 
-def main() -> None:
+def main() -> int:
     from core.project import resolve_current_project_root
     os.chdir(resolve_current_project_root())
     command = sys.argv[1] if len(sys.argv) > 1 else "setup"
 
     if command == "status":
         run_status_command()
-        return
+        return 0
     if command == "memory-health":
         run_memory_health_command(sys.argv[2:])
-        return
+        return 0
     if command == "evaluation-health":
         run_evaluation_health_command(sys.argv[2:])
-        return
+        return 0
     if command == "repair-quality-report":
         run_repair_quality_report_command(sys.argv[2:])
-        return
+        return 0
     if command in {"init-vector-index", "rebuild-vector-index"}:
         run_initialize_vector_index_command(sys.argv[2:], rebuild=command == "rebuild-vector-index")
-        return
+        return 0
     if command == "self-check":
         run_self_check_command(sys.argv[2:])
-        return
+        return 0
     if command == "system-health":
         print(__import__("json").dumps(HealthChecker().check(), ensure_ascii=False, indent=2))
-        return
+        return 0
     if command == "web":
         run_web_server()
         return
@@ -162,8 +157,51 @@ def main() -> None:
         run_build_context_command()
         return
     if command == "sync-obsidian":
-        run_sync_obsidian_command()
-        return
+        exit_code = run_sync_obsidian_command()
+        return exit_code
+    if command == "pull-obsidian":
+        exit_code = run_pull_obsidian_command()
+        return exit_code
+    if command == "simulate-reader":
+        exit_code = run_simulate_reader_command()
+        return exit_code
+    if command == "list-reader-simulations":
+        exit_code = run_list_reader_simulations_command()
+        return exit_code
+    if command == "show-reader-simulation":
+        exit_code = run_show_reader_simulation_command()
+        return exit_code
+    if command == "list-reader-personas":
+        exit_code = run_list_reader_personas_command()
+        return exit_code
+    if command == "run-reader-panel":
+        exit_code = run_run_reader_panel_command()
+        return exit_code
+    if command == "list-reader-panels":
+        exit_code = run_list_reader_panels_command()
+        return exit_code
+    if command == "show-reader-panel":
+        exit_code = run_show_reader_panel_command()
+        return exit_code
+    if command == "run-reader-persona-model":
+        exit_code = run_run_reader_persona_model_command()
+        return exit_code
+    if command == "list-reader-persona-model-runs":
+        exit_code = run_list_reader_persona_model_runs_command()
+        return exit_code
+    if command == "show-reader-persona-model-run":
+        exit_code = run_show_reader_persona_model_run_command()
+        return exit_code
+    if command == "plan-reader-persona-model-panel":
+        return run_reader_persona_model_panel_command(plan_only=True)
+    if command == "run-reader-persona-model-panel":
+        return run_reader_persona_model_panel_command(plan_only=False)
+    if command == "list-reader-persona-model-panel-runs":
+        return run_list_reader_persona_model_panel_runs_command()
+    if command == "show-reader-persona-model-panel-run":
+        return run_show_reader_persona_model_panel_run_command()
+    if command == "show-reader-persona-panel-review":
+        return run_show_reader_persona_panel_review_command()
     if command == "index-vault":
         run_index_vault_command()
         return
@@ -179,6 +217,32 @@ def main() -> None:
     if command == "outline":
         print("当前系统采用逐章写作模式，请使用 python main.py blueprint 生成全书蓝图。")
         return
+    if command == "clone-project":
+        result = run_clone_project_command(sys.argv[2:])
+        if result is None:
+            return 2
+        if result.get("status") == "failed":
+            return 1
+        return 0
+    if command == "obsidian-bind":
+        result = run_obsidian_bind_command(sys.argv[2:])
+        if result is None:
+            return 2
+        if result.get("status") == "failed":
+            return 1
+        return 0
+    if command == "obsidian-status":
+        result = run_obsidian_status_command(sys.argv[2:])
+        if result is None:
+            return 2
+        return 0
+    if command == "obsidian-unbind":
+        result = run_obsidian_unbind_command(sys.argv[2:])
+        if result is None:
+            return 2
+        if result.get("status") == "failed":
+            return 1
+        return 0
 
     print("未知命令。可用命令：")
     for item in [
@@ -209,10 +273,20 @@ def main() -> None:
         "commit-chapter",
         "build-context",
         "sync-obsidian",
+        "pull-obsidian",
         "index-vault",
         "run-chapter",
         "check-llm",
         "configure-llm",
+        "clone-project",
+        "run-reader-persona-model",
+        "list-reader-persona-model-runs",
+        "show-reader-persona-model-run",
+        "plan-reader-persona-model-panel",
+        "run-reader-persona-model-panel",
+        "list-reader-persona-model-panel-runs",
+        "show-reader-persona-model-panel-run",
+        "show-reader-persona-panel-review",
     ]:
         print(f"- python main.py {item}")
     raise SystemExit(2)
@@ -694,8 +768,57 @@ def run_build_context_command() -> None:
     _print_command_result(command_api.build_context_command())
 
 
-def run_sync_obsidian_command() -> None:
-    _print_command_result(command_api.sync_obsidian_command())
+def run_sync_obsidian_command() -> int:
+    if "--help" in sys.argv[2:] or "-h" in sys.argv[2:]:
+        print("用法：python main.py sync-obsidian [--dry-run] [--prune-stale]")
+        print("")
+        print("参数：")
+        print("  --dry-run       只预览同步计划，不实际写入文件")
+        print("  --prune-stale   清理已不在期望快照中的安全陈旧文件")
+        return 0
+    dry_run = "--dry-run" in sys.argv[2:]
+    prune_stale = "--prune-stale" in sys.argv[2:]
+    result = command_api.sync_obsidian_command(dry_run=dry_run, prune_stale=prune_stale)
+    _print_command_result(result)
+    return 1 if result.get("status") == "failed" else 0
+
+
+def run_pull_obsidian_command() -> int:
+    if "--help" in sys.argv[2:] or "-h" in sys.argv[2:]:
+        print("用法：python main.py pull-obsidian [--file <relative-path>] [--expected-hash <hash>] [--apply] [--repair-converged]")
+        print("")
+        print("参数：")
+        print("  --file <path>           指定要预览或导入的相对路径")
+        print("  --expected-hash <hash>  预览时返回的目标文件哈希，apply 时必须提供")
+        print("  --apply                 正式导入 --file 指定的文件")
+        print("  --repair-converged      仅修复已收敛但 Manifest 哈希落后的项")
+        return 0
+    file = None
+    expected_hash = None
+    apply = False
+    repair_converged = False
+    argv = sys.argv[2:]
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--file" and i + 1 < len(argv):
+            file = argv[i + 1]
+            i += 2
+        elif argv[i] == "--expected-hash" and i + 1 < len(argv):
+            expected_hash = argv[i + 1]
+            i += 2
+        elif argv[i] == "--apply":
+            apply = True
+            i += 1
+        elif argv[i] == "--repair-converged":
+            repair_converged = True
+            i += 1
+        else:
+            i += 1
+    result = command_api.pull_obsidian_command(
+        file=file, expected_hash=expected_hash, apply=apply, repair_converged=repair_converged
+    )
+    _print_command_result(result)
+    return 1 if result.get("status") == "failed" else 0
 
 
 def run_review_draft_command() -> None:
@@ -976,11 +1099,598 @@ def _print_command_result(result: dict[str, Any]) -> None:
         "source_version",
         "source_path",
         "path",
+        "run_id",
+        "engagement_score",
+        "retention_risk",
+        "evaluator_version",
+        "panel_execution_id",
+        "expected_provider_calls",
+        "actual_provider_call_count",
+        "cache_hit_count",
+        "cache_miss_count",
+        "usage_completeness",
+        "error_code",
     ]:
         if key in outputs and outputs[key] not in {"", None}:
             print(f"- {key}: {outputs[key]}")
     for warning in result.get("warnings", []):
         print(f"警告：{warning}")
+
+
+def run_simulate_reader_command() -> int:
+    if "--help" in sys.argv[2:] or "-h" in sys.argv[2:]:
+        print("用法：python main.py simulate-reader --chapter <number> [--version-id <id>] [--project-root <path>]")
+        print()
+        print("参数：")
+        print("  --chapter <number>      指定要模拟的章节编号")
+        print("  --version-id <id>       指定版本ID（如：draft_v001, manual_v002）")
+        print("  --project-root <path>   指定项目根目录路径")
+        return 0
+    chapter = None
+    version_id = None
+    project_root = None
+    argv = sys.argv[2:]
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--chapter" and i + 1 < len(argv):
+            try:
+                chapter = int(argv[i + 1])
+            except ValueError:
+                print("错误：chapter 必须是数字。")
+                return 2
+            i += 2
+        elif argv[i] == "--version-id" and i + 1 < len(argv):
+            version_id = argv[i + 1]
+            i += 2
+        elif argv[i] == "--project-root" and i + 1 < len(argv):
+            project_root = argv[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    from core.project_context import bind_project_context, get_project_context
+    ctx = get_project_context(project_root)
+    with bind_project_context(ctx):
+        result = command_api.simulate_reader_command(chapter=chapter, version_id=version_id)
+    _print_command_result(result)
+    return 1 if result.get("status") == "failed" else 0
+
+
+def run_list_reader_simulations_command() -> int:
+    if "--help" in sys.argv[2:] or "-h" in sys.argv[2:]:
+        print("用法：python main.py list-reader-simulations [--chapter <number>] [--project-root <path>]")
+        print()
+        print("参数：")
+        print("  --chapter <number>      按章节编号筛选")
+        print("  --project-root <path>   指定项目根目录路径")
+        return 0
+    chapter = None
+    project_root = None
+    argv = sys.argv[2:]
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--chapter" and i + 1 < len(argv):
+            try:
+                chapter = int(argv[i + 1])
+            except ValueError:
+                print("错误：chapter 必须是数字。")
+                return 2
+            i += 2
+        elif argv[i] == "--project-root" and i + 1 < len(argv):
+            project_root = argv[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    from core.project_context import bind_project_context, get_project_context
+    ctx = get_project_context(project_root)
+    with bind_project_context(ctx):
+        result = command_api.list_reader_simulations_command(chapter=chapter)
+    _print_command_result(result)
+    simulations = result.get("outputs", {}).get("simulations", [])
+    for sim in simulations:
+        print(f"- run_id: {sim.get('run_id', '')}")
+        print(f"  chapter_id: {sim.get('chapter_id', '')}")
+        print(f"  source_version_id: {sim.get('source_version_id', '')}")
+        print(f"  status: {sim.get('status', '')}")
+        if sim.get("engagement_score") is not None:
+            print(f"  engagement_score: {sim['engagement_score']}")
+            print(f"  retention_risk: {sim['retention_risk']}")
+        print(f"  created_at: {sim.get('created_at', '')}")
+        print()
+    return 1 if result.get("status") == "failed" else 0
+
+
+def run_show_reader_simulation_command() -> int:
+    if "--help" in sys.argv[2:] or "-h" in sys.argv[2:]:
+        print("用法：python main.py show-reader-simulation --run-id <id> [--project-root <path>]")
+        print()
+        print("参数：")
+        print("  --run-id <id>           指定模拟记录ID")
+        print("  --project-root <path>   指定项目根目录路径")
+        return 0
+    run_id = None
+    project_root = None
+    argv = sys.argv[2:]
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--run-id" and i + 1 < len(argv):
+            run_id = argv[i + 1]
+            i += 2
+        elif argv[i] == "--project-root" and i + 1 < len(argv):
+            project_root = argv[i + 1]
+            i += 2
+        else:
+            i += 1
+    if run_id is None:
+        print("错误：必须指定 --run-id 参数。")
+        return 2
+
+    from core.project_context import bind_project_context, get_project_context
+    ctx = get_project_context(project_root)
+    with bind_project_context(ctx):
+        result = command_api.show_reader_simulation_command(run_id=run_id)
+    _print_command_result(result)
+    return 1 if result.get("status") == "failed" else 0
+
+
+def run_list_reader_personas_command() -> int:
+    if "--help" in sys.argv[2:] or "-h" in sys.argv[2:]:
+        print("用法：python main.py list-reader-personas [--project-root <path>]")
+        print()
+        print("参数：")
+        print("  --project-root <path>   指定项目根目录路径")
+        return 0
+    project_root = None
+    argv = sys.argv[2:]
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--project-root" and i + 1 < len(argv):
+            project_root = argv[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    from core.project_context import bind_project_context, get_project_context
+    ctx = get_project_context(project_root)
+    with bind_project_context(ctx):
+        result = command_api.list_reader_personas_command()
+    _print_command_result(result)
+    personas = result.get("outputs", {}).get("personas", [])
+    for persona in personas:
+        print(f"- persona_id: {persona.get('persona_id', '')}")
+        print(f"  display_name: {persona.get('display_name', '')}")
+        print(f"  archetype: {persona.get('archetype', '')}")
+        print(f"  version: {persona.get('persona_version', '')}")
+        print(f"  enabled: {persona.get('enabled', '')}")
+        print(f"  description: {persona.get('description', '')[:100]}...")
+        print()
+    return 1 if result.get("status") == "failed" else 0
+
+
+def run_run_reader_panel_command() -> int:
+    if "--help" in sys.argv[2:] or "-h" in sys.argv[2:]:
+        print("用法：python main.py run-reader-panel --chapter <number> --personas <id1,id2,...> [--project-root <path>]")
+        print()
+        print("参数：")
+        print("  --chapter <number>      指定章节编号")
+        print("  --personas <ids>        逗号分隔的读者角色ID列表（至少2个，最多5个）")
+        print("  --project-root <path>   指定项目根目录路径")
+        return 0
+    chapter = None
+    personas = None
+    project_root = None
+    argv = sys.argv[2:]
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--chapter" and i + 1 < len(argv):
+            try:
+                chapter = int(argv[i + 1])
+            except ValueError:
+                print("错误：chapter 必须是数字。")
+                return 2
+            i += 2
+        elif argv[i] == "--personas" and i + 1 < len(argv):
+            personas = argv[i + 1]
+            i += 2
+        elif argv[i] == "--project-root" and i + 1 < len(argv):
+            project_root = argv[i + 1]
+            i += 2
+        else:
+            i += 1
+    if chapter is None:
+        print("错误：必须指定 --chapter 参数。")
+        return 2
+    if personas is None:
+        print("错误：必须指定 --personas 参数。")
+        return 2
+
+    from core.project_context import bind_project_context, get_project_context
+    ctx = get_project_context(project_root)
+    with bind_project_context(ctx):
+        result = command_api.run_reader_panel_command(chapter=chapter, personas=personas)
+    _print_command_result(result)
+    return 1 if result.get("status") == "failed" else 0
+
+
+def run_list_reader_panels_command() -> int:
+    if "--help" in sys.argv[2:] or "-h" in sys.argv[2:]:
+        print("用法：python main.py list-reader-panels [--chapter <number>] [--project-root <path>]")
+        print()
+        print("参数：")
+        print("  --chapter <number>      按章节编号筛选")
+        print("  --project-root <path>   指定项目根目录路径")
+        return 0
+    chapter = None
+    project_root = None
+    argv = sys.argv[2:]
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--chapter" and i + 1 < len(argv):
+            try:
+                chapter = int(argv[i + 1])
+            except ValueError:
+                print("错误：chapter 必须是数字。")
+                return 2
+            i += 2
+        elif argv[i] == "--project-root" and i + 1 < len(argv):
+            project_root = argv[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    from core.project_context import bind_project_context, get_project_context
+    ctx = get_project_context(project_root)
+    with bind_project_context(ctx):
+        result = command_api.list_reader_panels_command()
+    _print_command_result(result)
+    panels = result.get("outputs", {}).get("panels", [])
+    for panel in panels:
+        print(f"- panel_run_id: {panel.get('panel_run_id', '')}")
+        print(f"  chapter_id: {panel.get('chapter_id', '')}")
+        print(f"  persona_count: {panel.get('persona_count', '')}")
+        print(f"  status: {panel.get('status', '')}")
+        print(f"  result_state: {panel.get('result_state', '')}")
+        if panel.get("panel_score") is not None:
+            print(f"  panel_score: {panel['panel_score']}")
+        print(f"  created_at: {panel.get('created_at', '')}")
+        print()
+    return 1 if result.get("status") == "failed" else 0
+
+
+def run_show_reader_panel_command() -> int:
+    if "--help" in sys.argv[2:] or "-h" in sys.argv[2:]:
+        print("用法：python main.py show-reader-panel --panel-run-id <id> [--project-root <path>]")
+        print()
+        print("参数：")
+        print("  --panel-run-id <id>     指定面板记录ID")
+        print("  --project-root <path>   指定项目根目录路径")
+        return 0
+    panel_run_id = None
+    project_root = None
+    argv = sys.argv[2:]
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--panel-run-id" and i + 1 < len(argv):
+            panel_run_id = argv[i + 1]
+            i += 2
+        elif argv[i] == "--project-root" and i + 1 < len(argv):
+            project_root = argv[i + 1]
+            i += 2
+        else:
+            i += 1
+    if panel_run_id is None:
+        print("错误：必须指定 --panel-run-id 参数。")
+        return 2
+
+    from core.project_context import bind_project_context, get_project_context
+    ctx = get_project_context(project_root)
+    with bind_project_context(ctx):
+        result = command_api.show_reader_panel_command(panel_run_id=panel_run_id)
+    _print_command_result(result)
+    return 1 if result.get("status") == "failed" else 0
+
+
+def run_run_reader_persona_model_command() -> int:
+    if "--help" in sys.argv[2:] or "-h" in sys.argv[2:]:
+        print("用法：python main.py run-reader-persona-model --chapter <number> --persona <id> [--mode mock|live] [--project-root <path>]")
+        print()
+        print("参数：")
+        print("  --chapter <number>           指定章节编号")
+        print("  --persona <id>               读者角色ID（单个）")
+        print("  --mode <mock|live>           执行模式（默认 mock）")
+        print("  --execution-profile <name>   执行配置（默认 default）")
+        print("  --allow-model-call           显式允许模型调用（live 必需）")
+        print("  --force                      强制新建运行，不使用缓存")
+        print("  --source-version-id <id>     指定源版本ID")
+        print("  --project-root <path>        指定项目根目录路径")
+        return 0
+
+    chapter = None
+    persona = None
+    mode = "mock"
+    execution_profile = "default"
+    allow_model_call = False
+    force = False
+    source_version_id = None
+    project_root = None
+    argv = sys.argv[2:]
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--chapter" and i + 1 < len(argv):
+            try:
+                chapter = int(argv[i + 1])
+            except ValueError:
+                print("错误：chapter 必须是数字。")
+                return 2
+            i += 2
+        elif argv[i] == "--persona" and i + 1 < len(argv):
+            persona = argv[i + 1]
+            i += 2
+        elif argv[i] == "--mode" and i + 1 < len(argv):
+            mode = argv[i + 1]
+            i += 2
+        elif argv[i] == "--execution-profile" and i + 1 < len(argv):
+            execution_profile = argv[i + 1]
+            i += 2
+        elif argv[i] == "--allow-model-call":
+            allow_model_call = True
+            i += 1
+        elif argv[i] == "--force":
+            force = True
+            i += 1
+        elif argv[i] == "--source-version-id" and i + 1 < len(argv):
+            source_version_id = argv[i + 1]
+            i += 2
+        elif argv[i] == "--project-root" and i + 1 < len(argv):
+            project_root = argv[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    if chapter is None:
+        print("错误：必须指定 --chapter 参数。")
+        return 2
+    if persona is None:
+        print("错误：必须指定 --persona 参数。")
+        return 2
+
+    from core.project_context import bind_project_context, get_project_context
+    ctx = get_project_context(project_root)
+    with bind_project_context(ctx):
+        result = command_api.run_reader_persona_model_command(
+            chapter=chapter,
+            persona=persona,
+            mode=mode,
+            execution_profile=execution_profile,
+            allow_model_call=allow_model_call,
+            force=force,
+            source_version_id=source_version_id,
+        )
+    _print_command_result(result)
+    return 1 if result.get("status") == "failed" else 0
+
+
+def run_list_reader_persona_model_runs_command() -> int:
+    if "--help" in sys.argv[2:] or "-h" in sys.argv[2:]:
+        print("用法：python main.py list-reader-persona-model-runs [--chapter <number>] [--persona <id>] [--project-root <path>]")
+        return 0
+
+    chapter = None
+    persona = None
+    project_root = None
+    argv = sys.argv[2:]
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--chapter" and i + 1 < len(argv):
+            try:
+                chapter = int(argv[i + 1])
+            except ValueError:
+                print("错误：chapter 必须是数字。")
+                return 2
+            i += 2
+        elif argv[i] == "--persona" and i + 1 < len(argv):
+            persona = argv[i + 1]
+            i += 2
+        elif argv[i] == "--project-root" and i + 1 < len(argv):
+            project_root = argv[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    from core.project_context import bind_project_context, get_project_context
+    ctx = get_project_context(project_root)
+    with bind_project_context(ctx):
+        result = command_api.list_reader_persona_model_runs_command(
+            chapter=chapter,
+            persona=persona,
+        )
+    _print_command_result(result)
+    runs = result.get("outputs", {}).get("runs", [])
+    for run in runs:
+        print(f"- execution_id: {run.get('execution_id', '')}")
+        print(f"  status: {run.get('status', '')}")
+        print(f"  persona: {run.get('persona_id', '')}")
+        print(f"  cache: {run.get('cache_status', '')}")
+    return 0
+
+
+def run_show_reader_persona_model_run_command() -> int:
+    if "--help" in sys.argv[2:] or "-h" in sys.argv[2:]:
+        print("用法：python main.py show-reader-persona-model-run --execution-id <id> [--project-root <path>]")
+        return 0
+
+    execution_id = None
+    project_root = None
+    argv = sys.argv[2:]
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--execution-id" and i + 1 < len(argv):
+            execution_id = argv[i + 1]
+            i += 2
+        elif argv[i] == "--project-root" and i + 1 < len(argv):
+            project_root = argv[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    if execution_id is None:
+        print("错误：必须指定 --execution-id 参数。")
+        return 2
+
+    from core.project_context import bind_project_context, get_project_context
+    ctx = get_project_context(project_root)
+    with bind_project_context(ctx):
+        result = command_api.show_reader_persona_model_run_command(
+            execution_id=execution_id,
+        )
+    _print_command_result(result)
+    return 1 if result.get("status") == "failed" else 0
+
+
+def _parse_model_persona_panel_args() -> tuple[dict[str, Any] | None, int]:
+    chapter = None
+    personas: list[str] = []
+    mode, profile, source_version_id, project_root = "mock", "default", None, None
+    allow_model_call = force = False
+    max_provider_calls = 1
+    argv = sys.argv[2:]
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--chapter" and index + 1 < len(argv):
+            try: chapter = int(argv[index + 1])
+            except ValueError: return None, 2
+            index += 2
+        elif token == "--persona" and index + 1 < len(argv):
+            personas.append(argv[index + 1]); index += 2
+        elif token == "--mode" and index + 1 < len(argv):
+            mode = argv[index + 1]; index += 2
+        elif token == "--execution-profile" and index + 1 < len(argv):
+            profile = argv[index + 1]; index += 2
+        elif token == "--max-provider-calls" and index + 1 < len(argv):
+            try: max_provider_calls = int(argv[index + 1])
+            except ValueError: return None, 2
+            index += 2
+        elif token == "--source-version-id" and index + 1 < len(argv):
+            source_version_id = argv[index + 1]; index += 2
+        elif token == "--project-root" and index + 1 < len(argv):
+            project_root = argv[index + 1]; index += 2
+        elif token == "--allow-model-call":
+            allow_model_call = True; index += 1
+        elif token == "--force":
+            force = True; index += 1
+        else:
+            return None, 2
+    if chapter is None or not personas:
+        return None, 2
+    return {"chapter": chapter, "personas": personas, "mode": mode, "execution_profile": profile,
+            "allow_model_call": allow_model_call, "max_provider_calls": max_provider_calls,
+            "force": force, "source_version_id": source_version_id, "project_root": project_root}, 0
+
+
+def run_reader_persona_model_panel_command(*, plan_only: bool) -> int:
+    if "--help" in sys.argv[2:] or "-h" in sys.argv[2:]:
+        command = "plan-reader-persona-model-panel" if plan_only else "run-reader-persona-model-panel"
+        print(f"Usage: python main.py {command} --chapter <number> --persona <id> [--persona <id>] [--mode mock|live] [--execution-profile <id>] [--max-provider-calls 0..5]")
+        print("--persona may be repeated; live mode also requires --allow-model-call.")
+        return 0
+    parsed, exit_code = _parse_model_persona_panel_args()
+    if parsed is None:
+        print("Invalid arguments: --chapter and at least one repeated --persona are required.")
+        return exit_code
+    from core.project_context import bind_project_context, get_project_context
+    context = get_project_context(parsed.pop("project_root"))
+    with bind_project_context(context):
+        if plan_only:
+            result = command_api.plan_reader_persona_model_panel_command(project_root=context.root, **parsed)
+        else:
+            result = command_api.run_reader_persona_model_panel_command(project_root=context.root, **parsed)
+    _print_command_result(result)
+    return 1 if result.get("status") == "failed" else 0
+
+
+def run_list_reader_persona_model_panel_runs_command() -> int:
+    chapter = None
+    project_root = None
+    argv = sys.argv[2:]
+    for index, token in enumerate(argv):
+        if token == "--chapter" and index + 1 < len(argv): chapter = int(argv[index + 1])
+        if token == "--project-root" and index + 1 < len(argv): project_root = argv[index + 1]
+    from core.project_context import bind_project_context, get_project_context
+    context = get_project_context(project_root)
+    with bind_project_context(context): result = command_api.list_reader_persona_model_panel_runs_command(chapter, context.root)
+    _print_command_result(result)
+    return 1 if result.get("status") == "failed" else 0
+
+
+def run_show_reader_persona_model_panel_run_command() -> int:
+    argv = sys.argv[2:]
+    try: execution_id = argv[argv.index("--execution-id") + 1]
+    except (ValueError, IndexError):
+        print("--execution-id is required."); return 2
+    project_root = argv[argv.index("--project-root") + 1] if "--project-root" in argv and argv.index("--project-root") + 1 < len(argv) else None
+    from core.project_context import bind_project_context, get_project_context
+    context = get_project_context(project_root)
+    with bind_project_context(context): result = command_api.show_reader_persona_model_panel_run_command(execution_id, context.root)
+    _print_command_result(result)
+    return 1 if result.get("status") == "failed" else 0
+
+
+def run_show_reader_persona_panel_review_command() -> int:
+    if "--help" in sys.argv[2:] or "-h" in sys.argv[2:]:
+        print("Usage: python main.py show-reader-persona-panel-review --chapter <number> [--source-version-id <id>] [--panel-execution-id <id>] [--project-root <path>] [--json]")
+        return 0
+    argv = sys.argv[2:]
+    chapter = None
+    source_version_id = None
+    panel_execution_id = None
+    project_root = None
+    json_output = "--json" in argv
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--chapter" and index + 1 < len(argv):
+            try:
+                chapter = int(argv[index + 1])
+            except ValueError:
+                return 2
+            index += 2
+        elif token == "--source-version-id" and index + 1 < len(argv):
+            source_version_id = argv[index + 1]; index += 2
+        elif token == "--panel-execution-id" and index + 1 < len(argv):
+            panel_execution_id = argv[index + 1]; index += 2
+        elif token == "--project-root" and index + 1 < len(argv):
+            project_root = argv[index + 1]; index += 2
+        elif token == "--json":
+            index += 1
+        else:
+            print(f"Unknown argument: {token}")
+            return 2
+    from core.project_context import bind_project_context, get_project_context
+    context = get_project_context(project_root)
+    if chapter is None and panel_execution_id:
+        from system.model_persona_panel_run_store import ModelPersonaPanelRunStore
+        selected_run = ModelPersonaPanelRunStore(context).load_run(panel_execution_id)
+        if selected_run is not None:
+            chapter = selected_run.chapter_id
+    if chapter is None:
+        print("--chapter is required unless --panel-execution-id resolves an existing run.")
+        return 2
+    with bind_project_context(context):
+        result = command_api.show_reader_persona_panel_review_command(
+            chapter=chapter, source_version_id=source_version_id,
+            panel_execution_id=panel_execution_id, project_root=context.root,
+        )
+    if json_output:
+        import json
+        # JSON CLI output is consumed by UTF-8 subprocess clients on Windows;
+        # escape non-ASCII characters so the machine-readable stream is stable
+        # even when the interactive console code page is GBK.
+        print(json.dumps(result, ensure_ascii=True, indent=2, sort_keys=True))
+    else:
+        _print_command_result(result)
+    return 1 if result.get("status") == "failed" else 0
 
 
 def _print_versions(result: dict[str, Any]) -> None:
@@ -1280,5 +1990,118 @@ def _edited_paths(chapter_id: int) -> tuple[Path, Path]:
     return Path("data/edited") / f"{file_stem}.json", Path("data/edited") / f"{file_stem}.md"
 
 
+def run_clone_project_command(args: list[str]) -> dict[str, Any] | None:
+    """CLI entry point: python main.py clone-project --source <id> --name <name> [--slug <slug>]"""
+    import json as _json
+
+    if "--help" in args or "-h" in args:
+        print("用法：python main.py clone-project --source <project-id> --name <新项目名称> [--slug <slug>]")
+        print("")
+        print("参数：")
+        print("  --source <project-id>   源项目 ID 或 slug")
+        print("  --name <name>           新项目名称（必填）")
+        print("  --slug <slug>           新项目 slug（可选，自动从名称生成）")
+        return {"status": "success", "name": "clone-project"}
+
+    source = _optional_value_arg("--source")
+    name = _optional_value_arg("--name")
+    slug = _optional_value_arg("--slug")
+
+    if not source:
+        print("用法：python main.py clone-project --source <project-id> --name <新项目名称> [--slug <slug>]")
+        return None
+    if not name:
+        print("必须指定 --name 参数作为新项目名称。")
+        return None
+
+    result = command_api.clone_project_command(source, name, slug)
+    print(_json.dumps(result, ensure_ascii=False, indent=2))
+    return result
+
+
+def run_obsidian_bind_command(args: list[str]) -> dict[str, Any] | None:
+    """CLI entry point: python main.py obsidian-bind --project <id> --vault <path> --target <path> [--timeline <id>]"""
+    import json as _json
+
+    if "--help" in args or "-h" in args:
+        print("用法：python main.py obsidian-bind --project <project-id> --vault <vault-path> --target <relative-path> [--timeline <id>]")
+        print("")
+        print("参数：")
+        print("  --project <id>       项目 ID")
+        print("  --vault <path>       Obsidian Vault 绝对路径")
+        print("  --target <path>      Vault 内相对目标路径（如 StoryOS/my-project）")
+        print("  --timeline <id>      时间线 ID（默认 main）")
+        print("  --adopt-existing     如果目标目录已存在，采用它（默认拒绝）")
+        return {"status": "success", "name": "obsidian-bind"}
+
+    project_id = _optional_value_arg("--project")
+    vault = _optional_value_arg("--vault")
+    target = _optional_value_arg("--target")
+    timeline = _optional_value_arg("--timeline") or "main"
+    adopt_existing = "--adopt-existing" in args
+
+    if not project_id:
+        print("必须指定 --project 参数。")
+        return None
+    if not vault:
+        print("必须指定 --vault 参数。")
+        return None
+    if not target:
+        print("必须指定 --target 参数。")
+        return None
+
+    result = command_api.obsidian_bind_command(project_id, vault, target, timeline, adopt_existing)
+    print(_json.dumps(result, ensure_ascii=False, indent=2))
+    return result
+
+
+def run_obsidian_status_command(args: list[str]) -> dict[str, Any] | None:
+    """CLI entry point: python main.py obsidian-status --project <id> [--timeline <id>]"""
+    import json as _json
+
+    if "--help" in args or "-h" in args:
+        print("用法：python main.py obsidian-status --project <project-id> [--timeline <id>]")
+        print("")
+        print("参数：")
+        print("  --project <id>       项目 ID")
+        print("  --timeline <id>      时间线 ID（默认 main）")
+        return {"status": "success", "name": "obsidian-status"}
+
+    project_id = _optional_value_arg("--project")
+    timeline = _optional_value_arg("--timeline") or "main"
+
+    if not project_id:
+        print("必须指定 --project 参数。")
+        return None
+
+    result = command_api.obsidian_status_command(project_id, timeline)
+    print(_json.dumps(result, ensure_ascii=False, indent=2))
+    return result
+
+
+def run_obsidian_unbind_command(args: list[str]) -> dict[str, Any] | None:
+    """CLI entry point: python main.py obsidian-unbind --project <id> [--timeline <id>]"""
+    import json as _json
+
+    if "--help" in args or "-h" in args:
+        print("用法：python main.py obsidian-unbind --project <project-id> [--timeline <id>]")
+        print("")
+        print("参数：")
+        print("  --project <id>       项目 ID")
+        print("  --timeline <id>      时间线 ID（默认 main）")
+        return {"status": "success", "name": "obsidian-unbind"}
+
+    project_id = _optional_value_arg("--project")
+    timeline = _optional_value_arg("--timeline") or "main"
+
+    if not project_id:
+        print("必须指定 --project 参数。")
+        return None
+
+    result = command_api.obsidian_unbind_command(project_id, timeline)
+    print(_json.dumps(result, ensure_ascii=False, indent=2))
+    return result
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

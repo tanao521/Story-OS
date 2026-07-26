@@ -3,14 +3,15 @@ from __future__ import annotations
 import os
 from typing import Any, Callable
 
-import requests
-
 from llm.model_models import ModelDefinition, ModelGatewayError, ModelRequest, ModelResponse
 
 
 class OpenAICompatibleProvider:
     def __init__(self, post: Callable[..., Any] | None = None) -> None:
-        self.post = post or requests.post
+        # Keep ordinary local CLI/read-only operations importable on machines
+        # without the optional HTTP runtime.  The dependency is required only
+        # when an actual model request is attempted.
+        self.post = post
 
     def generate(self, definition: ModelDefinition, request: ModelRequest) -> ModelResponse:
         key = os.getenv(definition.api_key_env, "") if definition.api_key_env else ""
@@ -27,8 +28,15 @@ class OpenAICompatibleProvider:
         headers = {"Content-Type": "application/json"}
         if key:
             headers["Authorization"] = f"Bearer {key}"
+        post = self.post
+        if post is None:
+            try:
+                import requests
+            except ImportError as exc:
+                raise ModelGatewayError("Model HTTP runtime is unavailable.", code="MODEL_RUNTIME_UNAVAILABLE") from exc
+            post = requests.post
         try:
-            response = self.post(url, json=payload, headers=headers, timeout=definition.timeout_seconds)
+            response = post(url, json=payload, headers=headers, timeout=definition.timeout_seconds)
         except Exception as exc:
             raise ModelGatewayError("Model network request failed.", code="NETWORK_ERROR", recoverable=True) from exc
         status = int(getattr(response, "status_code", 200) or 200)

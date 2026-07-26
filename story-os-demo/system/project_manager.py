@@ -1,6 +1,7 @@
-﻿"""Multi-project discovery, registration, creation and activation."""
+"""Multi-project discovery, registration, creation and activation."""
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 import uuid
@@ -11,6 +12,7 @@ from typing import Any
 from core.project_context import get_project_context
 from core.setup_wizard import build_story_spec_from_answers, create_story_project
 from system.data_store import DataStore
+from system.project_clone_service import ProjectCloneService, CloneError, ClonePreflightError
 
 
 LEGACY_ID = "legacy-root-project"
@@ -102,6 +104,42 @@ class ProjectManager:
             raise ProjectManagerError("Project path is invalid or initialization is incomplete.")
         self._set_active(str(project["project_root"]))
         return self.get_project(project_id)
+
+    def clone_project(
+        self,
+        source_project_id: str,
+        target_name: str,
+        target_slug: str | None = None,
+    ) -> dict[str, Any]:
+        """Clone an existing project into an independent new project."""
+        source = self.get_project(source_project_id)
+        source_root = self._resolve(str(source.get("project_root") or ""))
+        if source_root is None:
+            raise ProjectManagerError(f"Cannot resolve source project path: {source_project_id}")
+
+        source_context = get_project_context(source_root)
+        service = ProjectCloneService(self.root)
+
+        if target_slug is None:
+            target_slug = service._slugify(target_name)
+        target_slug = self._unique_slug(target_slug)
+
+        try:
+            result = service.clone_project(source_context, target_name, target_slug)
+        except (CloneError, ClonePreflightError) as exc:
+            raise ProjectManagerError(f"Project clone failed: {exc}") from exc
+
+        # Register cloned project
+        target_dir = self.projects_dir / result.project_slug
+        metadata_path = target_dir / "project.json"
+        if metadata_path.exists():
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                self._register(metadata)
+            except Exception:
+                pass
+
+        return result.to_dict()
 
     def _registry(self, warnings: list[str]) -> dict[str, Any]:
         if not self.registry_path.exists():

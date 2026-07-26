@@ -4,16 +4,14 @@ import json
 from pathlib import Path
 from typing import Any
 
+from core.project_context import get_project_context
 from system.chapter_archive import is_memory_chapter_active
 
 
-CONTEXT_JSON_PATH = Path("data/context/current_context.json")
-CONTEXT_MARKDOWN_PATH = Path("data/context/current_context.md")
-DERIVED_STATE_PATH = Path("data/derived_state.json")
-
 def _artifact_is_stale(kind: str, chapter_id: int) -> bool:
     try:
-        state = json.loads(DERIVED_STATE_PATH.read_text(encoding="utf-8"))
+        derived_state_path = get_project_context().data_dir / "derived_state.json"
+        state = json.loads(derived_state_path.read_text(encoding="utf-8"))
         return any(item.get("artifact_type") == kind and int(item.get("chapter_id", -1)) == int(chapter_id) and item.get("status") in {"stale", "rebuild_required"} for item in state.get("artifacts", []))
     except (OSError, ValueError, TypeError):
         return False
@@ -79,11 +77,18 @@ def _build_legacy_working_context(
     vector_retrieved: list[dict[str, Any]] = []
     retrieval_mode = "keyword"
     try:
-        from system.vector_memory import is_available, search_similar
+        from system.vector_index_lifecycle import search_similar
 
-        if query and allow_vector and is_available():
+        if query and allow_vector:
             retrieval_mode = "keyword_plus_vector"
-            vector_retrieved = [item for item in search_similar(query, max_results=8) if not _artifact_is_stale("vector_memory", int(item.get("chapter_id", -1) or -1))][:5]
+            results = search_similar(
+                get_project_context(),
+                query,
+                timeline_id="main",
+                max_results=8,
+                exclude_chapter_id=current_chapter,
+            )
+            vector_retrieved = [item for item in results if not _artifact_is_stale("vector_memory", int(item.get("chapter_id", -1) or -1))][:5]
     except Exception:
         pass
 
@@ -346,13 +351,16 @@ def render_context_markdown(context: dict[str, Any]) -> str:
 
 
 def save_current_context(context: dict[str, Any]) -> tuple[str, str]:
-    CONTEXT_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONTEXT_JSON_PATH.write_text(
+    ctx = get_project_context()
+    context_json_path = ctx.context_dir / "current_context.json"
+    context_markdown_path = ctx.context_dir / "current_context.md"
+    context_json_path.parent.mkdir(parents=True, exist_ok=True)
+    context_json_path.write_text(
         json.dumps(context, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    CONTEXT_MARKDOWN_PATH.write_text(render_context_markdown(context), encoding="utf-8")
-    return CONTEXT_JSON_PATH.as_posix(), CONTEXT_MARKDOWN_PATH.as_posix()
+    context_markdown_path.write_text(render_context_markdown(context), encoding="utf-8")
+    return context_json_path.as_posix(), context_markdown_path.as_posix()
 
 
 def _chapter_entries(memory_index: dict[str, Any]) -> list[dict[str, Any]]:

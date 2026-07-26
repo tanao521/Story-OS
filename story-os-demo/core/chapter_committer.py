@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from core.project_context import ProjectContext
+
 
 FORESHADOW_KEYWORDS = ["发送失败", "异常", "秘密", "未知", "隐藏", "钩子"]
 
@@ -15,11 +17,27 @@ def commit_chapter(
     story_spec: dict[str, Any],
     characters: dict[str, Any],
     world_bible: dict[str, Any],
+    context: ProjectContext,
 ) -> dict[str, Any]:
+    """
+    Legacy commit function. DEPRECATED for production use.
+
+    Production code should use ChapterCommitService.commit_chapter() instead.
+    This function is kept for test compatibility and as a pure-logic helper.
+
+    Args:
+        context: ProjectContext is REQUIRED. Must not be None.
+
+    Raises:
+        ValueError: If context is None.
+    """
+    if context is None:
+        raise ValueError("ProjectContext is required for commit_chapter(). Use ChapterCommitService for production commits.")
+
     chapter_id = int(draft.get("chapter_id", chapter_plan.get("chapter_id", 1)) or 1)
     chapter_title = _chapter_title(draft, chapter_plan)
-    chapter_path = _chapter_path(chapter_id)
-    summary_path = _summary_path(chapter_id)
+    chapter_path = _chapter_path(chapter_id, context)
+    summary_path = _summary_path(chapter_id, context)
     source_used = "manual" if draft.get("manual_text") else ("edited" if draft.get("edited_text") else "draft")
     source_version = int(draft.get("source_version", draft.get("version", 0)) or 0)
     source_path = str(draft.get("source_path", draft.get("json_path", draft.get("source_draft_path", ""))))
@@ -28,8 +46,8 @@ def commit_chapter(
         warnings.append("正式章节文件已存在，本次已覆盖。")
 
     summary = summarize_chapter(draft, chapter_plan)
-    state_patch = apply_state_updates(state, chapter_plan, summary)
-    update_memory_index(summary, chapter_path.as_posix(), summary_path.as_posix())
+    state_patch = apply_state_updates(state, chapter_plan, summary, chapter_path, summary_path)
+    update_memory_index(summary, chapter_path.as_posix(), summary_path.as_posix(), context)
 
     return {
         "commit_version": "1.2",
@@ -86,11 +104,23 @@ def apply_state_updates(
     state: dict[str, Any],
     chapter_plan: dict[str, Any],
     summary: dict[str, Any],
+    chapter_path: Path | None = None,
+    summary_path: Path | None = None,
 ) -> dict[str, Any]:
+    """
+    Apply state updates based on chapter summary.
+
+    Args:
+        state: Current project state
+        chapter_plan: Chapter plan data
+        summary: Chapter summary data
+        chapter_path: Path to chapter file (for metadata, optional)
+        summary_path: Path to summary file (for metadata, optional)
+    """
     chapter_id = int(chapter_plan.get("chapter_id", summary.get("chapter_id", 1)) or 1)
     chapter_title = str(summary.get("chapter_title") or chapter_plan.get("chapter_title", ""))
-    chapter_path = _chapter_path(chapter_id).as_posix()
-    summary_path = _summary_path(chapter_id).as_posix()
+    chapter_path_str = chapter_path.as_posix() if chapter_path else f"data/chapters/chapter_{chapter_id:03d}.md"
+    summary_path_str = summary_path.as_posix() if summary_path else f"data/summaries/chapter_{chapter_id:03d}_summary.json"
 
     state["current_chapter"] = chapter_id
     state["current_stage"] = "chapter_committed"
@@ -121,8 +151,8 @@ def apply_state_updates(
     state["last_committed_chapter"] = {
         "chapter_id": chapter_id,
         "title": chapter_title,
-        "chapter_path": chapter_path,
-        "summary_path": summary_path,
+        "chapter_path": chapter_path_str,
+        "summary_path": summary_path_str,
     }
     if isinstance(state.get("draft"), dict):
         state["draft"]["status"] = "committed"
@@ -138,8 +168,23 @@ def apply_state_updates(
     }
 
 
-def update_memory_index(summary: dict[str, Any], chapter_path: str, summary_path: str) -> dict[str, Any]:
-    memory_path = Path("data/memory/memory_index.json")
+def update_memory_index(summary: dict[str, Any], chapter_path: str, summary_path: str, context: ProjectContext) -> dict[str, Any]:
+    """
+    Update memory index with chapter summary.
+
+    Args:
+        summary: Chapter summary data
+        chapter_path: Path to chapter file
+        summary_path: Path to summary file
+        context: ProjectContext is REQUIRED.
+
+    Raises:
+        ValueError: If context is None.
+    """
+    if context is None:
+        raise ValueError("ProjectContext is required for update_memory_index().")
+
+    memory_path = context.root / "data" / "memory" / "memory_index.json"
     memory_path.parent.mkdir(parents=True, exist_ok=True)
     if memory_path.exists():
         memory_index = json.loads(memory_path.read_text(encoding="utf-8"))
@@ -180,12 +225,12 @@ def _chapter_text(draft: dict[str, Any]) -> str:
     return str(draft.get("manual_text") or draft.get("edited_text") or draft.get("draft_text", ""))
 
 
-def _chapter_path(chapter_id: int) -> Path:
-    return Path("data/chapters") / f"chapter_{chapter_id:03d}.md"
+def _chapter_path(chapter_id: int, context: ProjectContext) -> Path:
+    return context.root / "data" / "chapters" / f"chapter_{chapter_id:03d}.md"
 
 
-def _summary_path(chapter_id: int) -> Path:
-    return Path("data/summaries") / f"chapter_{chapter_id:03d}_summary.json"
+def _summary_path(chapter_id: int, context: ProjectContext) -> Path:
+    return context.root / "data" / "summaries" / f"chapter_{chapter_id:03d}_summary.json"
 
 
 def _chapter_title(draft: dict[str, Any], chapter_plan: dict[str, Any]) -> str:
