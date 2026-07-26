@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import inspect
+import re
 from pathlib import Path
 from typing import Any, Callable
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Header, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.templating import Jinja2Templates
 
@@ -21,6 +22,7 @@ from system.revision_service import RevisionService, RevisionError
 
 from system.chapter_archive import ChapterArchiveError, archive_chapter
 from system.data_store import DataStore, DataWriteError
+from system.planning_mutation_service import PlanningMutationService
 from system.continuity_checker import (
     check_chapter_continuity,
     continuity_content_hash,
@@ -46,6 +48,7 @@ from evaluation_engine.candidate_partial_adoption_service import PartialAdoption
 from evaluation_engine.planning_evaluation import PlanningEvaluationError, PlanningEvaluationService
 from evaluation_engine.planning_comparison import PlanningComparisonError, PlanningEvaluationComparisonService
 from evaluation_engine.production_service import EvaluationProductionError, EvaluationProductionService
+from evaluation_engine.legacy_adapter import LegacyEvaluationAdapter
 from llm.model_gateway import ModelGateway, get_model_gateway
 from llm.model_models import ModelGatewayError
 from llm.prompt_registry import PromptRegistry
@@ -57,9 +60,11 @@ from agents.registry import AgentRegistry
 from agents.workflow import WorkflowEngine
 from agents.executor import AgentExecutor
 from agents.memory_scope import scoped_context
-from system.context_builder import build_working_context
+from system.context_assembly_service import ContextAssemblyService
 from web.schemas import AskRequest, ManualSaveRequest, ProjectCreateRequest, ReviewApproveRequest, TodoCreateRequest, VersionArchiveRequest, VersionSelectRequest
 from web.view_models import api_error, api_ok
+from web.api_registry import compatibility_headers
+from web.api_support import ApiRequestError, parse_pagination
 
 
 router = APIRouter()
@@ -114,6 +119,11 @@ def guarded(action: Callable[[], dict[str, Any]]) -> JSONResponse:
     except Exception as exc:
         payload = api_error("操作失败", [str(exc)])
     return JSONResponse(payload)
+
+
+def compatibility_response(payload: dict[str, Any], legacy_path: str, *, status_code: int = 200) -> JSONResponse:
+    """Mark a legacy route without altering its established JSON fields."""
+    return JSONResponse(payload, status_code=status_code, headers=compatibility_headers(legacy_path))
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -315,14 +325,16 @@ def api_evaluations_list(
     target_type: str = "", chapter_number: int | None = None, volume_id: str = "", window_id: str = "", status: str = "", limit: int = 20, cursor: str = "",
 ) -> JSONResponse:
     try:
+        page_request = parse_pagination(limit, cursor)
         context = get_project_context()
-        chapter_reports = [] if target_type in {"near_planning_window", "current_volume", "whole_book_planning"} else EvaluationService(context).list_reports(target_type=target_type, chapter_number=chapter_number, status=status, limit=limit)
-        planning_reports = PlanningEvaluationService(context).list_reports(target_type=target_type, volume_id=volume_id, window_id=window_id, status=status, limit=limit) if not target_type or target_type in {"near_planning_window", "current_volume", "whole_book_planning"} else []
+        chapter_reports = [] if target_type in {"near_planning_window", "current_volume", "whole_book_planning"} else EvaluationService(context).list_reports(target_type=target_type, chapter_number=chapter_number, status=status, limit=page_request.limit)
+        planning_reports = PlanningEvaluationService(context).list_reports(target_type=target_type, volume_id=volume_id, window_id=window_id, status=status, limit=page_request.limit) if not target_type or target_type in {"near_planning_window", "current_volume", "whole_book_planning"} else []
         reports = sorted(chapter_reports + planning_reports, key=lambda item: f"{item.get('created_at') or ''}|{item.get('evaluation_id') or ''}", reverse=True)
-        bounded = max(1, min(int(limit or 20), 100))
-        if cursor: reports = [item for item in reports if f"{item.get('created_at') or ''}|{item.get('evaluation_id') or ''}" < cursor]
-        page = reports[:bounded]
-        return JSONResponse(api_ok(result={"evaluations": page, "next_cursor": f"{page[-1].get('created_at') or ''}|{page[-1].get('evaluation_id') or ''}" if len(reports) > len(page) and page else None, "limit": bounded}))
+        if page_request.cursor: reports = [item for item in reports if f"{item.get('created_at') or ''}|{item.get('evaluation_id') or ''}" < page_request.cursor]
+        page = reports[:page_request.limit]
+        return JSONResponse(api_ok(result={"evaluations": page, "next_cursor": f"{page[-1].get('created_at') or ''}|{page[-1].get('evaluation_id') or ''}" if len(reports) > len(page) and page else None, "limit": page_request.limit}))
+    except ApiRequestError as error:
+        return JSONResponse(api_error(str(error), [error.code]), status_code=400)
     except EvaluationError as error:
         return _evaluation_failure(error)
 
@@ -639,16 +651,11 @@ async def api_build_assets(request: Request) -> JSONResponse:
 
 @router.get("/api/planning/next-chapter")
 def api_get_next_chapter_plan() -> JSONResponse:
-    def action() -> dict[str, Any]:
-        path = Path("data/next_chapter_plan.json")
-        if not path.exists():
-            return api_ok(result={"plan": {}})
-        try:
-            plan = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            return api_error("章节计划 JSON 无法解析。", [str(exc)])
-        return api_ok(result={"plan": plan if isinstance(plan, dict) else {}})
-    return guarded(action)
+    try:
+        plan = DataStore(get_project_context()).read_json("data/next_chapter_plan.json", default={}, expected_type=dict) or {}
+        return compatibility_response(api_ok(result={"plan": plan}), "/api/planning/next-chapter")
+    except Exception as exc:
+        return compatibility_response(api_error("章节计划读取失败。", [str(exc)]), "/api/planning/next-chapter", status_code=500)
 
 
 @router.post("/api/planning/next-chapter")
@@ -660,23 +667,24 @@ async def api_save_or_plan_next_chapter(request: Request) -> JSONResponse:
     if not isinstance(payload, dict) or not payload:
         return guarded(lambda: command_response(commands.plan_next_command()))
     def action() -> dict[str, Any]:
-        path = Path("data/next_chapter_plan.json")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        Path("data/next_chapter_plan.md").write_text(commands.render_next_chapter_plan_markdown(payload), encoding="utf-8")
-        state_path = Path("data/state.json")
-        state = _load_json_safe(state_path, {})
-        state["current_stage"] = "next_chapter_planned"
-        state["next_chapter_plan"] = {"created": True, "chapter_id": payload.get("chapter_id", 1), "path": "data/next_chapter_plan.json"}
-        state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        PlanningMutationService().write_bundle_legacy(
+            [
+                ("next_chapter_plan", payload),
+                ("next_chapter_plan_markdown", commands.render_next_chapter_plan_markdown(payload)),
+                ("planning_state", {"current_stage": "next_chapter_planned", "next_chapter_plan": {"created": True, "chapter_id": payload.get("chapter_id", 1), "path": "data/next_chapter_plan.json"}}),
+            ],
+            mutation_type="save_next_chapter_plan",
+            reason="save next chapter plan",
+        )
         return api_ok("章节规划已保存。", {"plan": payload, "path": "data/next_chapter_plan.json"})
     return guarded(action)
 
 
-def _continuity_source_hashes(chapter_id: int, current_text: str) -> tuple[str, str]:
+def _continuity_source_hashes(chapter_id: int, current_text: str, context=None) -> tuple[str, str]:
     previous_text = ""
     if chapter_id > 1:
-        previous_path = Path("data") / "chapters" / f"chapter_{chapter_id - 1:03d}.md"
+        ctx = context if context is not None else get_project_context()
+        previous_path = ctx.chapters_dir / f"chapter_{chapter_id - 1:03d}.md"
         if previous_path.exists():
             previous_text = previous_path.read_text(encoding="utf-8")
     return continuity_content_hash(current_text), continuity_content_hash(previous_text)
@@ -691,19 +699,16 @@ def api_get_continuity_report(
         current = build_version_content(source_type, version)
         chapter_id = int(current.get("chapter_id", 0) or 0)
         current_hash, previous_hash = _continuity_source_hashes(chapter_id, str(current.get("text", "")))
-        report = load_continuity_report(
-            chapter_id,
-            source_type,
-            version,
-            "data",
-            content_hash=current_hash,
-            previous_content_hash=previous_hash,
+        report = LegacyEvaluationAdapter(get_project_context()).continuity_view(
+            chapter_id=chapter_id, source_type=source_type, source_version=version,
+            content_hash=current_hash, previous_content_hash=previous_hash,
         )
-        if not report:
-            return api_ok(result={"exists": False, "chapter_id": chapter_id, "source_type": source_type, "source_version": version})
-        return api_ok(result={"exists": True, **report})
+        return api_ok(result=report)
 
-    return guarded(action)
+    try:
+        return compatibility_response(action(), "/api/continuity-report")
+    except Exception as exc:
+        return compatibility_response(api_error("操作失败", [str(exc)]), "/api/continuity-report", status_code=500)
 
 
 @router.post("/api/continuity-check")
@@ -727,7 +732,8 @@ async def api_continuity_check(request: Request) -> JSONResponse:
         chapter_id = int(current.get("chapter_id", 0) or 0)
         if chapter_id <= 1:
             return api_ok("首章没有上一章可供比对。", {"status": "not_applicable", "message": "首章没有上一已提交章节可供比对。"})
-        previous_path = Path("data") / "chapters" / f"chapter_{chapter_id - 1:03d}.md"
+        ctx = get_project_context()
+        previous_path = ctx.chapters_dir / f"chapter_{chapter_id - 1:03d}.md"
         if not previous_path.exists():
             return api_ok("缺少上一已提交章节，暂无法检查。", {"status": "not_applicable", "message": "缺少上一已提交章节，暂无法检查。"})
         previous_text = previous_path.read_text(encoding="utf-8")
@@ -807,12 +813,13 @@ def api_versions() -> dict[str, Any]:
         outputs = result.get("outputs", {}) if result.get("status") != "failed" else {}
         warnings.extend(str(item) for item in result.get("warnings", []) or [])
     except (PermissionError, FileNotFoundError, json.JSONDecodeError, OSError) as exc:
-        versions = list_versions(current_target_chapter(), "data")
+        ctx = get_project_context()
+        versions = list_versions(current_target_chapter(), ctx.data_dir)
         outputs = {
             "drafts": versions.get("drafts", []),
             "edited": versions.get("edited", []),
             "manual": versions.get("manual", []),
-            "committed": commands._scan_committed_chapters(Path("data")),
+            "committed": commands._scan_committed_chapters(ctx.data_dir),
             "selected": versions.get("selected", {}),
         }
         message = f"Version command skipped unreadable file: {exc}"
@@ -863,7 +870,16 @@ def api_quality_report(
     source_type: str = Query(..., pattern="^(draft|edited|manual|committed)$"),
     version: int = Query(..., ge=1),
 ) -> JSONResponse:
-    return guarded(lambda: api_ok(*quality_report_response(source_type, version)))
+    def action() -> dict[str, Any]:
+        chapter_id = version if source_type == "committed" else current_target_chapter()
+        result = LegacyEvaluationAdapter(get_project_context()).quality_view(
+            chapter_id=chapter_id, source_type=source_type, source_version=version,
+        )
+        return api_ok(result=result)
+    try:
+        return compatibility_response(action(), "/api/quality-report")
+    except Exception as exc:
+        return compatibility_response(api_error("操作失败", [str(exc)]), "/api/quality-report", status_code=500)
 
 
 @router.post("/api/versions/select")
@@ -982,14 +998,345 @@ def api_ask(request: AskRequest) -> JSONResponse:
 
 
 @router.post("/api/sync-obsidian")
-def api_sync_obsidian() -> JSONResponse:
-    return guarded(lambda: command_response(commands.sync_obsidian_command()))
+async def api_sync_obsidian(request: Request) -> JSONResponse:
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    dry_run = data.get("dry_run", False)
+    prune_stale = data.get("prune_stale", False)
+    return guarded(lambda: command_response(commands.sync_obsidian_command(dry_run=dry_run, prune_stale=prune_stale)))
+
+
+@router.post("/api/obsidian/pull/scan")
+async def api_pull_scan(request: Request) -> JSONResponse:
+    return guarded(lambda: command_response(commands.pull_obsidian_command()))
+
+
+@router.post("/api/obsidian/pull/preview")
+async def api_pull_preview(request: Request) -> JSONResponse:
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    relative_path = data.get("relative_path")
+    if not relative_path:
+        return _fail("relative_path is required", "MISSING_PATH", 400)
+    return guarded(lambda: command_response(commands.pull_obsidian_command(file=relative_path)))
+
+
+@router.post("/api/obsidian/pull/apply")
+async def api_pull_apply(request: Request) -> JSONResponse:
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    relative_path = data.get("relative_path")
+    expected_hash = data.get("expected_target_hash")
+    if not relative_path:
+        return _fail("relative_path is required", "MISSING_PATH", 400)
+    if not expected_hash:
+        return _fail("expected_target_hash is required", "MISSING_HASH", 400)
+    return guarded(lambda: command_response(
+        commands.pull_obsidian_command(file=relative_path, expected_hash=expected_hash, apply=True)
+    ))
+
+
+@router.post("/api/obsidian/pull/repair-converged")
+async def api_pull_repair_converged(request: Request) -> JSONResponse:
+    return guarded(lambda: command_response(commands.pull_obsidian_command(repair_converged=True)))
+
+
+@router.get("/api/projects/{project_id}/obsidian-binding")
+def api_get_obsidian_binding(project_id: str, timeline: str = "main") -> JSONResponse:
+    try:
+        from system.obsidian_binding_service import ObsidianBindingService
+        from core.project import resolve_workspace_root
+
+        workspace_root = resolve_workspace_root()
+        service = ObsidianBindingService(workspace_root)
+        status = service.status(project_id, timeline)
+        return _ok(status, "Binding status retrieved.")
+    except Exception as e:
+        return _fail(str(e), "BINDING_ERROR", 500)
+
+
+@router.put("/api/projects/{project_id}/obsidian-binding")
+async def api_put_obsidian_binding(project_id: str, request: Request) -> JSONResponse:
+    try:
+        data = await request.json()
+        vault_root = data.get("vault_root")
+        target_relative_path = data.get("target_relative_path")
+        timeline_id = data.get("timeline_id", "main")
+
+        if not vault_root:
+            return _fail("vault_root is required", "VAULT_ROOT_REQUIRED", 400)
+        if not target_relative_path:
+            return _fail("target_relative_path is required", "TARGET_PATH_REQUIRED", 400)
+
+        from system.obsidian_binding_service import (
+            ObsidianBindingService,
+            ObsidianBindingConflict,
+            ObsidianTargetUnsafe,
+            ObsidianMarkerMismatch,
+        )
+        from core.project import resolve_workspace_root
+
+        workspace_root = resolve_workspace_root()
+        service = ObsidianBindingService(workspace_root)
+
+        try:
+            binding = service.bind(project_id, timeline_id, Path(vault_root), target_relative_path)
+            return _ok({
+                "binding_id": binding.binding_id,
+                "project_id": binding.project_id,
+                "timeline_id": binding.timeline_id,
+                "vault_root": binding.vault_root.as_posix(),
+                "target_relative_path": binding.target_relative_path,
+                "target_full_path": binding.target_full_path.as_posix(),
+                "status": binding.status.value,
+            }, "Binding created.")
+        except ObsidianTargetUnsafe as e:
+            return _fail(str(e), "TARGET_UNSAFE", 400)
+        except ObsidianBindingConflict as e:
+            return _fail(str(e), "BINDING_CONFLICT", 409)
+        except ObsidianMarkerMismatch as e:
+            return _fail(str(e), "MARKER_MISMATCH", 409)
+    except Exception as e:
+        return _fail(str(e), "BINDING_ERROR", 500)
+
+
+@router.delete("/api/projects/{project_id}/obsidian-binding")
+def api_delete_obsidian_binding(project_id: str, timeline: str = "main") -> JSONResponse:
+    try:
+        from system.obsidian_binding_service import ObsidianBindingService
+        from core.project import resolve_workspace_root
+
+        workspace_root = resolve_workspace_root()
+        service = ObsidianBindingService(workspace_root)
+        result = service.unbind(project_id, timeline)
+
+        if result["deleted"]:
+            return _ok({}, "Binding removed.")
+        if result["reason"] == "NOT_FOUND":
+            return _fail("Binding not found", "BINDING_NOT_FOUND", 404)
+        if result["reason"].startswith("FOREIGN_MARKER"):
+            return _fail("Target has foreign marker", "MARKER_MISMATCH", 409)
+        if result["reason"] == "MARKER_DELETE_FAILED":
+            return _fail("Marker delete failed", "MARKER_DELETE_FAILED", 500)
+        return _fail("Unbind failed", "UNBIND_FAILED", 500)
+    except Exception as e:
+        return _fail(str(e), "BINDING_ERROR", 500)
 
 
 @router.post("/api/index-vault")
 def api_index_vault() -> JSONResponse:
     return guarded(lambda: command_response(commands.index_vault_command()))
 
+
+@router.post("/api/simulator/reader/run")
+async def api_run_reader_simulation(request: Request) -> JSONResponse:
+    try:
+        from core.project_context import bind_project_context, get_project_context
+        from core.contracts.reader_simulation import ReaderSimulationRequest, SimulationMode
+        from system.reader_simulator import ReaderSimulatorService, ReaderSimulatorError
+        from system.reader_simulation_store import ReaderSimulationStore
+
+        data = await request.json()
+        chapter_id = data.get("chapter_id")
+        source_version_id = data.get("source_version_id")
+        project_root = data.get("project_root")
+
+        if chapter_id is None:
+            return _fail("chapter_id is required", "CHAPTER_ID_REQUIRED", 400)
+
+        context = get_project_context(project_root)
+
+        state_path = context.data_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+        project_id = state.get("project_id", "default-project")
+        timeline_id = state.get("timeline_id", "main")
+
+        req = ReaderSimulationRequest(
+            project_id=project_id,
+            timeline_id=timeline_id,
+            chapter_id=int(chapter_id),
+            source_version_id=source_version_id,
+            mode=SimulationMode.RULE,
+        )
+
+        with bind_project_context(context):
+            simulator = ReaderSimulatorService(context)
+            run = simulator.run_simulation(req)
+
+            store = ReaderSimulationStore(context)
+            store.save_run(run)
+
+        if run.status.value == "failed":
+            return _fail(run.error or "Simulation failed", "SIMULATION_FAILED", 500)
+
+        result = run.result
+        return _ok({
+            "run_id": run.run_id,
+            "chapter_id": chapter_id,
+            "source_version_id": run.snapshot.source.source_version_id,
+            "engagement_score": {
+                "score": result.engagement_score.score,
+                "level": result.engagement_score.level,
+                "reasons": result.engagement_score.reasons,
+                "evidence": result.engagement_score.evidence,
+            },
+            "retention_risk": {
+                "score": result.retention_risk.score,
+                "level": result.retention_risk.level.value,
+                "risk_points": result.retention_risk.risk_points,
+            },
+            "novel_health": {
+                "overall_score": result.novel_health.overall_score,
+                "pacing": result.novel_health.pacing,
+                "clarity": result.novel_health.clarity,
+                "continuity": result.novel_health.continuity,
+                "conflict": result.novel_health.conflict,
+                "payoff": result.novel_health.payoff,
+                "style_stability": result.novel_health.style_stability,
+                "warnings": result.novel_health.warnings,
+            },
+            "evaluator_version": result.evaluator_version,
+            "created_at": run.created_at.isoformat(),
+        }, "Reader simulation completed.")
+
+    except ReaderSimulatorError as exc:
+        return _fail(exc.message, exc.code, 400)
+    except Exception as exc:
+        return _fail(str(exc), "SIMULATION_ERROR", 500)
+
+
+@router.get("/api/simulator/reader/runs")
+def api_list_reader_simulations(chapter_id: int | None = None, project_root: str | None = None) -> JSONResponse:
+    try:
+        from core.project_context import bind_project_context, get_project_context
+        from system.reader_simulation_store import ReaderSimulationStore
+
+        context = get_project_context(project_root)
+
+        with bind_project_context(context):
+            store = ReaderSimulationStore(context)
+            runs = store.list_runs(chapter_id=chapter_id)
+
+        output = []
+        for run in runs:
+            output.append({
+                "run_id": run.run_id,
+                "chapter_id": run.request.chapter_id,
+                "source_version_id": run.snapshot.source.source_version_id,
+                "status": run.status.value,
+                "created_at": run.created_at.isoformat(),
+                "engagement_score": run.result.engagement_score.score if run.result else None,
+                "retention_risk": run.result.retention_risk.score if run.result else None,
+            })
+
+        return _ok({"simulations": output}, f"{len(output)} simulations found.")
+
+    except Exception as exc:
+        return _fail(str(exc), "LIST_ERROR", 500)
+
+
+@router.get("/api/simulator/reader/runs/{run_id}")
+def api_get_reader_simulation(run_id: str, project_root: str | None = None) -> JSONResponse:
+    try:
+        from core.project_context import bind_project_context, get_project_context
+        from system.reader_simulation_store import ReaderSimulationStore
+
+        context = get_project_context(project_root)
+
+        with bind_project_context(context):
+            store = ReaderSimulationStore(context)
+            run = store.load_run(run_id)
+            if run is None:
+                return _fail(f"run_id '{run_id}' not found", "RUN_NOT_FOUND", 404)
+            staleness = store.check_run_staleness(run_id)
+
+        result_state = staleness.state.value
+        stale_reasons = [r.value for r in staleness.stale_reasons]
+
+        result = {}
+        if run.result:
+            result = {
+                "engagement_score": {
+                    "score": run.result.engagement_score.score,
+                    "level": run.result.engagement_score.level,
+                    "reasons": run.result.engagement_score.reasons,
+                    "evidence": run.result.engagement_score.evidence,
+                },
+                "retention_risk": {
+                    "score": run.result.retention_risk.score,
+                    "level": run.result.retention_risk.level.value,
+                    "risk_points": run.result.retention_risk.risk_points,
+                },
+                "reader_emotion_curve": [
+                    {
+                        "position": node.position,
+                        "segment_label": node.segment_label,
+                        "tension": node.tension,
+                        "curiosity": node.curiosity,
+                        "emotional_intensity": node.emotional_intensity,
+                        "payoff": node.payoff,
+                    }
+                    for node in run.result.reader_emotion_curve
+                ],
+                "problem_flags": [
+                    {
+                        "code": flag.code,
+                        "severity": flag.severity.value,
+                        "category": flag.category.value,
+                        "message": flag.message,
+                    }
+                    for flag in run.result.problem_flags
+                ],
+                "optimization_suggestions": [
+                    {
+                        "priority": s.priority,
+                        "target": s.target,
+                        "reason": s.reason,
+                        "expected_effect": s.expected_effect,
+                    }
+                    for s in run.result.optimization_suggestions
+                ],
+                "novel_health": {
+                    "overall_score": run.result.novel_health.overall_score,
+                    "pacing": run.result.novel_health.pacing,
+                    "clarity": run.result.novel_health.clarity,
+                    "continuity": run.result.novel_health.continuity,
+                    "conflict": run.result.novel_health.conflict,
+                    "payoff": run.result.novel_health.payoff,
+                    "style_stability": run.result.novel_health.style_stability,
+                    "warnings": run.result.novel_health.warnings,
+                },
+                "evaluator_version": run.result.evaluator_version,
+                "evaluated_at": run.result.evaluated_at.isoformat(),
+            }
+
+        return _ok({
+            "run_id": run.run_id,
+            "status": run.status.value,
+            "result_state": result_state,
+            "stale_reasons": stale_reasons,
+            "chapter_id": run.snapshot.chapter_id,
+            "project_id": run.snapshot.project_id,
+            "timeline_id": run.snapshot.timeline_id,
+            "source": {
+                "source_version_id": run.snapshot.source.source_version_id,
+                "source_type": run.snapshot.source.source_type,
+                "source_hash": run.snapshot.source.source_hash,
+                "title": run.snapshot.source.title,
+            },
+            "result": result,
+            "created_at": run.created_at.isoformat(),
+            "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+        }, f"Simulation details (state: {result_state}).")
+
+    except Exception as exc:
+        return _fail(str(exc), "GET_ERROR", 500)
 
 
 def _load_json_safe(path: Path, default: Any) -> Any:
@@ -1004,7 +1351,8 @@ def _load_json_safe(path: Path, default: Any) -> Any:
 
 def build_version_content(source_type: str, version: int) -> dict[str, Any]:
     if source_type == "committed":
-        chapter_path = Path("data") / "chapters" / f"chapter_{version:03d}.md"
+        ctx = get_project_context()
+        chapter_path = ctx.chapters_dir / f"chapter_{version:03d}.md"
         if not chapter_path.exists():
             raise FileNotFoundError(f"committed:{version} not found")
         text = chapter_path.read_text(encoding="utf-8")
@@ -1100,13 +1448,14 @@ def quality_summary(chapter_id: int, source_type: str, version: int) -> dict[str
 
 
 def current_target_chapter() -> int:
-    plan_path = Path("data/next_chapter_plan.json")
+    ctx = get_project_context()
+    plan_path = ctx.data_dir / "next_chapter_plan.json"
     if plan_path.exists():
         try:
             return int(json.loads(plan_path.read_text(encoding="utf-8")).get("chapter_id", 1) or 1)
         except json.JSONDecodeError:
             return 1
-    state_path = Path("data/state.json")
+    state_path = ctx.data_dir / "state.json"
     if state_path.exists():
         try:
             state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -1158,21 +1507,49 @@ def approve_review(force: bool = False, polish: bool | None = None) -> dict[str,
         edit_result = commands.edit_draft_command()
         if edit_result.get("status") != "success":
             return api_response(False, "AI polish failed.", {"review": record})
-    commit_result = commands.commit_chapter_command()
-    response = command_response(commit_result)
-    response["message"] = "审核通过，章节已提交。" if response["ok"] else response["message"]
-    if not response["ok"]:
-        return response
 
-    archived_versions, archive_warnings = _archive_versions_after_commit(int(target["chapter_id"]))
-    response["result"]["archived_versions"] = archived_versions
-    response["warnings"].extend(archive_warnings)
+    from core.project_context import get_project_context
+    from system.chapter_commit_service import ChapterCommitService, PostCommitPolicy
+    context = get_project_context()
+    commit_service = ChapterCommitService(context)
+    commit_result = commit_service.commit_chapter(
+        int(target["chapter_id"]),
+        post_commit_policy=PostCommitPolicy.FULL,
+    )
 
-    for followup in [commands.sync_obsidian_command, commands.index_vault_command]:
-        followup_result = followup()
-        if followup_result.get("status") == "failed":
-            response["warnings"].append(str(followup_result.get("message", "")))
-    return response
+    if commit_result.status == "failed":
+        return api_response(False, "\n".join(commit_result.warnings), {"review": record})
+
+    if commit_result.status == "already_committed":
+        return api_response(
+            True,
+            "审核通过，章节已提交（内容未变化）。",
+            {
+                "review": record,
+                "chapter_id": commit_result.chapter_id,
+                "canon_revision_id": commit_result.canon_revision_id,
+                "post_commit": commit_result.post_commit,
+            },
+            warnings=commit_result.warnings,
+        )
+
+    archived, archive_warnings = _archive_versions_after_commit(int(target["chapter_id"]))
+    commit_result.warnings.extend(archive_warnings)
+
+    return api_response(
+        True,
+        "审核通过，章节已提交。",
+        {
+            "review": record,
+            "chapter_id": commit_result.chapter_id,
+            "commit_id": commit_result.commit_id,
+            "canon_revision_id": commit_result.canon_revision_id,
+            "source_type": commit_result.source_type.value,
+            "post_commit": commit_result.post_commit,
+            "archived_versions": archived,
+        },
+        warnings=commit_result.warnings,
+    )
 
 
 def _archive_versions_after_commit(chapter_id: int) -> tuple[list[dict[str, Any]], list[str]]:
@@ -1324,7 +1701,18 @@ def nm_snapshot(chapter_id:int):
  try:return _ok({'snapshot':_nm().snapshot(chapter_id)},'Narrative snapshot saved.')
  except Exception as exc:return _fail(str(exc),'NARRATIVE_SNAPSHOT_ERROR',409)
 @router.get("/api/narrative-memory/context-preview")
-def nm_preview(chapter_id:int=1): return _ok({'preview':_nm().preview(chapter_id)})
+def nm_preview(chapter_id:int=1):
+ context=_ctx(); store=DataStore(context)
+ preview=ContextAssemblyService(context).assemble(
+  state=store.read_json('data/state.json',default={},expected_type=dict) or {},
+  memory_index=store.read_json('data/memory/memory_index.json',default={},expected_type=dict) or {},
+  query='', story_spec=store.read_json('data/story_spec.json',default={},expected_type=dict) or {},
+  characters=store.read_json('data/characters.json',default={},expected_type=dict) or {},
+  world_bible=store.read_json('data/world_bible.json',default={},expected_type=dict) or {},
+  purpose='chapter_drafting',
+ )
+ preview['context_ref']=f"context:{chapter_id or preview.get('chapter_number',1)}"
+ return _ok({'preview':preview})
 @router.post("/api/narrative-memory/overrides/{kind}")
 async def nm_override(kind:str,request:Request):
  try:
@@ -1333,9 +1721,9 @@ async def nm_override(kind:str,request:Request):
 
 
 # Reconstructed phase 2-6 API bridge.  Services remain the sole business authority.
-def _ok(result=None,message=""): return JSONResponse({"ok":True,"message":message,"result":result or {},"warnings":[],"errors":[]})
+def _ok(result=None,message=""): return JSONResponse(api_ok(message,result or {}))
 def _fail(message,code,status=400):
- return JSONResponse({"ok":False,"message":message,"result":{},"warnings":[],"errors":[code],"error":{"code":code,"message":message,"details":{},"recoverable":status < 500,"suggestions":[]}},status_code=status)
+ return JSONResponse(api_error(message,[code]),status_code=status)
 def _ctx(): return get_project_context()
 
 def _agent_context(chapter_id: int | None = None, draft_text: str = "") -> dict[str, Any]:
@@ -1346,7 +1734,10 @@ def _agent_context(chapter_id: int | None = None, draft_text: str = "") -> dict[
  story=store.read_json('data/story_spec.json',default={},expected_type=dict) or {}
  characters=store.read_json('data/characters.json',default={},expected_type=dict) or {}
  world=store.read_json('data/world_bible.json',default={},expected_type=dict) or {}
- snapshot=build_working_context(state,memory,'',story,characters,world)
+ snapshot=ContextAssemblyService(context).assemble(
+  state=state,memory_index=memory,query='',story_spec=story,characters=characters,
+  world_bible=world,purpose='chapter_drafting',
+ )
  snapshot.update({'characters':characters,'chapter_plan':store.read_json('data/next_chapter_plan.json',default={},expected_type=dict) or {},'context_ref':f"context:{chapter_id or snapshot.get('next_chapter_id',1)}"})
  if draft_text: snapshot['draft_text']=draft_text
  return snapshot
@@ -1453,6 +1844,84 @@ async def p_character_simulate(request:Request):
  return _ok({'simulation':trace['result'],'trace_id':trace['trace_id']})
 @router.get('/api/projects/active')
 def p_active(): return _ok({'project':get_project_manager().get_active_project()})
+
+
+@router.get('/api/simulator/context')
+def api_simulator_context(
+    project_id: str = Query(..., min_length=1),
+    timeline_id: str | None = None,
+    chapter_id: int | None = Query(None, ge=1),
+) -> JSONResponse:
+    """Return safe, read-only navigator metadata for one project scope."""
+    try:
+        manager = get_project_manager()
+        project = manager.get_project(project_id)
+        if not project.get("valid"):
+            return _fail("Project context is unavailable", "PROJECT_CONTEXT_INVALID", 404)
+        context = get_project_context(str(project["project_root"]))
+        state = DataStore(context).read_json(context.data_dir / "state.json", default={}, expected_type=dict) or {}
+        effective_timeline = str(timeline_id or state.get("timeline_id") or "main")
+        if effective_timeline != str(state.get("timeline_id") or "main"):
+            return _fail("Timeline is not available in this project", "TIMELINE_NOT_FOUND", 404)
+        chapter_ids: set[int] = set()
+        for path in (context.chapters_dir, context.versions_dir, context.drafts_dir, context.edited_dir, context.manual_dir):
+            if path.exists():
+                for item in path.glob("*"):
+                    match = re.search(r"chapter[_-](\d+)", item.stem)
+                    if match: chapter_ids.add(int(match.group(1)))
+        current_chapter = int(state.get("current_chapter", 0) or 0)
+        if current_chapter > 0: chapter_ids.add(current_chapter)
+        chapters = [{"chapter_id": number, "title": f"第 {number} 章", "current": number == current_chapter} for number in sorted(chapter_ids)]
+        selected_chapter = chapter_id if chapter_id in chapter_ids else (current_chapter or (min(chapter_ids) if chapter_ids else None))
+        versions: list[dict[str, Any]] = []
+        runs: list[dict[str, Any]] = []
+        if selected_chapter is not None:
+            version_data = list_versions(selected_chapter, context.data_dir)
+            for source_type in ("draft", "edited", "manual"):
+                for item in version_data.get(source_type, []):
+                    versions.append({"source_type": source_type, "version": item.get("version"), "version_label": item.get("version_label"), "source_version_id": item.get("source_version_id"), "selected": version_data.get("selected", {}).get("source_type") == source_type and version_data.get("selected", {}).get("version") == item.get("version")})
+            for item in commands._scan_committed_chapters(context.data_dir):
+                if int(item.get("chapter_id", 0) or 0) == selected_chapter:
+                    versions.append({"source_type": "committed", "version": item.get("version"), "version_label": item.get("version_label"), "source_version_id": item.get("source_version_id"), "selected": False})
+            from core.project_context import bind_project_context
+            from system.model_persona_panel_execution_service import ModelPersonaPanelExecutionService
+            with bind_project_context(context):
+                for run in ModelPersonaPanelExecutionService(context).list_runs(selected_chapter):
+                    payload = _panel_result_payload(run)
+                    runs.append({"panel_execution_id": payload["panel_execution_id"], "status": payload["status"], "staleness": payload["staleness"], "usage_completeness": payload["usage_completeness"], "ordered_persona_ids": payload["ordered_persona_ids"]})
+        source_available = False
+        if selected_chapter is not None:
+            try:
+                from core.contracts.reader_simulation import ReaderSimulationRequest, SimulationMode
+                from system.reader_simulator import ReaderSimulatorService
+                ReaderSimulatorService(context)._build_snapshot(ReaderSimulationRequest(
+                    project_id=str(state.get("project_id") or "default-project"), timeline_id=effective_timeline,
+                    chapter_id=selected_chapter, source_version_id=None, mode=SimulationMode.RULE,
+                ))
+                source_available = True
+            except Exception:
+                source_available = False
+        # Branch listing (read-only): expose branch metadata for the Narrative Turn
+        # branch selector. This does NOT mutate the registry or any branch state.
+        branches_payload: list[dict[str, Any]] = []
+        try:
+            from core.contracts.narrative_turn import TimelineContext
+            from system.narrative_branch_store import NarrativeBranchStore
+            tl_ctx = TimelineContext(project_id=str(state.get("project_id") or "default-project"), timeline_id=effective_timeline)
+            store = NarrativeBranchStore(context)
+            for b in store.list_branches(tl_ctx):
+                branches_payload.append({
+                    "branch_id": b.branch_id,
+                    "display_name": b.display_name,
+                    "lifecycle_status": b.lifecycle_status.value,
+                })
+        except Exception:
+            branches_payload = []
+        return _ok({"project": {"project_id": project["project_id"], "title": project["title"], "legacy": project.get("legacy", False), "scope_project_id": str(state.get("project_id") or "default-project")}, "timelines": [{"timeline_id": effective_timeline, "title": "主时间线"}], "chapters": chapters, "selected_chapter_id": selected_chapter, "source_versions": versions, "source_available": source_available, "panel_runs": runs, "branches": branches_payload})
+    except ProjectManagerError:
+        return _fail("Project not found", "PROJECT_NOT_FOUND", 404)
+    except Exception:
+        return _fail("Unable to load simulator context", "SIMULATOR_CONTEXT_ERROR", 500)
 @router.post('/api/projects/{project_id}/activate')
 def p_activate(project_id:str):
  try:return _ok({'project':get_project_manager().activate_project(project_id)},'Project activated.')
@@ -1656,6 +2125,19 @@ async def p_create_project(request:Request):
  try:
   data=await request.json(); return _ok({'project':get_project_manager().create_project(data)},'Project created.')
  except Exception as e:return _fail(str(e),'PROJECT_CREATE_ERROR',409)
+
+@router.post('/api/projects/{project_id}/clone')
+async def p_clone_project(project_id:str,request:Request):
+ try:
+  data=await request.json(); name=data.get('name',''); slug=data.get('slug'); 
+  if not name:return _fail('name is required','CLONE_NAME_REQUIRED',400)
+  from system.project_manager import ProjectNotFound
+  try:
+   result=get_project_manager().clone_project(project_id,name,slug)
+   return _ok(result,'Project cloned.')
+  except ProjectNotFound as e:return _fail(str(e),'PROJECT_NOT_FOUND',404)
+ except ProjectManagerError as e:return _fail(str(e),'PROJECT_CLONE_ERROR',409)
+ except Exception as e:return _fail(str(e),'PROJECT_CLONE_ERROR',500)
 @router.get('/api/archive/{archive_id}')
 def p_archive_detail(archive_id:str):
  try:return _ok({'item':RevisionService(_ctx()).get_archive(archive_id)})
@@ -1665,3 +2147,720 @@ def p_archive_detail(archive_id:str):
 def p_plan_sync_next(chapter_id:str):
  try:return _ok({'plan':sync_next_plan(chapter_id,_ctx())})
  except Exception as e:return _fail(str(e),'PLANNING_SYNC_ERROR',409)
+
+
+@router.get("/api/simulator/reader/personas")
+def api_list_reader_personas() -> JSONResponse:
+    try:
+        from system.reader_persona_registry import ReaderPersonaRegistry
+
+        registry = ReaderPersonaRegistry()
+        personas = registry.list_personas()
+
+        result = []
+        for order, persona in enumerate(personas, start=1):
+            result.append({
+                "persona_id": persona.persona_id,
+                "display_name": persona.display_name,
+                "short_description": persona.description,
+                "enabled": persona.enabled,
+                "deterministic_order": order,
+            })
+
+        return _ok({"personas": result}, "Reader personas loaded.")
+    except Exception as exc:
+        return _fail(str(exc), "PERSONA_ERROR", 500)
+
+
+@router.get("/api/reader-persona/options")
+def api_reader_persona_options() -> JSONResponse:
+    """Stable, safe Persona option metadata for planning UI."""
+    return api_list_reader_personas()
+
+
+@router.post("/api/simulator/reader/panels/run")
+async def api_run_reader_panel(request: Request) -> JSONResponse:
+    try:
+        from core.project_context import bind_project_context, get_project_context
+        from core.contracts.reader_persona import PanelMode, ReaderPanelRequest
+        from system.reader_panel_service import ReaderPanelService
+
+        data = await request.json()
+        chapter_id = data.get("chapter_id")
+        persona_ids = data.get("persona_ids", [])
+        project_root = data.get("project_root")
+
+        if chapter_id is None:
+            return _fail("chapter_id is required", "CHAPTER_ID_REQUIRED", 400)
+
+        if not isinstance(persona_ids, list) or len(persona_ids) < 2:
+            return _fail("At least 2 personas required", "PERSONA_COUNT_ERROR", 400)
+
+        context = get_project_context(project_root)
+
+        state_path = context.data_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+        project_id = state.get("project_id", "default-project")
+        timeline_id = state.get("timeline_id", "main")
+
+        req = ReaderPanelRequest(
+            project_id=project_id,
+            timeline_id=timeline_id,
+            chapter_id=int(chapter_id),
+            persona_ids=persona_ids,
+            mode=PanelMode.DETERMINISTIC,
+        )
+
+        with bind_project_context(context):
+            service = ReaderPanelService(context)
+            run = service.run_panel(req)
+
+        if run.status.value == "failed":
+            return _fail(run.error or "Panel run failed", "PANEL_RUN_FAILED", 500)
+
+        result = run.result
+        return _ok({
+            "panel_run_id": run.panel_run_id,
+            "chapter_id": chapter_id,
+            "persona_count": len(persona_ids),
+            "panel_score": result.panel_score if result else None,
+            "panel_retention_risk": result.panel_retention_risk if result else None,
+            "agreement_level": result.agreement.agreement_level.value if result else None,
+            "status": run.status.value,
+        }, "Reader panel simulation completed.")
+
+    except Exception as exc:
+        return _fail(str(exc), "PANEL_ERROR", 500)
+
+
+@router.get("/api/simulator/reader/panels")
+def api_list_reader_panels(chapter_id: int | None = None, project_root: str | None = None) -> JSONResponse:
+    try:
+        from core.project_context import bind_project_context, get_project_context
+        from system.reader_panel_store import ReaderPanelStore
+
+        context = get_project_context(project_root)
+
+        with bind_project_context(context):
+            store = ReaderPanelStore(context)
+            runs = store.list_runs(chapter_id=chapter_id)
+
+        result = []
+        for run in runs:
+            staleness = store.check_run_staleness(run.panel_run_id)
+            result.append({
+                "panel_run_id": run.panel_run_id,
+                "chapter_id": run.request.chapter_id,
+                "persona_count": len(run.request.persona_ids),
+                "status": run.status.value,
+                "result_state": staleness.state.value,
+                "panel_score": run.result.panel_score if run.result else None,
+                "created_at": run.created_at.isoformat(),
+                "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+            })
+
+        return _ok({"panels": result}, f"Found {len(result)} panel runs.")
+    except Exception as exc:
+        return _fail(str(exc), "PANEL_LIST_ERROR", 500)
+
+
+@router.get("/api/simulator/reader/panels/{panel_run_id}")
+def api_get_reader_panel(panel_run_id: str, project_root: str | None = None) -> JSONResponse:
+    try:
+        from core.project_context import bind_project_context, get_project_context
+        from system.reader_panel_store import ReaderPanelStore
+
+        context = get_project_context(project_root)
+
+        with bind_project_context(context):
+            store = ReaderPanelStore(context)
+            run = store.load_run(panel_run_id)
+
+        if run is None:
+            return _fail("Panel run not found", "PANEL_NOT_FOUND", 404)
+
+        staleness = store.check_run_staleness(panel_run_id)
+        result_state = staleness.state.value
+        stale_reasons = [r.value for r in staleness.stale_reasons]
+
+        result = {}
+        if run.result:
+            persona_results = []
+            for pr in run.result.persona_results:
+                persona_results.append({
+                    "persona_id": pr.persona_id,
+                    "engagement_score": pr.engagement_score,
+                    "retention_risk": pr.retention_risk,
+                    "priority_flags": [
+                        {"flag_code": f.flag_code, "severity": f.persona_severity, "priority": f.priority}
+                        for f in pr.priority_flags
+                    ],
+                    "observations": [o.message for o in pr.persona_observations],
+                    "optimization_priorities": [o.target for o in pr.optimization_priorities],
+                })
+
+            result = {
+                "panel_score": run.result.panel_score,
+                "panel_retention_risk": run.result.panel_retention_risk,
+                "agreement": {
+                    "score_spread": run.result.agreement.score_spread,
+                    "score_stddev": run.result.agreement.score_stddev,
+                    "agreement_level": run.result.agreement.agreement_level.value,
+                    "shared_flag_codes": run.result.agreement.shared_flag_codes,
+                },
+                "disagreements": [
+                    {"topic": d.topic, "persona_positions": d.persona_positions, "explanation": d.explanation}
+                    for d in run.result.disagreements
+                ],
+                "consensus_flags": [
+                    {"flag_code": f.flag_code, "severity": f.severity, "supporting_personas": f.supporting_personas}
+                    for f in run.result.consensus_flags
+                ],
+                "minority_flags": [
+                    {"flag_code": f.flag_code, "severity": f.severity, "supporting_personas": f.supporting_personas}
+                    for f in run.result.minority_flags
+                ],
+                "panel_suggestions": [
+                    {"target": s.target, "priority": s.priority, "reason": s.reason, "source_personas": s.source_personas}
+                    for s in run.result.panel_suggestions
+                ],
+                "persona_results": persona_results,
+                "panel_evaluator_version": run.result.panel_evaluator_version,
+                "persona_set_fingerprint": run.result.persona_set_fingerprint,
+            }
+
+        return _ok({
+            "panel_run_id": run.panel_run_id,
+            "status": run.status.value,
+            "result_state": result_state,
+            "stale_reasons": stale_reasons,
+            "chapter_id": run.request.chapter_id,
+            "project_id": run.request.project_id,
+            "timeline_id": run.request.timeline_id,
+            "persona_ids": run.request.persona_ids,
+            "result": result,
+            "base_simulation_run_id": run.base_simulation_run_id,
+            "snapshot_id": run.snapshot_id,
+            "created_at": run.created_at.isoformat(),
+            "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+        }, "Panel details retrieved.")
+    except Exception as exc:
+        return _fail(str(exc), "PANEL_DETAIL_ERROR", 500)
+
+
+@router.post("/api/simulator/reader/personas/model/run")
+async def api_run_reader_persona_model(request: Request) -> JSONResponse:
+    try:
+        from core.project_context import bind_project_context, get_project_context
+        from core.contracts.model_persona_execution import (
+            ExecutionMode,
+            ModelPersonaExecutionRequest,
+        )
+        from system.model_persona_execution_service import ModelPersonaExecutionService
+
+        data = await request.json()
+        chapter_id = data.get("chapter_id")
+        persona_id = data.get("persona_id")
+        mode = data.get("mode", "mock")
+        execution_profile = data.get("execution_profile", "default")
+        allow_model_call = bool(data.get("allow_model_call", False))
+        force = bool(data.get("force", False))
+        source_version_id = data.get("source_version_id")
+        project_root = data.get("project_root")
+
+        # Reject credentials or base URL in request
+        if data.get("api_key") or data.get("base_url"):
+            return _fail("Credentials or base URL are not accepted in request body", "FORBIDDEN_INPUT", 400)
+
+        if chapter_id is None:
+            return _fail("chapter_id is required", "CHAPTER_ID_REQUIRED", 400)
+        if not persona_id or not isinstance(persona_id, str):
+            return _fail("persona_id is required (single string)", "PERSONA_ID_REQUIRED", 400)
+        if isinstance(persona_id, list):
+            return _fail("Only one persona per request", "MULTI_PERSONA_REJECTED", 400)
+
+        try:
+            exec_mode = ExecutionMode(mode)
+        except ValueError:
+            return _fail(f"Unknown mode: {mode}", "INVALID_MODE", 400)
+        if exec_mode == ExecutionMode.LIVE:
+            return _fail("Live execution requires a server-issued consent ticket", "LIVE_REQUIRES_CONSENT_TICKET", 400)
+
+        context = get_project_context(project_root)
+        state_path = context.data_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+        project_id = state.get("project_id", "default-project")
+        timeline_id = state.get("timeline_id", "main")
+
+        request_obj = ModelPersonaExecutionRequest(
+            project_id=project_id,
+            timeline_id=timeline_id,
+            chapter_id=int(chapter_id),
+            persona_id=persona_id,
+            source_version_id=source_version_id,
+            execution_mode=exec_mode,
+            execution_profile=execution_profile,
+            allow_model_call=allow_model_call,
+            force=force,
+        )
+
+        with bind_project_context(context):
+            service = ModelPersonaExecutionService(context)
+            result = service.execute(request_obj)
+
+        if result.status.value == "blocked":
+            error_code = result.error_code or "MODEL_CALL_BLOCKED"
+            if error_code == "PROVIDER_NOT_CONFIGURED":
+                status_code = 503
+            else:
+                status_code = 400
+            return _fail(result.error or error_code, error_code, status_code)
+
+        if result.status.value == "failed":
+            error_code = result.error_code or "PROVIDER_ERROR"
+            status_map = {
+                "PROVIDER_AUTH_ERROR": 401,
+                "PROVIDER_RATE_LIMITED": 429,
+                "PROVIDER_TIMEOUT": 504,
+                "PROVIDER_ERROR": 502,
+            }
+            status_code = status_map.get(error_code, 502)
+            return _fail(result.error or error_code, error_code, status_code)
+
+        if result.status.value == "invalid_output":
+            error_code = result.error_code or "MODEL_OUTPUT_INVALID"
+            return _fail(
+                result.error or "Model output failed validation",
+                error_code,
+                422,
+            )
+
+        return _ok({
+            "execution_id": result.execution_id,
+            "status": result.status.value,
+            "persona_id": result.persona_id,
+            "error_code": result.error_code,
+            "cache_status": result.cache_status,
+            "authoritative_scores": result.authoritative_scores.to_dict(),
+            "has_feedback": result.model_feedback is not None,
+            "usage": result.usage.to_dict() if result.usage else None,
+        }, "Model persona execution completed.")
+    except Exception as exc:
+        return _fail(str(exc), "MODEL_PERSONA_ERROR", 500)
+
+
+@router.get("/api/simulator/reader/personas/model/runs")
+def api_list_reader_persona_model_runs(
+    chapter_id: int | None = None,
+    persona_id: str | None = None,
+    project_root: str | None = None,
+) -> JSONResponse:
+    try:
+        from core.project_context import bind_project_context, get_project_context
+        from system.model_persona_execution_service import ModelPersonaExecutionService
+
+        context = get_project_context(project_root)
+        with bind_project_context(context):
+            service = ModelPersonaExecutionService(context)
+            runs = service.list_runs(chapter_id=chapter_id, persona_id=persona_id)
+
+        result = []
+        for run in runs:
+            result.append({
+                "execution_id": run.execution_id,
+                "status": run.status.value,
+                "persona_id": run.persona_id,
+                "cache_status": run.cache_status,
+                "created_at": run.created_at.isoformat(),
+            })
+
+        return _ok({"runs": result}, f"Found {len(result)} model persona runs.")
+    except Exception as exc:
+        return _fail(str(exc), "MODEL_PERSONA_LIST_ERROR", 500)
+
+
+@router.get("/api/simulator/reader/personas/model/runs/{execution_id}")
+def api_get_reader_persona_model_run(
+    execution_id: str,
+    project_root: str | None = None,
+) -> JSONResponse:
+    try:
+        from core.project_context import bind_project_context, get_project_context
+        from system.model_persona_execution_service import ModelPersonaExecutionService
+
+        context = get_project_context(project_root)
+        with bind_project_context(context):
+            service = ModelPersonaExecutionService(context)
+            run = service.get_run(execution_id)
+
+        if run is None:
+            return _fail(f"execution_id not found: {execution_id}", "RUN_NOT_FOUND", 404)
+
+        result = {
+            "execution_id": run.execution_id,
+            "status": run.status.value,
+            "persona_id": run.persona_id,
+            "persona_version": run.persona_version,
+            "persona_fingerprint": run.persona_fingerprint,
+            "source_hash": run.source_hash,
+            "context_hash": run.context_hash,
+            "reader_evaluator_version": run.reader_evaluator_version,
+            "prompt_template_version": run.prompt_template_version,
+            "provider_id": run.provider_id,
+            "model_id": run.model_id,
+            "generation_parameters": run.generation_parameters.to_dict(),
+            "input_fingerprint": run.input_fingerprint,
+            "authoritative_scores": run.authoritative_scores.to_dict(),
+            "execution_mode": run.execution_mode.value if run.execution_mode else None,
+            "execution_profile": run.execution_profile,
+            "execution_profile_version": run.execution_profile_version,
+            "provider_config_fingerprint": run.provider_config_fingerprint,
+            "error_code": run.error_code,
+            "cache_status": run.cache_status,
+            "usage": run.usage.to_dict() if run.usage else None,
+            "warnings": run.warnings,
+            "error": run.error,
+            "created_at": run.created_at.isoformat(),
+            "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+        }
+
+        if run.model_feedback:
+            result["model_feedback"] = {
+                "reader_reaction": run.model_feedback.reader_reaction,
+                "overall_impression": run.model_feedback.overall_impression,
+                "strengths_count": len(run.model_feedback.strengths),
+                "concerns_count": len(run.model_feedback.concerns),
+                "reader_questions_count": len(run.model_feedback.reader_questions),
+                "optimization_directions_count": len(run.model_feedback.optimization_directions),
+            }
+
+        if run.grounding_report:
+            result["grounding_report"] = {
+                "valid_reference_count": run.grounding_report.valid_reference_count,
+                "invalid_reference_count": run.grounding_report.invalid_reference_count,
+                "unsupported_item_count": run.grounding_report.unsupported_item_count,
+                "grounding_coverage": run.grounding_report.grounding_coverage,
+            }
+
+        return _ok(result, "Model persona run details retrieved.")
+    except Exception as exc:
+        return _fail(str(exc), "MODEL_PERSONA_DETAIL_ERROR", 500)
+
+
+def _panel_result_payload(result) -> dict:
+    return {
+        "panel_execution_id": result.panel_execution_id, "status": result.status.value,
+        "ordered_persona_ids": result.ordered_persona_ids,
+        "child_execution_ids": result.child_execution_ids, "child_statuses": result.child_statuses,
+        "expected_provider_call_count": result.expected_provider_call_count,
+        "actual_provider_call_count": result.actual_provider_call_count,
+        "cache_hit_count": result.cache_hit_count, "cache_miss_count": result.cache_miss_count,
+        "usage": result.usage.to_dict() if result.usage else None,
+        "usage_completeness": result.usage_completeness, "error_code": result.error_code,
+        "staleness": result.staleness.value,
+    }
+
+
+async def _panel_request_from_http(request: Request):
+    from core.contracts.model_persona_execution import ExecutionMode
+    from core.contracts.model_persona_panel_execution import ModelPersonaPanelExecutionRequest
+    from core.project_context import get_project_context
+    data = await request.json()
+    forbidden = {"api_key", "authorization", "base_url", "endpoint", "provider_secret", "provider_config"}
+    if forbidden.intersection(data):
+        raise ValueError("FORBIDDEN_INPUT")
+    if not isinstance(data.get("persona_ids"), list):
+        raise ValueError("INVALID_PERSONA_SELECTION")
+    try:
+        mode = ExecutionMode(data.get("mode", "mock"))
+    except ValueError as exc:
+        raise ValueError("INVALID_MODE") from exc
+    if mode == ExecutionMode.LIVE:
+        # Live has its own ticket-only routes.  This legacy parser remains for
+        # Mock compatibility and must never become a Live bypass.
+        raise ValueError("LIVE_REQUIRES_CONSENT_TICKET")
+    project_root = data.get("project_root")
+    if not project_root and data.get("project_key"):
+        try:
+            project = get_project_manager().get_project(str(data["project_key"]))
+        except ProjectManagerError as exc:
+            raise ValueError("PROJECT_NOT_FOUND") from exc
+        if not project.get("valid"):
+            raise ValueError("PROJECT_CONTEXT_INVALID")
+        project_root = project.get("project_root")
+    context = get_project_context(project_root)
+    state_path = context.data_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+    request_obj = ModelPersonaPanelExecutionRequest(
+        project_id=state.get("project_id", "default-project"), timeline_id=state.get("timeline_id", "main"),
+        chapter_id=int(data.get("chapter_id", 0)), persona_ids=data["persona_ids"],
+        source_version_id=data.get("source_version_id"), execution_mode=mode,
+        execution_profile=data.get("execution_profile", "default"),
+        allow_model_call=bool(data.get("allow_model_call", False)),
+        max_provider_calls=data.get("max_provider_calls", 1), force=bool(data.get("force", False)),
+    )
+    return context, request_obj
+
+
+def _live_context_from_safe_project_key(data: dict):
+    """Resolve a selected project without accepting a local path from Live HTTP."""
+    from core.project_context import get_project_context
+
+    forbidden = {
+        "project_root", "project_id", "timeline_id", "mode", "force", "api_key",
+        "authorization", "base_url", "endpoint", "provider_secret", "provider_config",
+        "provider_id", "model_id", "endpoint_identity",
+    }
+    if forbidden.intersection(data):
+        raise ValueError("FORBIDDEN_LIVE_INPUT")
+    project_key = data.get("project_key")
+    if not isinstance(project_key, str) or not project_key:
+        raise ValueError("PROJECT_KEY_REQUIRED")
+    try:
+        project = get_project_manager().get_project(project_key)
+    except ProjectManagerError as exc:
+        raise ValueError("PROJECT_NOT_FOUND") from exc
+    if not project.get("valid"):
+        raise ValueError("PROJECT_CONTEXT_INVALID")
+    context = get_project_context(project.get("project_root"))
+    state_path = context.data_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+    return context, state
+
+
+@router.get("/api/reader-persona/live/profiles")
+def api_list_live_execution_profiles() -> JSONResponse:
+    """Safe projection only; no endpoint, credentials, or configuration detail."""
+    try:
+        from system.live_panel_execution_service import LivePanelExecutionService, public_live_capability
+
+        service = LivePanelExecutionService(get_project_context())
+        return _ok({"profiles": service.list_public_profiles(), "registry_revision": service.profile_registry_revision(), "capability": public_live_capability()})
+    except Exception:
+        return _fail("Unable to load Live execution profiles", "LIVE_PROFILE_LIST_ERROR", 500)
+
+
+@router.post("/api/reader-persona/model-panel/live/consent")
+async def api_issue_live_panel_consent(request: Request) -> JSONResponse:
+    try:
+        from core.project_context import bind_project_context
+        from system.live_panel_execution_service import LivePanelExecutionService
+
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("INVALID_LIVE_REQUEST")
+        context, state = _live_context_from_safe_project_key(data)
+        persona_ids = data.get("persona_ids")
+        if not isinstance(persona_ids, list):
+            raise ValueError("INVALID_PERSONA_SELECTION")
+        chapter_id = data.get("chapter_id")
+        if not isinstance(chapter_id, int):
+            raise ValueError("INVALID_CHAPTER_ID")
+        requested_max = data.get("max_provider_calls")
+        if not isinstance(requested_max, int):
+            raise ValueError("INVALID_BUDGET")
+        profile_id = data.get("profile_id")
+        if not isinstance(profile_id, str):
+            raise ValueError("INVALID_PROFILE")
+        with bind_project_context(context):
+            service = LivePanelExecutionService(context)
+            ticket, error_code = service.issue_consent(
+                project_id=state.get("project_id", "default-project"),
+                timeline_id=state.get("timeline_id", "main"), chapter_id=chapter_id,
+                source_version_id=data.get("source_version_id"), persona_ids=persona_ids,
+                profile_id=profile_id, requested_max_provider_calls=requested_max,
+                consent_text_version=data.get("consent_text_version", ""),
+            )
+        if ticket is None:
+            return _fail("Live consent could not be issued", error_code or "LIVE_CONSENT_REJECTED", 400)
+        return _ok({"ticket": ticket.to_dict()}, "Live consent issued without provider execution.")
+    except ValueError as exc:
+        return _fail("Invalid Live consent request", str(exc), 400)
+    except Exception:
+        return _fail("Unable to issue Live consent", "LIVE_CONSENT_ERROR", 500)
+
+
+@router.post("/api/reader-persona/model-panel/live/runs")
+async def api_run_live_panel_with_consent(request: Request, idempotency_key: str = Header(default="", alias="X-StoryOS-Idempotency-Key")) -> JSONResponse:
+    try:
+        from core.project_context import bind_project_context
+        from system.live_panel_execution_service import LivePanelExecutionService, live_execution_ui_enabled
+
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("INVALID_LIVE_REQUEST")
+        allowed = {"project_key", "ticket_id"}
+        if set(data).difference(allowed):
+            raise ValueError("FORBIDDEN_LIVE_INPUT")
+        if not live_execution_ui_enabled():
+            return _fail("Live execution is disabled", "LIVE_EXECUTION_DISABLED", 403)
+        context, _state = _live_context_from_safe_project_key(data)
+        ticket_id = data.get("ticket_id")
+        if not isinstance(ticket_id, str) or not ticket_id:
+            raise ValueError("LIVE_TICKET_REQUIRED")
+        with bind_project_context(context):
+            result = LivePanelExecutionService(context).execute_ticket(ticket_id, idempotency_key)
+        return _ok(result, "Live execution state returned.")
+    except ValueError as exc:
+        return _fail("Invalid Live execution request", str(exc), 400)
+    except Exception:
+        return _fail("Unable to start Live execution", "LIVE_EXECUTION_ERROR", 500)
+
+
+@router.post("/api/reader-persona/model-panel/live/cancel")
+async def api_cancel_live_panel_execution(request: Request, idempotency_key: str = Header(default="", alias="X-StoryOS-Idempotency-Key")) -> JSONResponse:
+    try:
+        from core.project_context import bind_project_context
+        from system.live_panel_execution_service import LivePanelExecutionService
+
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("INVALID_LIVE_REQUEST")
+        context, _state = _live_context_from_safe_project_key(data)
+        allowed = {"project_key", "ticket_id"}
+        if set(data).difference(allowed):
+            raise ValueError("FORBIDDEN_LIVE_INPUT")
+        ticket_id = data.get("ticket_id")
+        if not isinstance(ticket_id, str) or not ticket_id:
+            raise ValueError("LIVE_TICKET_REQUIRED")
+        with bind_project_context(context):
+            result = LivePanelExecutionService(context).request_cancellation(ticket_id, idempotency_key)
+        return _ok(result, "Live cancellation state returned.")
+    except ValueError as exc:
+        return _fail("Invalid Live cancellation request", str(exc), 400)
+    except Exception:
+        return _fail("Unable to update Live cancellation state", "LIVE_CANCELLATION_ERROR", 500)
+
+
+@router.get("/api/reader-persona/model-panel/live/status/{ticket_id}")
+def api_get_live_panel_status(ticket_id: str, project_key: str, idempotency_key: str = Header(default="", alias="X-StoryOS-Idempotency-Key")) -> JSONResponse:
+    try:
+        from core.project_context import bind_project_context
+        from system.live_panel_execution_service import LivePanelExecutionService
+
+        context, _state = _live_context_from_safe_project_key({"project_key": project_key})
+        with bind_project_context(context):
+            result = LivePanelExecutionService(context).recover(ticket_id, idempotency_key)
+        return _ok(result, "Live execution recovery state returned.")
+    except ValueError as exc:
+        return _fail("Invalid Live recovery request", str(exc), 400)
+    except Exception:
+        return _fail("Unable to load Live execution recovery state", "LIVE_RECOVERY_ERROR", 500)
+
+
+@router.post("/api/reader-persona/model-panel/plan")
+async def api_plan_reader_persona_model_panel(request: Request) -> JSONResponse:
+    try:
+        from core.project_context import bind_project_context
+        from system.model_persona_panel_execution_service import ModelPersonaPanelExecutionService
+        context, request_obj = await _panel_request_from_http(request)
+        with bind_project_context(context): plan = ModelPersonaPanelExecutionService(context).plan(request_obj)
+        return _ok({
+            "requested_persona_ids": plan.requested_persona_ids, "ordered_persona_ids": plan.ordered_persona_ids,
+            "cache_hit_persona_ids": plan.cache_hit_persona_ids, "cache_miss_persona_ids": plan.cache_miss_persona_ids,
+            "expected_provider_calls": plan.expected_provider_calls, "max_provider_calls": plan.max_provider_calls,
+            "can_execute": plan.can_execute, "blocked_reason": plan.blocked_reason, "error_code": plan.error_code,
+        }, "Model persona panel plan completed.")
+    except ValueError as exc:
+        return _fail("Invalid panel request", str(exc), 400)
+    except Exception:
+        return _fail("Unable to create model persona panel plan", "MODEL_PERSONA_PANEL_PLAN_ERROR", 500)
+
+
+@router.post("/api/reader-persona/model-panel/runs")
+async def api_run_reader_persona_model_panel(request: Request) -> JSONResponse:
+    try:
+        from core.project_context import bind_project_context
+        from system.model_persona_panel_execution_service import ModelPersonaPanelExecutionService
+        context, request_obj = await _panel_request_from_http(request)
+        with bind_project_context(context): result = ModelPersonaPanelExecutionService(context).execute(request_obj)
+        if result.status.value == "blocked":
+            return _fail("Model persona panel execution blocked", result.error_code or "MODEL_CALL_BLOCKED", 503 if result.error_code == "PROVIDER_NOT_CONFIGURED" else 400)
+        return _ok(_panel_result_payload(result), "Model persona panel execution completed.")
+    except ValueError as exc:
+        return _fail("Invalid panel request", str(exc), 400)
+    except Exception:
+        return _fail("Unable to run model persona panel", "MODEL_PERSONA_PANEL_ERROR", 500)
+
+
+@router.get("/api/reader-persona/model-panel/runs")
+def api_list_reader_persona_model_panel_runs(chapter_id: int | None = None, project_root: str | None = None) -> JSONResponse:
+    try:
+        from core.project_context import bind_project_context, get_project_context
+        from system.model_persona_panel_execution_service import ModelPersonaPanelExecutionService
+        context = get_project_context(project_root)
+        with bind_project_context(context): runs = ModelPersonaPanelExecutionService(context).list_runs(chapter_id)
+        return _ok({"runs": [_panel_result_payload(run) for run in runs]}, "Model persona panel runs loaded.")
+    except Exception:
+        return _fail("Unable to list model persona panel runs", "MODEL_PERSONA_PANEL_LIST_ERROR", 500)
+
+
+@router.get("/api/reader-persona/model-panel/runs/{panel_execution_id}")
+def api_get_reader_persona_model_panel_run(panel_execution_id: str, project_root: str | None = None) -> JSONResponse:
+    try:
+        from core.project_context import bind_project_context, get_project_context
+        from system.model_persona_panel_execution_service import ModelPersonaPanelExecutionService
+        context = get_project_context(project_root)
+        with bind_project_context(context):
+            service = ModelPersonaPanelExecutionService(context)
+            run = service.get_run(panel_execution_id)
+            if run is None: return _fail("Panel run not found", "PANEL_RUN_NOT_FOUND", 404)
+            payload = _panel_result_payload(run)
+            payload["staleness"] = service.check_staleness(panel_execution_id).value
+        return _ok(payload, "Model persona panel run loaded.")
+    except Exception:
+        return _fail("Panel run not found", "PANEL_RUN_NOT_FOUND", 404)
+
+
+@router.get("/api/reader-persona/model-panel/review")
+def api_get_reader_persona_panel_review(
+    chapter_id: int = Query(...),
+    source_version_id: str | None = None,
+    panel_execution_id: str | None = None,
+    project_root: str | None = None,
+) -> JSONResponse:
+    try:
+        from core.project_context import bind_project_context, get_project_context
+        from system.model_persona_panel_review_service import ModelPersonaPanelReviewService, ModelPersonaPanelReviewServiceError
+        context = get_project_context(project_root)
+        with bind_project_context(context):
+            review = ModelPersonaPanelReviewService(context).review(
+                chapter_id=chapter_id, source_version_id=source_version_id,
+                panel_execution_id=panel_execution_id,
+            )
+        return _ok(review.to_dict(), "Deterministic reader persona panel review loaded.")
+    except ModelPersonaPanelReviewServiceError as exc:
+        status = 404 if exc.code == "PANEL_RUN_NOT_FOUND" else 400
+        return _fail("Panel review unavailable", exc.code, status)
+    except Exception:
+        return _fail("Unable to load panel review", "PANEL_REVIEW_ERROR", 500)
+
+
+@router.get("/api/reader-persona/model-panel/runs/{panel_execution_id}/review")
+def api_get_reader_persona_panel_run_review(
+    panel_execution_id: str,
+    chapter_id: int | None = None,
+    source_version_id: str | None = None,
+    project_root: str | None = None,
+) -> JSONResponse:
+    try:
+        from core.project_context import bind_project_context, get_project_context
+        from system.model_persona_panel_review_service import ModelPersonaPanelReviewService, ModelPersonaPanelReviewServiceError
+        context = get_project_context(project_root)
+        with bind_project_context(context):
+            service = ModelPersonaPanelReviewService(context)
+            run = service.panel_store.load_run(panel_execution_id)
+            if run is None:
+                return _fail("Panel run not found", "PANEL_RUN_NOT_FOUND", 404)
+            if chapter_id is not None and run.chapter_id != chapter_id:
+                return _fail("Panel run not found", "PANEL_RUN_NOT_FOUND", 404)
+            review = service.review(
+                chapter_id=run.chapter_id, source_version_id=source_version_id,
+                panel_execution_id=panel_execution_id,
+            )
+        return _ok(review.to_dict(), "Deterministic reader persona panel review loaded.")
+    except ModelPersonaPanelReviewServiceError as exc:
+        status = 404 if exc.code == "PANEL_RUN_NOT_FOUND" else 400
+        return _fail("Panel review unavailable", exc.code, status)
+    except Exception:
+        return _fail("Unable to load panel review", "PANEL_REVIEW_ERROR", 500)

@@ -43,6 +43,8 @@ def archive_chapter(chapter_number: int, data_dir: str | Path = "data", reason: 
             _write_json_atomic(memory_path, updated_memory)
         updated_state = _updated_state(original_state, chapter_number, root, archive_root / "archive_meta.json")
         _write_json_atomic(state_path, updated_state)
+
+        _update_vector_index_on_archive(root.parent, chapter_number)
     except Exception:
         _rollback_moves(moved)
         raise
@@ -66,6 +68,48 @@ def archive_chapter(chapter_number: int, data_dir: str | Path = "data", reason: 
     except Exception as exc:
         result["rolling_window_notice"] = {"changed": False, "warning": f"Rolling window status check failed: {str(exc)[:160]}"}
     return result
+
+
+def _update_vector_index_on_archive(project_root: Path, chapter_number: int) -> None:
+    try:
+        from core.project_context import ProjectContext
+        from system.vector_index_lifecycle import mark_chapter_archived
+        from system.vector_sync_run_store import VectorSyncRunStore, VectorSyncOperationType, VectorSyncStatus
+        
+        context = ProjectContext(project_root)
+        
+        sync_store = VectorSyncRunStore(context)
+        sync_run = sync_store.create(
+            operation_type=VectorSyncOperationType.ARCHIVE,
+            project_id=context.root.name or "default",
+            timeline_id="main",
+            chapter_id=chapter_number,
+        )
+        
+        sync_store.update_status(sync_run.operation_id, VectorSyncStatus.RUNNING)
+        
+        result = mark_chapter_archived(context, chapter_number, timeline_id="main")
+        
+        if result.get("status") == "success":
+            sync_store.update_status(sync_run.operation_id, VectorSyncStatus.COMPLETED)
+        else:
+            sync_store.update_status(sync_run.operation_id, VectorSyncStatus.FAILED, result.get("message", "Unknown error"))
+    except Exception:
+        try:
+            from core.project_context import ProjectContext
+            from system.vector_sync_run_store import VectorSyncRunStore, VectorSyncOperationType, VectorSyncStatus
+            
+            context = ProjectContext(project_root)
+            sync_store = VectorSyncRunStore(context)
+            sync_run = sync_store.create(
+                operation_type=VectorSyncOperationType.ARCHIVE,
+                project_id=context.root.name or "default",
+                timeline_id="main",
+                chapter_id=chapter_number,
+            )
+            sync_store.update_status(sync_run.operation_id, VectorSyncStatus.FAILED, "Archive vector sync failed")
+        except Exception:
+            pass
 
 
 def is_chapter_archived(chapter_number: int, data_dir: str | Path = "data") -> bool:

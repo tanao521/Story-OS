@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Story OS production panel review QA harness</title>
+  <link rel="stylesheet" href="../../../../story-os-demo/web/static/style.css?v=rc2-3">
+  <link rel="stylesheet" href="../../../../story-os-demo/web/static/simulator-panel-review.css?v=rc2-3">
+  <style>
+    /* The harness has no Story OS sidebar/rail; its renderer is the sole grid item. */
+    .dashboard-layout { width: 100%; min-width: 0; grid-template-columns: minmax(0, 1fr); }
+    .dashboard-main { width: 100%; min-width: 0; }
+    .dashboard-main > .storyos-simulator-panel { width: 100%; min-width: 0; }
+  </style>
+</head>
+<body data-storyos-mode="simulator">
+  <main id="dashboard-view" class="dashboard-layout storyos-simulator-active">
+    <section class="dashboard-main">
+      <section id="simulator-panel-review" class="storyos-simulator-panel" aria-labelledby="simulator-panel-review-title">
+        <header class="storyos-simulator-header"><div><span class="eyebrow">QA ONLY / production renderer</span><h2 id="simulator-panel-review-title">模型人格面板复核</h2></div><label>Fixture <select id="fixture-picker"></select></label></header>
+        <div id="simulator-panel-review-root" class="storyos-simulator-review" aria-live="polite"></div>
+      </section>
+    </section>
+  </main>
+  <script src="../../../../story-os-demo/web/static/simulator-panel-review.js?v=rc2-3"></script>
+  <script src="./harness.js?v=rc2-3"></script>
+</body>
+</html>

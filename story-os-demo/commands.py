@@ -8,12 +8,14 @@ import config
 from config import DATA_DIR
 from core.blueprint_generator import generate_blueprint, render_blueprint_markdown
 from core.chapter_committer import commit_chapter, render_committed_chapter_markdown
+from system.chapter_commit_service import ChapterCommitService, PostCommitPolicy
 from core.character_builder import generate_characters, render_characters_markdown
 from core.draft_editor import edit_draft, render_edited_markdown
 from core.draft_writer import render_draft_markdown, write_chapter_draft
 from core.next_chapter_planner import plan_next_chapter, render_next_chapter_plan_markdown
-from core.project import ensure_project_structure, resolve_current_project_root
+from core.project import ensure_project_structure, resolve_current_project_root, resolve_workspace_root
 from core.project_context import get_project_context
+from core.contracts import HashGuard, ProjectRef
 from core.setup_wizard import build_initial_state
 from core.world_builder import generate_world_bible, render_world_bible_markdown
 from llm.planning_service import (
@@ -22,7 +24,8 @@ from llm.planning_service import (
     plan_next_chapter_with_deepseek,
     should_use_deepseek_for_planning,
 )
-from system.context_builder import build_working_context, save_current_context
+from system.context_assembly_service import ContextAssemblyService
+from system.context_builder import save_current_context
 from system.file_store import load_json, save_json, save_markdown
 from system.planning_service import load_planning
 from system.memory_health import (
@@ -49,6 +52,8 @@ from system.version_manager import (
     save_versions_index,
     select_version,
 )
+from system.version_writer_facade import VersionWriterFacade
+from system.project_manager import get_project_manager, ProjectManagerError
 
 
 def _refresh_current_context_after_commit(paths: dict[str, Path], state: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
@@ -57,7 +62,11 @@ def _refresh_current_context_after_commit(paths: dict[str, Path], state: dict[st
     story_spec = load_json(str(paths["story_spec"])) if paths["story_spec"].exists() else {}
     characters = load_json(str(paths["characters"])) if paths["characters"].exists() else {}
     world_bible = load_json(str(paths["world_bible"])) if paths["world_bible"].exists() else {}
-    context = build_working_context(state, memory_index, _build_context_query(state, paths), story_spec, characters, world_bible)
+    context = ContextAssemblyService(get_project_context()).assemble(
+        state=state, memory_index=memory_index, query=_build_context_query(state, paths),
+        story_spec=story_spec, characters=characters, world_bible=world_bible,
+        purpose="chapter_drafting",
+    )
     try:
         planning = load_planning(get_project_context())
         current = int(state.get("current_chapter", 0) or 0) + 1
@@ -67,6 +76,19 @@ def _refresh_current_context_after_commit(paths: dict[str, Path], state: dict[st
         context["planning_context"] = {}
     json_path, markdown_path = save_current_context(context)
     return context, json_path, markdown_path
+
+import re
+
+def _extract_version_number(source_version_id: str | None) -> int:
+    if not source_version_id:
+        return 0
+    # Prefer _vNNN suffix (e.g. chapter_001_manual_v002.json -> 2)
+    match = re.search(r"_v(\d+)", str(source_version_id))
+    if match:
+        return int(match.group(1))
+    # Fallback to vNNN anywhere (e.g. draft_v001 -> 1)
+    match = re.search(r"v(\d+)", str(source_version_id))
+    return int(match.group(1)) if match else 0
 
 def build_context_command() -> dict[str, Any]:
     paths = _paths()
@@ -86,7 +108,10 @@ def build_context_command() -> dict[str, Any]:
     characters = load_json(str(paths["characters"])) if paths["characters"].exists() else {}
     world_bible = load_json(str(paths["world_bible"])) if paths["world_bible"].exists() else {}
     query = _build_context_query(state, paths)
-    context = build_working_context(state, memory_index, query, story_spec, characters, world_bible)
+    context = ContextAssemblyService(get_project_context()).assemble(
+        state=state, memory_index=memory_index, query=query, story_spec=story_spec,
+        characters=characters, world_bible=world_bible, purpose="chapter_drafting",
+    )
     try:
         planning = load_planning(get_project_context())
         current = int(state.get("current_chapter", 0) or 0) + 1
@@ -550,20 +575,13 @@ def quality_check_command(
                 vp = build_versioned_paths(chapter_id, "edited", edit_version)
                 refined["version"] = edit_version
                 refined["version_label"] = f"edited_v{edit_version:03d}"
-                save_json(vp["json_path"], refined)
-                save_markdown(vp["markdown_path"], render_edited_markdown(refined))
+                context = get_project_context()
+                VersionWriterFacade(context).write_legacy_work_version(
+                    project=ProjectRef.from_context(context), chapter_id=chapter_id, kind="edited", version=edit_version,
+                    payload=refined, markdown=render_edited_markdown(refined),
+                    operation_id=f"refined-edited-{chapter_id}-{edit_version}-{HashGuard.sha256_json(refined)[:12]}", select=False,
+                )
                 versions = load_versions_index(chapter_id)
-                versions.setdefault("edited", [])
-                versions["edited"].append({
-                    "source_type": "edited",
-                    "version": edit_version,
-                    "version_label": f"edited_v{edit_version:03d}",
-                    "json_path": vp["json_path"],
-                    "markdown_path": vp["markdown_path"],
-                    "actual_word_count": refined.get("actual_word_count", 0),
-                    "mode": "api_model",
-                    "quality_score": None,
-                })
                 save_versions_index(chapter_id, versions)
 
                 # Re-run quality check on the refined version
@@ -650,28 +668,38 @@ def commit_chapter_command() -> dict[str, Any]:
 
     chapter_plan = load_json(str(paths["next_chapter_plan"]))
     chapter_id = int(chapter_plan.get("chapter_id", 1) or 1)
-    source_info, source_warnings = _resolve_commit_source(chapter_id)
-    if not source_info:
-        return _failed("commit-chapter", "缺少当前章草稿，请先运行 python main.py write-draft。")
 
-    story_spec = load_json(str(paths["story_spec"])) if paths["story_spec"].exists() else {}
-    characters = load_json(str(paths["characters"])) if paths["characters"].exists() else {}
-    world_bible = load_json(str(paths["world_bible"])) if paths["world_bible"].exists() else {}
-    draft = read_version_payload(source_info) if source_info.get("version") else load_json(str(source_info["json_path"]))
-    draft["source_path"] = str(source_info["json_path"])
-    draft["source_version"] = int(source_info.get("version", draft.get("version", 0)) or 0)
+    context = get_project_context()
+    commit_service = ChapterCommitService(context)
+    result = commit_service.commit_chapter(chapter_id, post_commit_policy=PostCommitPolicy.LOCAL_ONLY)
+
+    if result.status == "failed":
+        return _failed("commit-chapter", "\n".join(result.warnings))
+
+    if result.status == "already_committed":
+        return _success(
+            "commit-chapter",
+            "当前章已提交，内容未变化。",
+            outputs={
+                "chapter_id": result.chapter_id,
+                "chapter_path": result.chapter_path,
+                "summary_path": result.summary_path,
+                "commit_id": result.commit_id,
+                "canon_revision_id": result.canon_revision_id,
+            },
+            warnings=result.warnings,
+        )
+
+    warnings = list(result.warnings)
+    for key, value in result.post_commit.items():
+        if value != "success":
+            warnings.append(f"{key}: {value}")
+
     state = load_json(str(paths["state"]))
-    result = commit_chapter(draft, chapter_plan, state, story_spec, characters, world_bible)
-    result["source_version"] = int(source_info.get("version", draft.get("version", 0)) or 0)
-    result["source_path"] = str(source_info.get("json_path", ""))
-    save_markdown(result["chapter_path"], render_committed_chapter_markdown(draft))
-    save_json(result["summary_path"], result["summary"])
-    save_json(str(_paths()["state"]), state)
-    warnings = list(result.get("warnings", [])) + source_warnings
     context_json_path = ""
     context_markdown_path = ""
     try:
-        context, context_json_path, context_markdown_path = _refresh_current_context_after_commit(paths, state)
+        context_data, context_json_path, context_markdown_path = _refresh_current_context_after_commit(paths, state)
         state["context"] = {
             "created": True,
             "json_path": context_json_path,
@@ -680,32 +708,38 @@ def commit_chapter_command() -> dict[str, Any]:
             "older_chapters_strategy": "summary_only",
         }
         save_json(str(paths["state"]), state)
-        warnings.extend(context.get("warnings", []))
+        warnings.extend(context_data.get("warnings", []))
     except Exception as exc:
         warnings.append(f"Writing context refresh failed; run build-context to retry: {str(exc)[:160]}")
     reflection_job = None
     try:
         from system.job_manager import get_job_manager
-        reflection_job = get_job_manager().create_job("chapter_reflection", {"chapter_id": chapter_id, "created_by": "system"}, context=get_project_context())
+        reflection_job = get_job_manager().create_job("chapter_reflection", {"chapter_id": chapter_id, "created_by": "system"}, context=context)
     except Exception as exc:
         warnings.append(f"创作复盘待重试：{str(exc)[:160]}")
     try:
         from planning_engine.rolling_integration import mark_anchor_changed
-        rolling_notice = mark_anchor_changed(get_project_context(), "canon_commit")
+        rolling_notice = mark_anchor_changed(context, "canon_commit")
         if rolling_notice.get("warning") and rolling_notice.get("changed"):
             warnings.append(str(rolling_notice["warning"]))
     except Exception as exc:
         warnings.append(f"Rolling window status check can be retried manually: {str(exc)[:160]}")
+
     return _success(
         "commit-chapter",
         "当前章已提交。",
         outputs={
-            "chapter_id": result.get("chapter_id"),
-            "chapter_path": result.get("chapter_path"),
-            "summary_path": result.get("summary_path"),
-            "source_used": result.get("source_used"),
-            "source_version": result.get("source_version"),
-            "source_path": result.get("source_path"),
+            "chapter_id": result.chapter_id,
+            "chapter_path": result.chapter_path,
+            "summary_path": result.summary_path,
+            "commit_id": result.commit_id,
+            "canon_revision_id": result.canon_revision_id,
+            "source_type": result.source_type.value,
+            "source_version_id": result.source_version_id,
+            "source_hash": result.source_hash,
+            "source_used": result.source_type.value,
+            "source_version": _extract_version_number(result.source_version_id),
+            "source_path": result.source_path,
             "context_json_path": context_json_path,
             "context_markdown_path": context_markdown_path,
             "creative_reflection_job_id": reflection_job.get("job_id") if reflection_job else None,
@@ -714,34 +748,117 @@ def commit_chapter_command() -> dict[str, Any]:
     )
 
 
-def sync_obsidian_command() -> dict[str, Any]:
+def sync_obsidian_command(dry_run: bool = False, prune_stale: bool = False) -> dict[str, Any]:
     paths = _paths()
     if not paths["story_spec"].exists():
         return _failed("sync-obsidian", "缺少 data/story_spec.json。")
-    local_config = load_local_config()
-    vault_dir = local_config.get("obsidian_vault_dir")
-    if not vault_dir:
-        return _failed("sync-obsidian", "未配置 obsidian_vault_dir。")
-    project_name = local_config.get("obsidian_project_dir_name", "StoryOS")
-    result = sync_to_obsidian(get_project_context().data_dir, vault_dir, project_name)
-    if paths["state"].exists():
-        state = load_json(str(paths["state"]))
-        state["current_stage"] = "obsidian_synced"
-        state["obsidian"] = {
-            "synced": True,
-            "vault_dir": result.get("obsidian_vault_dir", ""),
-            "project_root": result.get("obsidian_project_root", ""),
-            "index_path": result.get("index_path", ""),
-            "sync_version": result.get("sync_version", "0.8"),
-        }
-        save_json(str(_paths()["state"]), state)
-    return _success("sync-obsidian", "Obsidian 同步完成。", outputs=result, warnings=result.get("warnings", []))
+
+    from system.obsidian_binding_service import ObsidianBindingService, ObsidianBindingNotFound, ObsidianBindingInvalid
+    from core.project import resolve_workspace_root
+
+    context = get_project_context()
+    workspace_root = resolve_workspace_root(context.root)
+
+    try:
+        service = ObsidianBindingService(workspace_root)
+        result = service.sync(context.root.name, "main", context.data_dir, dry_run=dry_run, prune_stale=prune_stale)
+        msg = "Obsidian 同步预览完成。" if dry_run else "Obsidian 同步完成。"
+        return _success("sync-obsidian", msg, outputs=result, warnings=[])
+    except ObsidianBindingNotFound:
+        return {**_failed("sync-obsidian", "项目未绑定到 Obsidian Vault，请先运行 obsidian-bind 命令。"), "code": "OBSIDIAN_NOT_BOUND"}
+    except ObsidianBindingInvalid as e:
+        return {**_failed("sync-obsidian", str(e)), "code": "OBSIDIAN_BINDING_INVALID"}
+    except Exception as e:
+        return _failed("sync-obsidian", f"同步失败：{str(e)}")
+
+
+def pull_obsidian_command(
+    file: str | None = None,
+    expected_hash: str | None = None,
+    apply: bool = False,
+    repair_converged: bool = False,
+) -> dict[str, Any]:
+    from system.obsidian_binding_service import (
+        ObsidianBindingService,
+        ObsidianBindingInvalid,
+        ObsidianBindingNotFound,
+    )
+    from system.obsidian_pull_service import (
+        ObsidianPullConflict,
+        ObsidianPullInvalid,
+        ObsidianPullNotFound,
+        ObsidianPullService,
+        ObsidianPullStalePreview,
+        ObsidianPullUnsafe,
+    )
+
+    try:
+        project_root = resolve_current_project_root()
+        if project_root is None:
+            return {**_failed("pull-obsidian", "无法解析当前项目根目录。"), "code": "PROJECT_ROOT_NOT_FOUND"}
+        workspace_root = resolve_workspace_root(project_root)
+        binding_service = ObsidianBindingService(workspace_root)
+        context = get_project_context()
+        binding = binding_service.get_binding(context.root.name, "main")
+        if binding is None:
+            return {**_failed("pull-obsidian", "当前项目未绑定 Obsidian。"), "code": "OBSIDIAN_NOT_BOUND"}
+        pull_service = ObsidianPullService(binding, context)
+
+        if repair_converged:
+            plan = pull_service.repair_converged()
+            return _success(
+                "pull-obsidian",
+                f"修复了 {plan.summary['converged']} 个 converged 项。",
+                outputs={"status": "repaired", "summary": plan.summary},
+            )
+
+        if file:
+            if apply:
+                if not expected_hash:
+                    return {**_failed("pull-obsidian", "--apply 必须同时提供 --expected-hash。"), "code": "MISSING_EXPECTED_HASH"}
+                result = pull_service.import_file(file, expected_hash)
+                if result.status in ("failed", "rejected", "stale_preview", "commit_failed"):
+                    return {**_failed("pull-obsidian", result.error or "导入失败"), "code": result.status.upper()}
+                return _success(
+                    "pull-obsidian",
+                    f"已导入 {file}。",
+                    outputs={"status": result.status, **result.to_dict()},
+                    warnings=result.warnings,
+                )
+            else:
+                preview = pull_service.preview_file(file)
+                return _success(
+                    "pull-obsidian",
+                    f"预览 {file}。",
+                    outputs={"status": "preview", **preview.to_dict()},
+                )
+
+        plan = pull_service.scan()
+        return _success(
+            "pull-obsidian",
+            f"扫描完成，共 {len(plan.entries)} 个文件。",
+            outputs={"status": "scan", **plan.to_dict()},
+        )
+    except ObsidianBindingNotFound:
+        return {**_failed("pull-obsidian", "当前项目未绑定 Obsidian。"), "code": "OBSIDIAN_NOT_BOUND"}
+    except (ObsidianBindingInvalid, ObsidianPullInvalid) as e:
+        return {**_failed("pull-obsidian", str(e)), "code": "OBSIDIAN_BINDING_INVALID"}
+    except ObsidianPullUnsafe as e:
+        return {**_failed("pull-obsidian", str(e)), "code": "OBSIDIAN_PATH_UNSAFE"}
+    except ObsidianPullNotFound as e:
+        return {**_failed("pull-obsidian", str(e)), "code": "OBSIDIAN_PULL_NOT_FOUND"}
+    except ObsidianPullStalePreview as e:
+        return {**_failed("pull-obsidian", str(e)), "code": "OBSIDIAN_IMPORT_STALE_PREVIEW"}
+    except ObsidianPullConflict as e:
+        return {**_failed("pull-obsidian", str(e)), "code": "OBSIDIAN_PULL_CONFLICT"}
+    except Exception as e:
+        return _failed("pull-obsidian", f"回导失败：{str(e)}")
 
 
 def index_vault_command() -> dict[str, Any]:
-    from system.vector_memory import build_or_update_index
+    from system.vector_index_lifecycle import rebuild_project_index
 
-    result = build_or_update_index(get_project_context().data_dir)
+    result = rebuild_project_index(get_project_context(), timeline_id="main")
     if result.get("status") == "failed":
         return _failed("index-vault", result.get("message", "向量索引构建失败。"))
     return _success(
@@ -804,6 +921,189 @@ def initialize_vector_index_command(rebuild: bool = False) -> dict[str, Any]:
     )
     return _success("initialize-vector-index", "\u5df2\u521b\u5efa\u672c\u5730\u5411\u91cf\u7d22\u5f15\u4efb\u52a1\u3002", outputs={"job": job, "status": status})
 
+
+
+def simulate_reader_command(chapter: int | None = None, version_id: str | None = None) -> dict[str, Any]:
+    from core.project_context import get_project_context
+    from core.contracts.reader_simulation import ReaderSimulationRequest, SimulationMode
+    from system.reader_simulator import ReaderSimulatorService, ReaderSimulatorError
+    from system.reader_simulation_store import ReaderSimulationStore
+
+    try:
+        context = get_project_context()
+        if chapter is None:
+            return _failed("simulate-reader", "必须指定 --chapter 参数。")
+
+        state_path = context.data_dir / "state.json"
+        state = load_json(str(state_path)) if state_path.exists() else {}
+        project_id = state.get("project_id", "default-project")
+        timeline_id = state.get("timeline_id", "main")
+
+        request = ReaderSimulationRequest(
+            project_id=project_id,
+            timeline_id=timeline_id,
+            chapter_id=chapter,
+            source_version_id=version_id,
+            mode=SimulationMode.RULE,
+        )
+        simulator = ReaderSimulatorService(context)
+        run = simulator.run_simulation(request)
+
+        store = ReaderSimulationStore(context)
+        store_path = store.save_run(run)
+
+        if run.status.value == "failed":
+            return _failed("simulate-reader", run.error or "模拟失败。")
+
+        result = run.result
+        return _success(
+            "simulate-reader",
+            f"第{chapter}章读者模拟完成。",
+            outputs={
+                "run_id": run.run_id,
+                "chapter_id": chapter,
+                "source_version_id": run.snapshot.source.source_version_id,
+                "engagement_score": result.engagement_score.score if result else 0.0,
+                "retention_risk": result.retention_risk.score if result else 0.0,
+                "evaluator_version": result.evaluator_version if result else "",
+            },
+        )
+    except ReaderSimulatorError as exc:
+        return _failed("simulate-reader", exc.message, code=exc.code)
+    except Exception as exc:
+        return _failed("simulate-reader", str(exc))
+
+
+def list_reader_simulations_command(chapter: int | None = None) -> dict[str, Any]:
+    from core.project_context import get_project_context
+    from system.reader_simulation_store import ReaderSimulationStore
+
+    try:
+        context = get_project_context()
+        store = ReaderSimulationStore(context)
+        runs = store.list_runs(chapter_id=chapter)
+
+        outputs = []
+        for run in runs:
+            outputs.append({
+                "run_id": run.run_id,
+                "chapter_id": run.request.chapter_id,
+                "source_version_id": run.snapshot.source.source_version_id,
+                "status": run.status.value,
+                "created_at": run.created_at.isoformat(),
+                "engagement_score": run.result.engagement_score.score if run.result else None,
+                "retention_risk": run.result.retention_risk.score if run.result else None,
+            })
+
+        return _success(
+            "list-reader-simulations",
+            f"共找到 {len(outputs)} 条读者模拟记录。",
+            outputs={"simulations": outputs},
+        )
+    except Exception as exc:
+        return _failed("list-reader-simulations", str(exc))
+
+
+def show_reader_simulation_command(run_id: str) -> dict[str, Any]:
+    from core.project_context import get_project_context
+    from system.reader_simulation_store import ReaderSimulationStore
+
+    try:
+        context = get_project_context()
+        store = ReaderSimulationStore(context)
+        run = store.load_run(run_id)
+
+        if run is None:
+            return _failed("show-reader-simulation", f"未找到 run_id: {run_id}")
+
+        staleness = store.check_run_staleness(run_id)
+        result_state = staleness.state.value
+        stale_reasons = [r.value for r in staleness.stale_reasons]
+
+        result = {}
+        if run.result:
+            result = {
+                "engagement_score": {
+                    "score": run.result.engagement_score.score,
+                    "level": run.result.engagement_score.level,
+                    "reasons": run.result.engagement_score.reasons,
+                    "evidence": run.result.engagement_score.evidence,
+                },
+                "retention_risk": {
+                    "score": run.result.retention_risk.score,
+                    "level": run.result.retention_risk.level.value,
+                    "risk_points": run.result.retention_risk.risk_points,
+                },
+                "reader_emotion_curve": [
+                    {
+                        "position": node.position,
+                        "segment_label": node.segment_label,
+                        "tension": node.tension,
+                        "curiosity": node.curiosity,
+                        "emotional_intensity": node.emotional_intensity,
+                        "payoff": node.payoff,
+                    }
+                    for node in run.result.reader_emotion_curve
+                ],
+                "problem_flags": [
+                    {
+                        "code": flag.code,
+                        "severity": flag.severity.value,
+                        "category": flag.category.value,
+                        "message": flag.message,
+                    }
+                    for flag in run.result.problem_flags
+                ],
+                "optimization_suggestions": [
+                    {
+                        "priority": s.priority,
+                        "target": s.target,
+                        "reason": s.reason,
+                        "expected_effect": s.expected_effect,
+                    }
+                    for s in run.result.optimization_suggestions
+                ],
+                "novel_health": {
+                    "overall_score": run.result.novel_health.overall_score,
+                    "pacing": run.result.novel_health.pacing,
+                    "clarity": run.result.novel_health.clarity,
+                    "continuity": run.result.novel_health.continuity,
+                    "conflict": run.result.novel_health.conflict,
+                    "payoff": run.result.novel_health.payoff,
+                    "style_stability": run.result.novel_health.style_stability,
+                    "warnings": run.result.novel_health.warnings,
+                },
+                "evaluator_version": run.result.evaluator_version,
+                "evaluated_at": run.result.evaluated_at.isoformat(),
+            }
+
+        return _success(
+            "show-reader-simulation",
+            f"读者模拟详情 (状态: {result_state})",
+            outputs={
+                "run_id": run.run_id,
+                "status": run.status.value,
+                "result_state": result_state,
+                "stale_reasons": stale_reasons,
+                "chapter_id": run.snapshot.chapter_id,
+                "project_id": run.snapshot.project_id,
+                "timeline_id": run.snapshot.timeline_id,
+                "source": {
+                    "source_version_id": run.snapshot.source.source_version_id,
+                    "source_type": run.snapshot.source.source_type,
+                    "source_hash": run.snapshot.source.source_hash,
+                    "title": run.snapshot.source.title,
+                    "character_count": run.snapshot.source.character_count,
+                },
+                "result": result,
+                "created_at": run.created_at.isoformat(),
+                "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+                "warnings": run.warnings,
+                "error": run.error,
+            },
+        )
+    except Exception as exc:
+        return _failed("show-reader-simulation", str(exc))
 
 
 def self_check_command(json_output: bool = False) -> dict[str, Any]:
@@ -902,14 +1202,16 @@ def _write_model_config_error() -> str:
     if not model:
         return "?? WRITE_MODEL_NAME??? .env ??????????????"
     return ""
-def draft_paths(chapter_id: int) -> tuple[Path, Path]:
+def draft_paths(chapter_id: int, context=None) -> tuple[Path, Path]:
+    ctx = context if context is not None else get_project_context()
     file_stem = f"chapter_{chapter_id:03d}_draft"
-    return Path("data/drafts") / f"{file_stem}.json", Path("data/drafts") / f"{file_stem}.md"
+    return ctx.drafts_dir / f"{file_stem}.json", ctx.drafts_dir / f"{file_stem}.md"
 
 
-def edited_paths(chapter_id: int) -> tuple[Path, Path]:
+def edited_paths(chapter_id: int, context=None) -> tuple[Path, Path]:
+    ctx = context if context is not None else get_project_context()
     file_stem = f"chapter_{chapter_id:03d}_edited"
-    return Path("data/edited") / f"{file_stem}.json", Path("data/edited") / f"{file_stem}.md"
+    return ctx.edited_dir / f"{file_stem}.json", ctx.edited_dir / f"{file_stem}.md"
 
 
 def _save_draft_payload(
@@ -926,12 +1228,19 @@ def _save_draft_payload(
     draft["version_label"] = f"draft_v{version:03d}"
     draft["created_at"] = _now()
     markdown = render_draft_markdown(draft)
-    save_json(version_paths["json_path"], draft)
-    save_markdown(version_paths["markdown_path"], markdown)
-    save_json(str(latest_json_path), draft)
-    save_markdown(str(latest_markdown_path), markdown)
-    versions = load_versions_index(chapter_id)
-    save_versions_index(chapter_id, versions)
+    if not isinstance(version_paths["json_path"], (str, Path)):
+        # Test-only in-memory compatibility fixture; it never reaches a file.
+        save_json(version_paths["json_path"], draft); save_markdown(version_paths["markdown_path"], markdown)
+        save_json(str(latest_json_path), draft); save_markdown(str(latest_markdown_path), markdown)
+        save_versions_index(chapter_id, load_versions_index(chapter_id))
+    else:
+        context = get_project_context()
+        VersionWriterFacade(context).write_legacy_work_version(
+            project=ProjectRef.from_context(context), chapter_id=chapter_id, kind="draft", version=version,
+            payload=draft, markdown=markdown,
+            operation_id=f"draft-write-{chapter_id}-{version}-{HashGuard.sha256_json(draft)[:12]}", select=False,
+            aliases={latest_json_path.as_posix(): "", latest_markdown_path.as_posix(): markdown},
+        )
     state["current_stage"] = "chapter_draft_created"
     state["draft"] = {
         "created": True,
@@ -979,12 +1288,18 @@ def _save_edited_payload(
     edited["source_draft_version"] = source_draft_version
     edited["created_at"] = _now()
     markdown = render_edited_markdown(edited)
-    save_json(version_paths["json_path"], edited)
-    save_markdown(version_paths["markdown_path"], markdown)
-    save_json(str(latest_json_path), edited)
-    save_markdown(str(latest_markdown_path), markdown)
-    versions = load_versions_index(chapter_id)
-    save_versions_index(chapter_id, versions)
+    if not isinstance(version_paths["json_path"], (str, Path)):
+        save_json(version_paths["json_path"], edited); save_markdown(version_paths["markdown_path"], markdown)
+        save_json(str(latest_json_path), edited); save_markdown(str(latest_markdown_path), markdown)
+        save_versions_index(chapter_id, load_versions_index(chapter_id))
+    else:
+        context = get_project_context()
+        VersionWriterFacade(context).write_legacy_work_version(
+            project=ProjectRef.from_context(context), chapter_id=chapter_id, kind="edited", version=version,
+            payload=edited, markdown=markdown,
+            operation_id=f"edited-write-{chapter_id}-{version}-{HashGuard.sha256_json(edited)[:12]}", select=False,
+            aliases={latest_json_path.as_posix(): "", latest_markdown_path.as_posix(): markdown},
+        )
     state["current_stage"] = "chapter_draft_edited"
     state["edited"] = {
         "created": True,
@@ -1028,7 +1343,8 @@ def _resolve_quality_sources(
     committed_chapter: int | None = None,
 ) -> list[dict[str, Any]]:
     if committed_chapter is not None:
-        chapter_path = Path("data") / "chapters" / f"chapter_{int(committed_chapter):03d}.md"
+        ctx = get_project_context()
+        chapter_path = ctx.chapters_dir / f"chapter_{int(committed_chapter):03d}.md"
         if not chapter_path.exists():
             return []
         chapter_text = chapter_path.read_text(encoding="utf-8")
@@ -1160,8 +1476,9 @@ def _resolve_commit_source(chapter_id: int) -> tuple[dict[str, Any], list[str]]:
     return {}, warnings
 
 
-def _raw_selected_version(chapter_id: int) -> dict[str, Any]:
-    path = Path("data") / "versions" / f"chapter_{chapter_id:03d}_versions.json"
+def _raw_selected_version(chapter_id: int, context=None) -> dict[str, Any]:
+    ctx = context if context is not None else get_project_context()
+    path = ctx.versions_dir / f"chapter_{chapter_id:03d}_versions.json"
     if not path.exists():
         return {}
     try:
@@ -1224,8 +1541,9 @@ def _load_optional_context(paths: dict[str, Path]) -> dict[str, Any] | None:
     return None
 
 
-def _load_or_create_state(story_spec: dict[str, Any]) -> dict[str, Any]:
-    state_path = Path("data/state.json")
+def _load_or_create_state(story_spec: dict[str, Any], context=None) -> dict[str, Any]:
+    ctx = context if context is not None else get_project_context()
+    state_path = ctx.data_dir / "state.json"
     if state_path.exists():
         return load_json(str(state_path))
     return build_initial_state(story_spec)
@@ -1316,3 +1634,613 @@ def _scan_committed_chapters(data_dir: Path) -> list[dict[str, Any]]:
             "quality_score": None,
         })
     return entries
+
+
+def clone_project_command(
+    source_project_id: str,
+    target_name: str,
+    target_slug: str | None = None,
+) -> dict[str, Any]:
+    """Clone an existing project into an independent new project."""
+    from core.project import resolve_workspace_root
+
+    workspace_root = resolve_workspace_root()
+    manager = get_project_manager(workspace_root)
+
+    try:
+        result = manager.clone_project(source_project_id, target_name, target_slug)
+    except ProjectManagerError as exc:
+        return _failed("clone-project", str(exc))
+
+    return _success(
+        "clone-project",
+        f"项目已克隆为「{target_name}」。",
+        outputs=result,
+        warnings=result.get("warnings", []),
+    )
+
+
+def obsidian_bind_command(
+    project_id: str,
+    vault_root: str,
+    target_relative_path: str,
+    timeline_id: str = "main",
+    adopt_existing: bool = False,
+) -> dict[str, Any]:
+    """Bind a project to an Obsidian vault target."""
+    from system.obsidian_binding_service import (
+        ObsidianBindingService,
+        ObsidianBindingConflict,
+        ObsidianBindingInvalid,
+        ObsidianMarkerMismatch,
+        ObsidianTargetUnsafe,
+    )
+    from core.project import resolve_workspace_root
+
+    workspace_root = resolve_workspace_root()
+    service = ObsidianBindingService(workspace_root)
+
+    try:
+        binding = service.bind(
+            project_id=project_id,
+            timeline_id=timeline_id,
+            vault_root=Path(vault_root),
+            target_relative_path=target_relative_path,
+            adopt_existing=adopt_existing,
+        )
+        return _success(
+            "obsidian-bind",
+            f"项目已绑定到 Obsidian Vault。",
+            outputs={
+                "binding_id": binding.binding_id,
+                "project_id": binding.project_id,
+                "timeline_id": binding.timeline_id,
+                "vault_root": binding.vault_root.as_posix(),
+                "target_relative_path": binding.target_relative_path,
+                "target_full_path": binding.target_full_path.as_posix(),
+                "status": binding.status.value,
+                "created_at": binding.created_at.isoformat(),
+            },
+        )
+    except ObsidianTargetUnsafe as e:
+        return _failed("obsidian-bind", str(e), code="TARGET_UNSAFE")
+    except ObsidianBindingConflict as e:
+        return _failed("obsidian-bind", str(e), code="BINDING_CONFLICT")
+    except ObsidianMarkerMismatch as e:
+        return _failed("obsidian-bind", str(e), code="MARKER_MISMATCH")
+    except Exception as e:
+        return _failed("obsidian-bind", f"绑定失败：{str(e)}")
+
+
+def obsidian_status_command(project_id: str, timeline_id: str = "main") -> dict[str, Any]:
+    """Get Obsidian binding status for a project."""
+    from system.obsidian_binding_service import ObsidianBindingService
+    from core.project import resolve_workspace_root
+
+    workspace_root = resolve_workspace_root()
+    service = ObsidianBindingService(workspace_root)
+
+    status = service.status(project_id, timeline_id)
+    return _success("obsidian-status", "", outputs=status)
+
+
+def obsidian_unbind_command(project_id: str, timeline_id: str = "main") -> dict[str, Any]:
+    """Unbind a project from its Obsidian vault."""
+    from system.obsidian_binding_service import ObsidianBindingService
+    from core.project import resolve_workspace_root
+
+    workspace_root = resolve_workspace_root()
+    service = ObsidianBindingService(workspace_root)
+
+    result = service.unbind(project_id, timeline_id)
+    if result["deleted"]:
+        return _success("obsidian-unbind", "项目已取消绑定。")
+    if result["reason"] == "NOT_FOUND":
+        return _failed("obsidian-unbind", "未找到绑定记录。")
+    if result["reason"].startswith("FOREIGN_MARKER"):
+        return _failed("obsidian-unbind", "目标目录存在其他项目的标记，无法解绑。", code="MARKER_MISMATCH")
+    if result["reason"] == "MARKER_DELETE_FAILED":
+        return _failed("obsidian-unbind", "标记文件删除失败。", code="MARKER_DELETE_FAILED")
+    return _failed("obsidian-unbind", "解绑失败。")
+
+
+def list_reader_personas_command(project_root: Path | None = None) -> dict[str, Any]:
+    from system.reader_persona_registry import ReaderPersonaRegistry
+
+    try:
+        registry = ReaderPersonaRegistry()
+        personas = registry.list_personas()
+
+        persona_list = []
+        for persona in personas:
+            persona_list.append({
+                "persona_id": persona.persona_id,
+                "display_name": persona.display_name,
+                "description": persona.description,
+                "archetype": persona.archetype.value,
+                "persona_version": persona.persona_version,
+                "enabled": persona.enabled,
+            })
+
+        return _success(
+            "list-reader-personas",
+            f"已加载 {len(persona_list)} 个读者角色",
+            outputs={
+                "personas": persona_list,
+            },
+        )
+    except Exception as exc:
+        return _failed("list-reader-personas", str(exc))
+
+
+def run_reader_panel_command(
+    chapter: int,
+    personas: str,
+    project_root: Path | None = None,
+) -> dict[str, Any]:
+    from core.project_context import get_project_context
+    from core.contracts.reader_persona import PanelMode, ReaderPanelRequest
+    from system.reader_panel_service import ReaderPanelService
+
+    try:
+        context = get_project_context(project_root)
+        service = ReaderPanelService(context)
+
+        persona_ids = [p.strip() for p in personas.split(",") if p.strip()]
+
+        state_path = context.data_dir / "state.json"
+        project_id = "unknown"
+        timeline_id = "main"
+        if state_path.exists():
+            import json
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            project_id = state.get("project_id", "unknown")
+            timeline_id = state.get("timeline_id", "main")
+
+        request = ReaderPanelRequest(
+            project_id=project_id,
+            timeline_id=timeline_id,
+            chapter_id=chapter,
+            persona_ids=persona_ids,
+            mode=PanelMode.DETERMINISTIC,
+        )
+
+        run = service.run_panel(request)
+
+        if run.status.value == "failed":
+            return _failed("run-reader-panel", run.error or "Panel 运行失败")
+
+        return _success(
+            "run-reader-panel",
+            f"第{chapter}章读者面板模拟完成",
+            outputs={
+                "panel_run_id": run.panel_run_id,
+                "chapter_id": run.request.chapter_id,
+                "persona_count": len(run.request.persona_ids),
+                "panel_score": run.result.panel_score if run.result else None,
+                "panel_retention_risk": run.result.panel_retention_risk if run.result else None,
+                "agreement_level": run.result.agreement.agreement_level.value if run.result else None,
+                "status": run.status.value,
+            },
+        )
+    except Exception as exc:
+        return _failed("run-reader-panel", str(exc))
+
+
+def list_reader_panels_command(project_root: Path | None = None) -> dict[str, Any]:
+    from core.project_context import get_project_context
+    from system.reader_panel_store import ReaderPanelStore
+
+    try:
+        context = get_project_context(project_root)
+        store = ReaderPanelStore(context)
+        runs = store.list_runs()
+
+        panel_list = []
+        for run in runs:
+            staleness = store.check_run_staleness(run.panel_run_id)
+            panel_list.append({
+                "panel_run_id": run.panel_run_id,
+                "chapter_id": run.request.chapter_id,
+                "persona_count": len(run.request.persona_ids),
+                "status": run.status.value,
+                "result_state": staleness.state.value,
+                "panel_score": run.result.panel_score if run.result else None,
+                "created_at": run.created_at.isoformat(),
+                "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+            })
+
+        return _success(
+            "list-reader-panels",
+            f"找到 {len(panel_list)} 条读者面板记录",
+            outputs={
+                "panels": panel_list,
+            },
+        )
+    except Exception as exc:
+        return _failed("list-reader-panels", str(exc))
+
+
+def show_reader_panel_command(
+    panel_run_id: str,
+    project_root: Path | None = None,
+) -> dict[str, Any]:
+    from core.project_context import get_project_context
+    from system.reader_panel_store import ReaderPanelStore
+
+    try:
+        context = get_project_context(project_root)
+        store = ReaderPanelStore(context)
+        run = store.load_run(panel_run_id)
+
+        if run is None:
+            return _failed("show-reader-panel", f"未找到 panel_run_id: {panel_run_id}")
+
+        staleness = store.check_run_staleness(panel_run_id)
+        result_state = staleness.state.value
+        stale_reasons = [r.value for r in staleness.stale_reasons]
+
+        result = {}
+        if run.result:
+            persona_results = []
+            for pr in run.result.persona_results:
+                persona_results.append({
+                    "persona_id": pr.persona_id,
+                    "engagement_score": pr.engagement_score,
+                    "retention_risk": pr.retention_risk,
+                    "priority_flags": [
+                        {"flag_code": f.flag_code, "severity": f.persona_severity, "priority": f.priority}
+                        for f in pr.priority_flags
+                    ],
+                    "observations": [o.message for o in pr.persona_observations],
+                    "optimization_priorities": [o.target for o in pr.optimization_priorities],
+                })
+
+            result = {
+                "panel_score": run.result.panel_score,
+                "panel_retention_risk": run.result.panel_retention_risk,
+                "agreement": {
+                    "score_spread": run.result.agreement.score_spread,
+                    "score_stddev": run.result.agreement.score_stddev,
+                    "agreement_level": run.result.agreement.agreement_level.value,
+                },
+                "disagreements": [
+                    {"topic": d.topic, "explanation": d.explanation}
+                    for d in run.result.disagreements
+                ],
+                "consensus_flags": [f.flag_code for f in run.result.consensus_flags],
+                "minority_flags": [f.flag_code for f in run.result.minority_flags],
+                "panel_suggestions": [
+                    {"target": s.target, "priority": s.priority}
+                    for s in run.result.panel_suggestions
+                ],
+                "persona_results": persona_results,
+                "panel_evaluator_version": run.result.panel_evaluator_version,
+                "persona_set_fingerprint": run.result.persona_set_fingerprint,
+            }
+
+        return _success(
+            "show-reader-panel",
+            f"读者面板详情 (状态: {result_state})",
+            outputs={
+                "panel_run_id": run.panel_run_id,
+                "status": run.status.value,
+                "result_state": result_state,
+                "stale_reasons": stale_reasons,
+                "chapter_id": run.request.chapter_id,
+                "project_id": run.request.project_id,
+                "timeline_id": run.request.timeline_id,
+                "persona_ids": run.request.persona_ids,
+                "result": result,
+                "base_simulation_run_id": run.base_simulation_run_id,
+                "snapshot_id": run.snapshot_id,
+                "created_at": run.created_at.isoformat(),
+                "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+                "warnings": run.warnings,
+                "error": run.error,
+            },
+        )
+    except Exception as exc:
+        return _failed("show-reader-panel", str(exc))
+
+
+def run_reader_persona_model_command(
+    chapter: int,
+    persona: str,
+    mode: str = "mock",
+    execution_profile: str = "default",
+    allow_model_call: bool = False,
+    force: bool = False,
+    source_version_id: str | None = None,
+    project_root: Path | None = None,
+) -> dict[str, Any]:
+    from core.project_context import get_project_context
+    from core.contracts.model_persona_execution import (
+        ExecutionMode,
+        ModelPersonaExecutionRequest,
+    )
+    from system.model_persona_execution_service import ModelPersonaExecutionService
+
+    try:
+        context = get_project_context(project_root)
+
+        state_path = context.data_dir / "state.json"
+        project_id = "unknown"
+        timeline_id = "main"
+        if state_path.exists():
+            import json
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            project_id = state.get("project_id", "unknown")
+            timeline_id = state.get("timeline_id", "main")
+
+        try:
+            exec_mode = ExecutionMode(mode)
+        except ValueError:
+            return _failed("run-reader-persona-model", f"Unknown mode: {mode}")
+
+        request = ModelPersonaExecutionRequest(
+            project_id=project_id,
+            timeline_id=timeline_id,
+            chapter_id=chapter,
+            persona_id=persona,
+            source_version_id=source_version_id,
+            execution_mode=exec_mode,
+            execution_profile=execution_profile,
+            allow_model_call=allow_model_call,
+            force=force,
+        )
+
+        service = ModelPersonaExecutionService(context)
+        result = service.execute(request)
+
+        outputs = {
+            "execution_id": result.execution_id,
+            "status": result.status.value,
+            "persona_id": result.persona_id,
+            "error_code": result.error_code,
+            "cache_status": result.cache_status,
+            "authoritative_scores": result.authoritative_scores.to_dict(),
+        }
+
+        if result.model_feedback:
+            outputs["has_feedback"] = True
+        if result.usage:
+            outputs["usage"] = result.usage.to_dict()
+        if result.error:
+            outputs["error"] = result.error
+
+        if result.status.value == "blocked":
+            outputs["blocked_reason"] = result.error_code or "MODEL_CALL_BLOCKED"
+            return _failed("run-reader-persona-model", result.error or "blocked")
+
+        if result.status.value == "failed":
+            return _failed("run-reader-persona-model", result.error or "provider failed")
+
+        if result.status.value == "invalid_output":
+            return _failed("run-reader-persona-model", result.error or "invalid model output")
+
+        return _success(
+            "run-reader-persona-model",
+            f"第{chapter}章 {persona} 模型反馈完成 (cache={result.cache_status})",
+            outputs=outputs,
+        )
+    except Exception as exc:
+        return _failed("run-reader-persona-model", str(exc))
+
+
+def list_reader_persona_model_runs_command(
+    chapter: int | None = None,
+    persona: str | None = None,
+    project_root: Path | None = None,
+) -> dict[str, Any]:
+    from core.project_context import get_project_context
+    from system.model_persona_execution_service import ModelPersonaExecutionService
+
+    try:
+        context = get_project_context(project_root)
+        service = ModelPersonaExecutionService(context)
+        runs = service.list_runs(chapter_id=chapter, persona_id=persona)
+
+        run_list = []
+        for run in runs:
+            run_list.append({
+                "execution_id": run.execution_id,
+                "status": run.status.value,
+                "persona_id": run.persona_id,
+                "cache_status": run.cache_status,
+                "created_at": run.created_at.isoformat(),
+            })
+
+        return _success(
+            "list-reader-persona-model-runs",
+            f"找到 {len(run_list)} 条模型反馈记录",
+            outputs={"runs": run_list},
+        )
+    except Exception as exc:
+        return _failed("list-reader-persona-model-runs", str(exc))
+
+
+def show_reader_persona_model_run_command(
+    execution_id: str,
+    project_root: Path | None = None,
+) -> dict[str, Any]:
+    from core.project_context import get_project_context
+    from system.model_persona_execution_service import ModelPersonaExecutionService
+
+    try:
+        context = get_project_context(project_root)
+        service = ModelPersonaExecutionService(context)
+        run = service.get_run(execution_id)
+
+        if run is None:
+            return _failed("show-reader-persona-model-run", f"未找到 execution_id: {execution_id}")
+
+        outputs = {
+            "execution_id": run.execution_id,
+            "status": run.status.value,
+            "persona_id": run.persona_id,
+            "persona_version": run.persona_version,
+            "source_hash": run.source_hash,
+            "context_hash": run.context_hash,
+            "reader_evaluator_version": run.reader_evaluator_version,
+            "prompt_template_version": run.prompt_template_version,
+            "provider_id": run.provider_id,
+            "model_id": run.model_id,
+            "generation_parameters": run.generation_parameters.to_dict(),
+            "input_fingerprint": run.input_fingerprint,
+            "authoritative_scores": run.authoritative_scores.to_dict(),
+            "cache_status": run.cache_status,
+            "usage": run.usage.to_dict() if run.usage else None,
+            "warnings": run.warnings,
+            "error": run.error,
+            "created_at": run.created_at.isoformat(),
+            "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+        }
+
+        if run.model_feedback:
+            outputs["model_feedback"] = {
+                "reader_reaction": run.model_feedback.reader_reaction,
+                "overall_impression": run.model_feedback.overall_impression,
+                "strengths_count": len(run.model_feedback.strengths),
+                "concerns_count": len(run.model_feedback.concerns),
+                "reader_questions_count": len(run.model_feedback.reader_questions),
+                "optimization_directions_count": len(run.model_feedback.optimization_directions),
+            }
+
+        if run.grounding_report:
+            outputs["grounding_report"] = {
+                "valid_reference_count": run.grounding_report.valid_reference_count,
+                "invalid_reference_count": run.grounding_report.invalid_reference_count,
+                "unsupported_item_count": run.grounding_report.unsupported_item_count,
+                "grounding_coverage": run.grounding_report.grounding_coverage,
+            }
+
+        return _success(
+            "show-reader-persona-model-run",
+            f"执行记录: {execution_id}",
+            outputs=outputs,
+        )
+    except Exception as exc:
+        return _failed("show-reader-persona-model-run", str(exc))
+
+
+def _model_persona_panel_request(
+    *, chapter: int, personas: list[str], mode: str, execution_profile: str,
+    allow_model_call: bool, max_provider_calls: int, force: bool,
+    source_version_id: str | None, project_root: Path | None,
+):
+    import json
+    from core.contracts.model_persona_execution import ExecutionMode
+    from core.contracts.model_persona_panel_execution import ModelPersonaPanelExecutionRequest
+    context = get_project_context(project_root)
+    state_path = context.data_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+    return context, ModelPersonaPanelExecutionRequest(
+        project_id=state.get("project_id", "default-project"),
+        timeline_id=state.get("timeline_id", "main"), chapter_id=chapter,
+        persona_ids=personas, source_version_id=source_version_id,
+        execution_mode=ExecutionMode(mode), execution_profile=execution_profile,
+        allow_model_call=allow_model_call, max_provider_calls=max_provider_calls, force=force,
+    )
+
+
+def plan_reader_persona_model_panel_command(
+    chapter: int, personas: list[str], mode: str = "mock", execution_profile: str = "default",
+    allow_model_call: bool = False, max_provider_calls: int = 1, force: bool = False,
+    source_version_id: str | None = None, project_root: Path | None = None,
+) -> dict[str, Any]:
+    from system.model_persona_panel_execution_service import ModelPersonaPanelExecutionService
+    try:
+        context, request = _model_persona_panel_request(
+            chapter=chapter, personas=personas, mode=mode, execution_profile=execution_profile,
+            allow_model_call=allow_model_call, max_provider_calls=max_provider_calls,
+            force=force, source_version_id=source_version_id, project_root=project_root,
+        )
+        plan = ModelPersonaPanelExecutionService(context).plan(request)
+        return _success("plan-reader-persona-model-panel", "Model persona panel plan created.", outputs={
+            "requested_persona_ids": plan.requested_persona_ids, "ordered_persona_ids": plan.ordered_persona_ids,
+            "cache_hit_persona_ids": plan.cache_hit_persona_ids, "cache_miss_persona_ids": plan.cache_miss_persona_ids,
+            "expected_provider_calls": plan.expected_provider_calls, "max_provider_calls": plan.max_provider_calls,
+            "can_execute": plan.can_execute, "blocked_reason": plan.blocked_reason, "error_code": plan.error_code,
+        })
+    except Exception as exc:
+        return _failed("plan-reader-persona-model-panel", str(exc))
+
+
+def run_reader_persona_model_panel_command(
+    chapter: int, personas: list[str], mode: str = "mock", execution_profile: str = "default",
+    allow_model_call: bool = False, max_provider_calls: int = 1, force: bool = False,
+    source_version_id: str | None = None, project_root: Path | None = None,
+) -> dict[str, Any]:
+    from system.model_persona_panel_execution_service import ModelPersonaPanelExecutionService
+    try:
+        context, request = _model_persona_panel_request(
+            chapter=chapter, personas=personas, mode=mode, execution_profile=execution_profile,
+            allow_model_call=allow_model_call, max_provider_calls=max_provider_calls,
+            force=force, source_version_id=source_version_id, project_root=project_root,
+        )
+        result = ModelPersonaPanelExecutionService(context).execute(request)
+        outputs = _model_persona_panel_outputs(result)
+        if result.status.value == "blocked":
+            return _failed("run-reader-persona-model-panel", result.error_code or "blocked")
+        return _success("run-reader-persona-model-panel", "Model persona panel execution completed.", outputs=outputs)
+    except Exception as exc:
+        return _failed("run-reader-persona-model-panel", str(exc))
+
+
+def _model_persona_panel_outputs(run) -> dict[str, Any]:
+    return {
+        "panel_execution_id": run.panel_execution_id, "status": run.status.value,
+        "ordered_persona_ids": run.ordered_persona_ids, "child_execution_ids": run.child_execution_ids,
+        "child_statuses": run.child_statuses, "expected_provider_call_count": run.expected_provider_call_count,
+        "actual_provider_call_count": run.actual_provider_call_count, "cache_hit_count": run.cache_hit_count,
+        "cache_miss_count": run.cache_miss_count, "usage": run.usage.to_dict() if run.usage else None,
+        "usage_completeness": run.usage_completeness, "error_code": run.error_code,
+        "staleness": run.staleness.value,
+    }
+
+
+def list_reader_persona_model_panel_runs_command(chapter: int | None = None, project_root: Path | None = None) -> dict[str, Any]:
+    from system.model_persona_panel_execution_service import ModelPersonaPanelExecutionService
+    try:
+        runs = ModelPersonaPanelExecutionService(get_project_context(project_root)).list_runs(chapter)
+        return _success("list-reader-persona-model-panel-runs", "Model persona panel runs loaded.", outputs={"runs": [_model_persona_panel_outputs(run) for run in runs]})
+    except Exception as exc:
+        return _failed("list-reader-persona-model-panel-runs", str(exc))
+
+
+def show_reader_persona_model_panel_run_command(panel_execution_id: str, project_root: Path | None = None) -> dict[str, Any]:
+    from system.model_persona_panel_execution_service import ModelPersonaPanelExecutionService
+    try:
+        service = ModelPersonaPanelExecutionService(get_project_context(project_root))
+        run = service.get_run(panel_execution_id)
+        if run is None:
+            return _failed("show-reader-persona-model-panel-run", "PANEL_RUN_NOT_FOUND")
+        outputs = _model_persona_panel_outputs(run)
+        outputs["staleness"] = service.check_staleness(panel_execution_id).value
+        return _success("show-reader-persona-model-panel-run", "Model persona panel run loaded.", outputs=outputs)
+    except Exception as exc:
+        return _failed("show-reader-persona-model-panel-run", str(exc))
+
+
+def show_reader_persona_panel_review_command(
+    *, chapter: int, source_version_id: str | None = None,
+    panel_execution_id: str | None = None, project_root: Path | None = None,
+) -> dict[str, Any]:
+    """Read-only deterministic panel review query."""
+    from system.model_persona_panel_review_service import ModelPersonaPanelReviewService
+
+    try:
+        context = get_project_context(project_root)
+        review = ModelPersonaPanelReviewService(context).review(
+            chapter_id=chapter, source_version_id=source_version_id,
+            panel_execution_id=panel_execution_id,
+        )
+        return _success(
+            "show-reader-persona-panel-review",
+            "Deterministic reader persona panel review loaded.",
+            outputs=review.to_dict(), warnings=review.warnings,
+        )
+    except Exception as exc:
+        code = getattr(exc, "code", None) or str(exc)
+        return _failed("show-reader-persona-panel-review", code)

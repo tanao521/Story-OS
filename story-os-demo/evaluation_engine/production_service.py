@@ -12,9 +12,11 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+from core.contracts import HashExpectation, HashGuard, OperationEnvelope, ProjectRef
 from core.project_context import ProjectContext
 from llm.run_recorder import RunRecorder
 from system.data_store import DataStore
+from system.safe_write import DataStoreWriteFacade
 
 from .planning_comparison import PlanningEvaluationComparisonService
 from .planning_evaluation import PlanningEvaluationService
@@ -50,6 +52,7 @@ def _paginate(rows: list[dict[str, Any]], cursor: str = "", limit: int = 20) -> 
 class EvaluationProductionService:
     def __init__(self, context: ProjectContext) -> None:
         self.context, self.store = context, DataStore(context)
+        self.writer = DataStoreWriteFacade(context)
 
     def usage_events(self, *, cursor: str = "", limit: int = 20, **filters: Any) -> dict[str, Any]:
         rows = []
@@ -123,18 +126,41 @@ class EvaluationProductionService:
         return {"preview_id": preview_id, "items": items, "count": len(items)}
 
     def cleanup(self, payload: dict[str, Any]) -> dict[str, Any]:
-        preview = self.maintenance_preview(); expected = sorted(map(str, payload.get("expected_item_ids") or []))
+        expected = sorted(map(str, payload.get("expected_item_ids") or []))
         if not str(payload.get("operation_id") or "").strip(): raise EvaluationProductionError("EVALUATION_MAINTENANCE_OPERATION_REQUIRED", "operation_id is required.")
-        if payload.get("preview_id") != preview["preview_id"] or expected != sorted(item["item_id"] for item in preview["items"]):
-            raise EvaluationProductionError("EVALUATION_MAINTENANCE_PREVIEW_STALE", "The cleanup preview no longer matches the expired previews.")
         audit_path = "data/evaluations/maintenance_audit.json"; audit = self.store.read_json(audit_path, default=[], expected_type=list) or []
         operation_id = str(payload["operation_id"])
+        request_hash = HashGuard.sha256_json({"preview_id": str(payload.get("preview_id") or ""), "expected_item_ids": expected})
         previous = next((item for item in audit if item.get("operation_id") == operation_id), None)
-        if previous: return {"deleted_item_ids": previous.get("deleted_item_ids", []), "replayed": True}
+        if previous:
+            if previous.get("request_fingerprint") == request_hash:
+                return {"deleted_item_ids": previous.get("deleted_item_ids", []), "replayed": True}
+            raise EvaluationProductionError("EVALUATION_MAINTENANCE_OPERATION_CONFLICT", "operation_id was already used for a different cleanup request.")
+        preview = self.maintenance_preview()
+        if payload.get("preview_id") != preview["preview_id"] or expected != sorted(item["item_id"] for item in preview["items"]):
+            raise EvaluationProductionError("EVALUATION_MAINTENANCE_PREVIEW_STALE", "The cleanup preview no longer matches the expired previews.")
         for item in preview["items"]: self.store.path(item["path"]).unlink(missing_ok=True)
-        record = {"operation_id": operation_id, "preview_id": preview["preview_id"], "deleted_item_ids": expected, "created_at": _now()}
-        self.store.write_json(audit_path, (audit + [record])[-200:])
-        return {"deleted_item_ids": expected, "replayed": False}
+        project = ProjectRef.from_context(self.context)
+        operation = OperationEnvelope(
+            operation_id=operation_id,
+            operation_type="maintenance_cleanup",
+            project_id=project.project_id,
+            target_type="maintenance_audit",
+            target_id="evaluation_maintenance",
+            expected_hashes={"cleanup_request": request_hash},
+            confirmed=True,
+            reason="expired_preview_cleanup",
+        )
+        audit_file = self.store.path(audit_path)
+        before_hash = HashGuard.file_sha256(audit_file) if audit_file.exists() else None
+        next_audit = (audit + [{"operation_id": operation_id, "preview_id": preview["preview_id"], "deleted_item_ids": expected, "created_at": _now(), "request_fingerprint": request_hash}])[-200:]
+        expectation = HashExpectation(
+            expected_sha256=before_hash,
+            candidate_sha256=HashGuard.sha256_json(next_audit),
+            allow_missing_target=before_hash is None,
+        )
+        write = self.writer.replace_json(project=project, target_path=audit_path, payload=next_audit, operation=operation, expectation=expectation)
+        return {"deleted_item_ids": expected, "replayed": False, "audit": write.public_view()}
 
     def health(self) -> dict[str, Any]:
         index = self.store.read_json("data/evaluations/index.json", default={"reports": []}, expected_type=dict)

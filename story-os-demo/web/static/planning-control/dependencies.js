@@ -6,7 +6,7 @@
   const escape = value => String(value ?? "").replace(/[&<>\"]/g, character => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[character]));
   const operationId = () => globalThis.crypto?.randomUUID?.() || `dependency_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   const note = value => { const element = $("planning-dependency-notice"); if (element) element.textContent = value; };
-  const request = async (path, options = {}) => { const response = await fetch(path, options); const value = await response.json(); if (!value.ok) { const error = new Error(value.message || "操作未完成"); error.code = value.error_code || (value.errors || [])[0]; error.details = value.details || {}; throw error; } return value.result; };
+  const request = async (path, options = {}) => { const value = await window.storyosApiRequest(path, options); if (!value.ok) { const error = new Error(value.message || "操作未完成"); error.code = value.error_code || (value.errors || [])[0]; error.details = value.details || {}; throw error; } return value.result; };
   const post = (path, payload) => request(path, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)});
   const mutation = values => ({expected_dependency_revision: state.revision, operation_id: operationId(), ...values});
   const nodeValue = node => `${node.node_type}|${node.node_id}`;

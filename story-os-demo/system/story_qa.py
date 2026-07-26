@@ -113,10 +113,12 @@ def search_vector_memory_if_available(
     if not report_path.exists():
         return []
 
-    from system.vector_memory import search_similar
+    from core.project_context import ProjectContext
+    from system.vector_index_lifecycle import search_similar
 
     try:
-        results = search_similar(question, data_dir, max_results)
+        context = ProjectContext(Path(data_dir).parent)
+        results = search_similar(context, question, timeline_id="main", max_results=max_results)
         if results:
             return results
     except Exception:

@@ -9,7 +9,7 @@
   const operationId = () => globalThis.crypto?.randomUUID?.() || `rolling_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   const sameGeneration = (generation, projectId = "") => generation === lifecycle.requestGeneration && (!projectId || !lifecycle.activeProjectId || projectId === lifecycle.activeProjectId);
   const request = async (path, options = {}) => {
-    const response = await fetch(path, options); const value = await response.json();
+    const value = await window.storyosApiRequest(path, options);
     if (!value.ok) { const error = new Error(value.message || value.error_code || "操作失败"); error.code = value.error_code; error.details = value.details || {}; throw error; }
     return value.result;
   };

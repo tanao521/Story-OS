@@ -6,11 +6,28 @@ from typing import Any
 
 from core.project_context import ProjectContext, get_project_context
 from system.data_store import DataStore, DataWriteError
+from system.planning_mutation_service import PlanningMutationError, PlanningMutationService
 
 from .conflict_service import ConflictService
 from .models import MILESTONE_STATUSES, MILESTONE_TYPES, base_entity, content_hash, new_id, now
 from .source_service import SourceService
 from .version_service import VersionService
+
+
+class _PlanningWriteStoreAdapter:
+    """Keep legacy DataStore failure hooks observable behind the write facade."""
+
+    def __init__(self, store: DataStore) -> None:
+        self._store = store
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._store, name)
+
+    def write_json(self, path: Any, data: Any, **kwargs: Any) -> None:
+        self._store.write_json(self._store.path(path), data, **kwargs)
+
+    def write_text(self, path: Any, content: str, **kwargs: Any) -> None:
+        self._store.write_text(self._store.path(path), content, **kwargs)
 
 
 class PlanningControlError(RuntimeError):
@@ -31,6 +48,14 @@ class PlanningControlService:
         self.project_id = self.context.root.resolve().as_posix()
         self.sources = SourceService(self.context)
         self.versions = VersionService(self.context)
+        self._mutations = PlanningMutationService(self.context)
+        # Keep the legacy DataStore seam observable for existing controlled
+        # failure tests while all actual persistence still enters the facade.
+        self._mutations.writer.store = _PlanningWriteStoreAdapter(self.store)
+
+    @property
+    def mutations(self) -> PlanningMutationService:
+        return self._mutations
 
     def overview(self) -> dict[str, Any]:
         data = self._read()
@@ -245,8 +270,8 @@ class PlanningControlService:
             raise PlanningControlError("PLANNING_CONTROL_WRITE_FAILED", str(exc)) from exc
         prepared.setdefault("anchor", {})["planning_control_version_id"] = version["version_id"]
         try:
-            self.store.write_json(self.context.rolling_window_path, prepared)
-        except DataWriteError as exc:
+            self.mutations.legacy_write("rolling_window", prepared, mutation_type=event, operation_id=operation_id, reason=reason or event)
+        except (DataWriteError, PlanningMutationError) as exc:
             raise PlanningControlError("PLANNING_CONTROL_WRITE_FAILED", str(exc)) from exc
         metadata.setdefault("schema_version", "1.0")
         metadata["project_id"] = self.project_id
@@ -257,8 +282,8 @@ class PlanningControlService:
             operations.append({"operation_id": operation_id, "operation_type": event, "window_revision_before": actual_revision, "window_revision_after": prepared["window_revision"], "result_ref": version["version_id"], "result_window": copy.deepcopy(prepared), "completed_at": now()})
             metadata["rolling_operations"] = operations[-100:]
         try:
-            self.store.write_json(self.context.planning_metadata_path, metadata)
-        except DataWriteError:
+            self.mutations.legacy_write("planning_metadata", metadata, mutation_type=f"{event}_audit", operation_id=f"{operation_id}-audit" if operation_id else "", reason=reason or event)
+        except (DataWriteError, PlanningMutationError):
             prepared["audit_pending"] = True
             prepared["warnings"] = ["窗口已保存，但审计记录待恢复；请稍后检查规划控制审计。"]
         return prepared
@@ -270,8 +295,8 @@ class PlanningControlService:
         previews = metadata.get("rolling_previews", []) if isinstance(metadata.get("rolling_previews"), list) else []
         previews.append(copy.deepcopy(preview)); metadata["rolling_previews"] = previews[-100:]
         try:
-            self.store.write_json(self.context.planning_metadata_path, metadata)
-        except DataWriteError as exc:
+            self.mutations.legacy_write("planning_metadata", metadata, mutation_type="save_rolling_preview", reason="save rolling preview")
+        except (DataWriteError, PlanningMutationError) as exc:
             raise PlanningControlError("PLANNING_CONTROL_WRITE_FAILED", str(exc)) from exc
         return preview
 
@@ -310,20 +335,16 @@ class PlanningControlService:
             metadata["project_id"] = self.project_id
             metadata["updated_at"] = now()
             metadata.setdefault("audit", []).append({"event": event, "project_id": self.project_id, "operator": "user", "entity_type": entity_type, "entity_id": entity_id, "old_value_hash": content_hash(old), "new_value_hash": content_hash(new), "created_at": now(), "reason": event})
-            self.store.write_json(self.context.planning_strategy_path, data.get("strategy"))
-            self.store.write_json(self.context.planning_milestones_path, data["milestones"])
-            self.store.write_json(self.context.volume_contracts_path, data["volume_contracts"])
-            self.store.write_json(self.context.phase_contracts_path, data["phase_contracts"])
+            entries: list[tuple[str, Any]] = [("strategy", data.get("strategy")), ("milestones", data["milestones"]), ("volume_contracts", data["volume_contracts"]), ("phase_contracts", data["phase_contracts"])]
             if data["rolling_window"] is not None or self.store.exists(self.context.rolling_window_path):
-                self.store.write_json(self.context.rolling_window_path, data["rolling_window"])
+                entries.append(("rolling_window", data["rolling_window"]))
             if data.get("dependencies") is not None or self.store.exists(self.context.planning_dependencies_path):
-                self.store.write_json(self.context.planning_dependencies_path, data.get("dependencies"))
+                entries.append(("dependencies", data.get("dependencies")))
             if data.get("schedules") is not None or self.store.exists(self.context.planning_schedules_path):
-                self.store.write_json(self.context.planning_schedules_path, data.get("schedules"))
-            self.store.write_json(self.context.planning_locks_path, data["locks"])
-            self.store.write_json(self.context.planning_conflicts_path, data["conflicts"])
-            self.store.write_json(self.context.planning_metadata_path, metadata)
-        except DataWriteError as exc:
+                entries.append(("schedules", data.get("schedules")))
+            entries.extend([("locks", data["locks"]), ("conflicts", data["conflicts"]), ("planning_metadata", metadata)])
+            self.mutations.write_bundle_legacy(entries, mutation_type=event, reason=event)
+        except (DataWriteError, PlanningMutationError) as exc:
             raise PlanningControlError("PLANNING_CONTROL_WRITE_FAILED", str(exc)) from exc
 
     @staticmethod

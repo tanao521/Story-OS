@@ -31,9 +31,13 @@ def test_export_is_safe_and_maintenance_requires_matching_preview(tmp_path) -> N
     preview = service.maintenance_preview()
     assert preview["count"] == 1
     with __import__("pytest").raises(EvaluationProductionError): service.cleanup({"preview_id": "wrong", "expected_item_ids": [], "operation_id": "cleanup-a"})
-    result = service.cleanup({"preview_id": preview["preview_id"], "expected_item_ids": [preview["items"][0]["item_id"]], "operation_id": "cleanup-a"})
+    request = {"preview_id": preview["preview_id"], "expected_item_ids": [preview["items"][0]["item_id"]], "operation_id": "cleanup-a"}
+    result = service.cleanup(request)
     assert result["deleted_item_ids"] and service.maintenance_preview()["count"] == 0
-    assert service.cleanup({"preview_id": service.maintenance_preview()["preview_id"], "expected_item_ids": [], "operation_id": "cleanup-a"})["replayed"]
+    assert result["audit"]["target_type"] == "maintenance_audit" and "project_root" not in str(result["audit"])
+    assert service.cleanup(request)["replayed"]
+    with __import__("pytest").raises(EvaluationProductionError, match="operation_id"):
+        service.cleanup({"preview_id": service.maintenance_preview()["preview_id"], "expected_item_ids": [], "operation_id": "cleanup-a"})
 
 
 def test_evaluation_health_reports_missing_index_reference(tmp_path) -> None:

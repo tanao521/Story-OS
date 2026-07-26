@@ -6,6 +6,7 @@ from typing import Any
 
 from core.project_context import ProjectContext, get_project_context
 from system.data_store import DataWriteError
+from system.planning_mutation_service import PlanningMutationError
 from system.planning_service import load_planning
 
 from .control_service import PlanningControlError, PlanningControlService
@@ -58,8 +59,8 @@ class NarrativeSchedulingService:
             if payload.get("operation_id"):
                 stored = copy.deepcopy(result); stored["schedule_revision"] = document["schedule_revision"]
                 document["operations"].append({"operation_id": str(payload["operation_id"]), "event": event, "result": stored, "completed_at": now()}); document["operations"] = document["operations"][-100:]
-            self.store.write_json(self.context.planning_schedules_path, document)
-        except DataWriteError as exc:
+            self.control.mutations.legacy_write("schedules", document, mutation_type=event, operation_id=str(payload.get("operation_id", "") or ""), reason=event)
+        except (DataWriteError, PlanningMutationError) as exc:
             raise PlanningControlError("NARRATIVE_SCHEDULE_WRITE_FAILED", str(exc)) from exc
         saved = copy.deepcopy(result); saved["schedule_revision"] = document["schedule_revision"]
         return saved

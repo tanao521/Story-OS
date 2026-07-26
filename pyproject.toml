@@ -35,3 +35,10 @@ py-modules = ["commands", "config", "main", "storyos_launcher"]
 [tool.setuptools.packages.find]
 where = ["story-os-demo"]
 include = ["core*", "llm*", "system*", "web*"]
+
+[tool.pytest.ini_options]
+addopts = ["--capture=no"]
+tmp_path_retention_count = 1
+tmp_path_retention_policy = "failed"
+testpaths = ["story-os-demo/tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,15 @@ from system.data_store import DataStore
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _REAL_DATA_ROOT = (_REPOSITORY_ROOT / "data").resolve()
+
+_pytest_temp_base = _REPOSITORY_ROOT.parent / "storyos-pytest-phase-0b"
+if not _pytest_temp_base.exists():
+    _pytest_temp_base.mkdir(parents=True, exist_ok=True)
+
+os.environ["TMP"] = str(_pytest_temp_base)
+os.environ["TEMP"] = str(_pytest_temp_base)
+os.environ["TMPDIR"] = str(_pytest_temp_base)
+tempfile.tempdir = str(_pytest_temp_base)
 
 
 def _targets_real_data(path: str | Path) -> bool:
@@ -80,3 +90,30 @@ def disable_real_model_calls_by_default(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.delenv("OLLAMA_CLOUD_BASE_URL", raising=False)
     monkeypatch.delenv("OLLAMA_CLOUD_MODEL", raising=False)
     monkeypatch.delenv("OLLAMA_TIMEOUT_SECONDS", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def block_real_chroma_client_access(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent Chroma from opening the checked-out project's persistent index.
+
+    Chroma may rewrite persistence metadata even for operations that appear
+    read-only, so tests must always use a temporary ProjectContext.
+    """
+    try:
+        import chromadb
+    except ImportError:
+        return
+
+    original_persistent_client = chromadb.PersistentClient
+
+    def guarded_persistent_client(*args, **kwargs):
+        path = kwargs.get("path")
+        if path is None and args:
+            path = args[0]
+        if path is not None and _targets_real_data(path):
+            raise RuntimeError(
+                f"TEST_REAL_CHROMA_ACCESS_BLOCKED: {Path(path).resolve()}"
+            )
+        return original_persistent_client(*args, **kwargs)
+
+    monkeypatch.setattr(chromadb, "PersistentClient", guarded_persistent_client)

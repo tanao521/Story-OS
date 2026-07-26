@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any
 import re
 
+from core.contracts import ErrorEnvelope
+
 
 def api_ok(
     message: str = "",
@@ -26,13 +28,7 @@ def api_error(
 ) -> dict[str, Any]:
     values = errors or [message]
     code = next((item for item in values if re.fullmatch(r"[A-Z]+(?:_[A-Z0-9]+)+", str(item))), "SYS_ERROR")
-    return {
-        "ok": False,
-        "error_code": code,
-        "message": message,
-        "details": details or {},
-        "result": {},
-        "warnings": warnings or [],
-        "errors": values,
-        "error": {"code": code, "message": message, "details": details or {}, "recoverable": True, "suggestions": []},
-    }
+    return ErrorEnvelope(code=code, message=message, details=details or {}).compatibility_view(
+        warnings=warnings,
+        errors=values,
+    )

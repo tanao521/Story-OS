@@ -4,16 +4,14 @@ import json
 from pathlib import Path
 from typing import Any
 
+from core.project_context import get_project_context
 from system.chapter_archive import is_memory_chapter_active
 
 
-CONTEXT_JSON_PATH = Path("data/context/current_context.json")
-CONTEXT_MARKDOWN_PATH = Path("data/context/current_context.md")
-DERIVED_STATE_PATH = Path("data/derived_state.json")
-
 def _artifact_is_stale(kind: str, chapter_id: int) -> bool:
     try:
-        state = json.loads(DERIVED_STATE_PATH.read_text(encoding="utf-8"))
+        derived_state_path = get_project_context().data_dir / "derived_state.json"
+        state = json.loads(derived_state_path.read_text(encoding="utf-8"))
         return any(item.get("artifact_type") == kind and int(item.get("chapter_id", -1)) == int(chapter_id) and item.get("status") in {"stale", "rebuild_required"} for item in state.get("artifacts", []))
     except (OSError, ValueError, TypeError):
         return False
@@ -22,13 +20,14 @@ def _summary_is_stale(chapter_id: int) -> bool:
     return _artifact_is_stale("chapter_summary", chapter_id)
 
 
-def build_working_context(
+def _build_legacy_working_context(
     state: dict[str, Any],
     memory_index: dict[str, Any],
     query: str = "",
     story_spec: dict[str, Any] | None = None,
     characters: dict[str, Any] | None = None,
     world_bible: dict[str, Any] | None = None,
+    allow_vector: bool = True,
 ) -> dict[str, Any]:
     current_chapter = int(state.get("current_chapter", 0) or 0)
     total_committed = len(memory_index.get("chapters", [])) if isinstance(memory_index.get("chapters"), list) else 0
@@ -78,11 +77,18 @@ def build_working_context(
     vector_retrieved: list[dict[str, Any]] = []
     retrieval_mode = "keyword"
     try:
-        from system.vector_memory import is_available, search_similar
+        from system.vector_index_lifecycle import search_similar
 
-        if is_available() and query:
+        if query and allow_vector:
             retrieval_mode = "keyword_plus_vector"
-            vector_retrieved = [item for item in search_similar(query, max_results=8) if not _artifact_is_stale("vector_memory", int(item.get("chapter_id", -1) or -1))][:5]
+            results = search_similar(
+                get_project_context(),
+                query,
+                timeline_id="main",
+                max_results=8,
+                exclude_chapter_id=current_chapter,
+            )
+            vector_retrieved = [item for item in results if not _artifact_is_stale("vector_memory", int(item.get("chapter_id", -1) or -1))][:5]
     except Exception:
         pass
 
@@ -345,13 +351,16 @@ def render_context_markdown(context: dict[str, Any]) -> str:
 
 
 def save_current_context(context: dict[str, Any]) -> tuple[str, str]:
-    CONTEXT_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONTEXT_JSON_PATH.write_text(
+    ctx = get_project_context()
+    context_json_path = ctx.context_dir / "current_context.json"
+    context_markdown_path = ctx.context_dir / "current_context.md"
+    context_json_path.parent.mkdir(parents=True, exist_ok=True)
+    context_json_path.write_text(
         json.dumps(context, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    CONTEXT_MARKDOWN_PATH.write_text(render_context_markdown(context), encoding="utf-8")
-    return CONTEXT_JSON_PATH.as_posix(), CONTEXT_MARKDOWN_PATH.as_posix()
+    context_markdown_path.write_text(render_context_markdown(context), encoding="utf-8")
+    return context_json_path.as_posix(), context_markdown_path.as_posix()
 
 
 def _chapter_entries(memory_index: dict[str, Any]) -> list[dict[str, Any]]:
@@ -423,3 +432,17 @@ def _render_list(items: Any) -> str:
     if not isinstance(items, list) or not items:
         return "无"
     return "\n".join(f"- {item}" for item in items)
+
+
+def build_working_context(
+    state: dict[str, Any], memory_index: dict[str, Any], query: str = "",
+    story_spec: dict[str, Any] | None = None, characters: dict[str, Any] | None = None,
+    world_bible: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Compatibility entrypoint delegating read-only assembly to the authority service."""
+    from core.project_context import get_project_context
+    from system.context_assembly_service import ContextAssemblyService
+    return ContextAssemblyService(get_project_context()).assemble(
+        state=state, memory_index=memory_index, query=query, story_spec=story_spec,
+        characters=characters, world_bible=world_bible, purpose="chapter_drafting",
+    )

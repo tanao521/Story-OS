@@ -1,5 +1,22 @@
 # Story OS Demo
 
+## Phase 0D3C4-B1-FIX：Strict Conservative 安全封版
+
+B1 implementation completed. B1-FIX security hardening completed.
+
+DeepSeek `deepseek-v4-flash` 的保守预算是 Story OS Owner Policy，不是
+Provider 精确 Token 计数、账单精度声明或官方 DeepSeek tokenizer。
+
+- 文本上限 2,048；保守输入上限 3,584；输出上限 512；总量上限 4,096。
+- Thinking 显式关闭；Structured Output 显式使用 JSON Object。
+- Reconciliation 使用严格字段校验、受控 record ID 和 append-only 路径 containment。
+- 外部 Layer-A 资产使用一次读取的不可变 bytes 完成大小、SHA-256、JSON 和 loader 校验。
+- Real Profile activation remains blocked by external asset/compliance approval.
+- Production Live remains default-off.
+- Canary remains unauthorized.
+
+详见 `docs/planning/PHASE_0D3C4_B1_FIX_DELIVERY_REPORT.md`。
+
 ## 阶段 15.1：叙事评估中心
 
 叙事评估中心是既有专业检查器的统一只读入口。它聚合质量报告、剧情连贯性、角色状态、Reader Simulation 与规划健康；不会调用新的 LLM、修改正文、候选版本、计划或正史。
@@ -793,3 +810,80 @@ Web 端新增规划层入口：先生成/重建故事蓝图，再生成角色档
 4. 后续使用 plan-next 滚动生成下一章；正文生成必须遵守当前章节计划、蓝图、角色档案和世界观规则。
 
 默认使用本地规划模板；在首次创建时勾选 DeepSeek 并配置 DEEPSEEK_API_KEY 后，规划层会优先调用 DeepSeek，失败时自动回退到本地模板。手动执行 blueprint、build-assets 或 plan-next 仍可单独重建对应文件。
+
+## Bounded multi-Persona model panel
+
+Reader Persona model feedback can be run for one to five selected Personas with
+`plan-reader-persona-model-panel` and `run-reader-persona-model-panel`.
+`max_provider_calls` defaults to `1`; raising it is always explicit. A cache hit
+uses no new provider call or token usage, and each cache miss can make at most
+one sequential provider request. There is no model-generated panel summary:
+the deterministic Reader Persona Panel remains authoritative. See
+[`docs/planning/PHASE_0D2B2.md`](docs/planning/PHASE_0D2B2.md).
+
+## Deterministic panel review
+
+`show-reader-persona-panel-review` exposes a read-only, deterministic review
+model for the saved model panel runs. It never calls a provider, creates a run,
+refreshes a cache, or changes story assets:
+
+```bash
+python main.py show-reader-persona-panel-review --chapter 1 --json
+python main.py show-reader-persona-panel-review --chapter 1 --panel-execution-id <id>
+```
+
+The corresponding GET endpoints are
+`/api/reader-persona/model-panel/review` and
+`/api/reader-persona/model-panel/runs/{panel_execution_id}/review`. The response
+keeps deterministic authoritative Persona fields separate from model
+supplements and includes stable selection, agreement, conflict, evidence,
+usage, execution, and staleness summaries. See
+[`docs/planning/PHASE_0D2B3.md`](docs/planning/PHASE_0D2B3.md).
+
+### Controlled Live panel server APIs (default-off controlled UI)
+
+The production Simulator exposes a read-only Live Plan/Consent surface and a
+default-off controlled Run handoff. Generic model-panel Live requests are
+rejected and cannot use `project_root` or `force`. The Run gate requires a
+server capability, a second explicit confirmation, and a private
+`X-StoryOS-Idempotency-Key` header. Recovery is GET-only; no automatic retry
+or fallback is allowed.
+
+```text
+GET  /api/reader-persona/live/profiles
+POST /api/reader-persona/model-panel/live/consent
+POST /api/reader-persona/model-panel/live/runs
+POST /api/reader-persona/model-panel/live/cancel
+GET  /api/reader-persona/model-panel/live/status/{ticket_id}
+```
+
+Consent requires a safe `project_key`, scope, selected Personas, profile id,
+bounded call count, and consent-text version. It returns a server-issued,
+expiring ticket and idempotency key without calling a provider or creating a
+Run. The Live run/cancel/status routes accept only that ticket, `project_key`,
+and matching idempotency key in the header (the status key is supplied via
+`X-StoryOS-Idempotency-Key`). They do not accept credentials, endpoints,
+provider/model overrides, paths, or `force`.
+
+The budget policy has a hard call/output/input-token gate and server timeout;
+price data is deliberately unavailable rather than fabricated. Provider input
+token enforcement requires a provider-owned exact token counter, so an
+unconfigured adapter blocks before any provider call. See
+[`../docs/security/live_execution_idempotency_design.md`](../docs/security/live_execution_idempotency_design.md)
+after the 0D3C2-A delivery record is created.
+The Live profiles response is a read-only operational-readiness projection. It
+includes safe exact-token-counter metadata and readiness codes, but never
+credentials, endpoint/base URL, environment names, prompts, source text, or
+filesystem paths. Production Live remains default-off. No real profile is
+exact-counter-ready in Phase 0D3C3; unsupported models block safely.
+# Phase 0D3C4-B1 — Strict Conservative Budget Infrastructure
+
+Story OS now contains a disabled-by-default, non-exact conservative budget
+contract for the exact `deepseek/deepseek-v4-flash` pairing. It uses the Owner
+policy (2,048 Layer-A text; 3,584 conservative input; 512 output; 4,096 total;
+one call; 60 seconds; retry 0; fallback none), explicit thinking disable, and
+JSON Object output. It is not Provider-exact or billing-accurate.
+
+No tokenizer asset is bundled. Without a separately approved, externally
+provisioned and hash-validated Layer-A asset, conservative readiness, Consent,
+real Profile activation, and Production Live all remain disabled.

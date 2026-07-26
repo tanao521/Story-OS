@@ -74,7 +74,37 @@ def _run_pipeline(auto_commit: bool, require_model: bool, context: ProjectContex
 
     for name, function, optional in [
         ("edit-draft", commands.edit_draft_command, True),
-        ("commit-chapter", commands.commit_chapter_command, False),
+    ]:
+        if _cancelled(report, context, name, progress, cancelled):
+            return report
+        _emit(progress, name, "running")
+        step = _run_step(name, function)
+        _append_step(report, step)
+        _emit(progress, name, "failed" if step["status"] == "failed" else "completed", step)
+        if step["status"] == "failed" and not optional:
+            _fail(report, context, name, step["message"])
+            save_pipeline_report(report, context)
+            return report
+        if step["status"] == "failed":
+            report["warnings"].append(f"{name} 失败: {step['message']}")
+
+    commit_result_dict = commands.commit_chapter_command()
+    commit_step = {
+        "name": "commit-chapter",
+        "status": commit_result_dict.get("status", "failed"),
+        "message": commit_result_dict.get("message", "未知错误"),
+        "outputs": commit_result_dict.get("outputs", {}),
+        "warnings": commit_result_dict.get("warnings", []),
+    }
+    report["warnings"].extend(commit_result_dict.get("warnings", []))
+    _append_step(report, commit_step)
+    _emit(progress, "commit-chapter", "failed" if commit_step["status"] == "failed" else "completed", commit_step)
+    if commit_step["status"] == "failed":
+        _fail(report, context, "commit-chapter", commit_step["message"])
+        save_pipeline_report(report, context)
+        return report
+
+    for name, function, optional in [
         ("sync-obsidian", commands.sync_obsidian_command, True),
         ("index-vault", commands.index_vault_command, True),
     ]:
@@ -90,16 +120,15 @@ def _run_pipeline(auto_commit: bool, require_model: bool, context: ProjectContex
             return report
         if step["status"] == "failed":
             report["warnings"].append(f"{name} 失败: {step['message']}")
-        if name == "commit-chapter":
-            committed_chapter = _read_current_chapter(context, default=current_before)
-            report["final_state"]["current_chapter_after"] = committed_chapter
-            if committed_chapter != current_before + 1:
-                report["status"] = "failed"
-                report["errors"].append("current_chapter 推进异常")
-                save_pipeline_report(report, context)
-                return report
 
-    report["final_state"]["current_chapter_after"] = _read_current_chapter(context, default=current_before)
+    committed_chapter = _read_current_chapter(context, default=current_before)
+    report["final_state"]["current_chapter_after"] = committed_chapter
+    if committed_chapter != current_before + 1:
+        report["status"] = "failed"
+        report["errors"].append("current_chapter 推进异常")
+        save_pipeline_report(report, context)
+        return report
+
     report["status"] = "success_with_warnings" if report["warnings"] else "success"
     save_pipeline_report(report, context)
     return report

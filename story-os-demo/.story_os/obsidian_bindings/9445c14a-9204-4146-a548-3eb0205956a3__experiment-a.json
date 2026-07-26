@@ -1,0 +1,11 @@
+{
+  "binding_id": "obs_30283f0b2a74487b",
+  "project_id": "9445c14a-9204-4146-a548-3eb0205956a3",
+  "timeline_id": "experiment-a",
+  "vault_root": "D:/novel/StoryOS/storyos-pytest-phase-0b/tmp7nilfhnk",
+  "target_relative_path": "StoryOS/test-project/exp-a",
+  "status": "bound",
+  "created_at": "2026-07-21T12:54:59.205251+00:00",
+  "updated_at": "2026-07-21T12:54:59.205251+00:00",
+  "schema_version": "1.0"
+}

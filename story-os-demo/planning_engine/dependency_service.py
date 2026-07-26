@@ -7,6 +7,7 @@ from typing import Any
 
 from core.project_context import ProjectContext, get_project_context
 from system.data_store import DataWriteError
+from system.planning_mutation_service import PlanningMutationError
 
 from .control_service import PlanningControlError, PlanningControlService
 from .dependency_graph import PREREQUISITE_TYPES, adjacency, cycle_for_edge, first_cycle, mutual_blocks, node_key
@@ -84,8 +85,8 @@ class PlanningDependencyService:
                 stored_result = copy.deepcopy(result); stored_result["dependency_revision"] = document["dependency_revision"]
                 document["operations"].append({"operation_id": operation_id, "operation": event, "result": stored_result, "dependency_revision": document["dependency_revision"], "completed_at": now()})
                 document["operations"] = document["operations"][-100:]
-            self.store.write_json(self.context.planning_dependencies_path, document)
-        except DataWriteError as exc:
+            self.control.mutations.legacy_write("dependencies", document, mutation_type=event, operation_id=operation_id, reason=event)
+        except (DataWriteError, PlanningMutationError) as exc:
             raise PlanningControlError("PLANNING_CONTROL_WRITE_FAILED", str(exc)) from exc
         saved = copy.deepcopy(result)
         saved["dependency_revision"] = document["dependency_revision"]
