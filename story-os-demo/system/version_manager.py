@@ -190,7 +190,7 @@ def archive_version(
 
 
 def get_selected_version(chapter_id: int, data_dir: str | Path = "data") -> dict[str, Any]:
-    versions = load_versions_index(chapter_id, data_dir)
+    versions = list_versions(chapter_id, data_dir)
     selected = versions.get("selected", {})
     if isinstance(selected, dict) and selected.get("source_type") and selected.get("version"):
         match = _find_version(versions, str(selected["source_type"]), int(selected["version"]))
@@ -207,6 +207,18 @@ def get_selected_version(chapter_id: int, data_dir: str | Path = "data") -> dict
     if drafts:
         return drafts[-1]
     return {}
+
+
+def initialize_chapter_versions(
+    chapter_id: int,
+    data_dir: str | Path = "data",
+) -> dict[str, Any]:
+    versions = list_versions(chapter_id, data_dir)
+    if versions.get("selected"):
+        return versions
+    if not versions.get("drafts") and not versions.get("edited") and not versions.get("manual"):
+        return save_versions_index(chapter_id, versions, data_dir)
+    return save_versions_index(chapter_id, versions, data_dir)
 
 
 def read_version_payload(version_info: dict[str, Any]) -> dict[str, Any]:

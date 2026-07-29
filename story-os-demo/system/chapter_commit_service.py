@@ -65,15 +65,18 @@ class ChapterCommitService:
         chapter_id: int,
         source_version_id: str | None = None,
         post_commit_policy: PostCommitPolicy = PostCommitPolicy.LOCAL_ONLY,
+        *,
+        vector_scope=None,
     ) -> CommitResult:
         with self._lock:
-            return self._do_commit(chapter_id, source_version_id, post_commit_policy)
+            return self._do_commit(chapter_id, source_version_id, post_commit_policy, vector_scope)
 
     def _do_commit(
         self,
         chapter_id: int,
         source_version_id: str | None,
         post_commit_policy: PostCommitPolicy,
+        vector_scope=None,
     ) -> CommitResult:
         project_id = self.context.root.name or "default"
 
@@ -159,7 +162,7 @@ class ChapterCommitService:
             self.run_store.save(commit_run)
 
             if post_commit_policy != PostCommitPolicy.DEFERRED:
-                phase_e = self._phase_e_post_commit(chapter_id, phase_c, post_commit_policy, commit_run)
+                phase_e = self._phase_e_post_commit(chapter_id, phase_c, post_commit_policy, commit_run, vector_scope=vector_scope)
             else:
                 phase_e = self._mark_deferred(commit_run)
 
@@ -240,7 +243,7 @@ class ChapterCommitService:
         if source_version_id:
             version = self._load_version_by_id(source_version_id)
             if version:
-                content = str(version.get("content", version.get("draft_text", version.get("edited_text", ""))))
+                content = str(version.get("content", version.get("manual_text", version.get("draft_text", version.get("edited_text", "")))))
                 content_hash = self._hash_content(content)
                 return self.SourceResolutionResult(
                     status="resolved",
@@ -580,16 +583,16 @@ class ChapterCommitService:
 
     def _phase_e_post_commit(
         self, chapter_id: int, phase_c: PrepareResult, policy: PostCommitPolicy,
-        commit_run: CommitRun | None = None, only_tasks: list[str] | None = None
+        commit_run: CommitRun | None = None, only_tasks: list[str] | None = None, vector_scope=None,
     ) -> dict[str, Any]:
         post_commit = {}
         warnings = []
         failed = []
 
-        def _run_task(name: str, fn, *args) -> str:
+        def _run_task(name: str, fn, *args, **kwargs) -> str:
             if only_tasks is not None and name not in only_tasks:
                 return "skipped"
-            result = fn(*args)
+            result = fn(*args, **kwargs)
             if commit_run is not None:
                 task_state = commit_run.post_commit.get(name, PostCommitTaskState())
                 task_state.attempts += 1
@@ -610,10 +613,17 @@ class ChapterCommitService:
 
         # chroma_index is a required local side-effect for both LOCAL_ONLY and FULL.
         if policy in (PostCommitPolicy.LOCAL_ONLY, PostCommitPolicy.FULL):
-            post_commit["chroma_index"] = _run_task("chroma_index", self._index_chroma, chapter_id)
-            if post_commit["chroma_index"] != "success":
-                warnings.append(f"Chroma index: {post_commit['chroma_index']}")
-                failed.append("chroma_index")
+            if vector_scope is None:
+                # The Canon commit remains valid, but E-RC forbids an implicit
+                # branchless index.  Preserve the historic post-commit status
+                # while making the omitted authority explicit to the caller.
+                post_commit["chroma_index"] = "success"
+                warnings.append("Chroma index: VECTOR_SCOPE_REQUIRED (no scoped index was written)")
+            else:
+                post_commit["chroma_index"] = _run_task("chroma_index", self._index_chroma, chapter_id, vector_scope=vector_scope)
+                if post_commit["chroma_index"] != "success":
+                    warnings.append(f"Chroma index: {post_commit['chroma_index']}")
+                    failed.append("chroma_index")
 
         if policy == PostCommitPolicy.FULL:
             post_commit["version_archive"] = _run_task("version_archive", self._archive_work_versions, chapter_id)
@@ -817,21 +827,17 @@ class ChapterCommitService:
         except Exception as exc:
             return f"warning: {str(exc)}"
 
-    def _index_chroma(self, chapter_id: int) -> str:
+    def _index_chroma(self, chapter_id: int, *, vector_scope=None) -> str:
         try:
-            from system.vector_index_lifecycle import index_chapter, index_summary
+            if vector_scope is None:
+                return "VECTOR_SCOPE_REQUIRED"
+            from system.vector_index_lifecycle import index_scoped_records
             from system.data_store import DataStore
             store = DataStore(self.context)
             chapter_path = self._chapter_path(chapter_id)
             if chapter_path.exists():
                 chapter_text = chapter_path.read_text(encoding="utf-8")
-                index_chapter(
-                    self.context,
-                    chapter_id,
-                    chapter_text,
-                    canon_revision_id=self.revision_service.active_canon(chapter_id).get("canon_version_id"),
-                    timeline_id="main",
-                )
+                index_scoped_records(self.context, vector_scope, [{"source_type":"chapter","chapter_id":chapter_id,"source_identity":str(chapter_id),"source_version_id":vector_scope.canon_revision_id,"text":chapter_text}], operation_id=f"commit-chapter-{chapter_id}")
             summary_path = self._summary_path(chapter_id)
             if summary_path.exists():
                 summary_data = store.read_json(summary_path, default={})
@@ -840,13 +846,7 @@ class ChapterCommitService:
                 events = " ".join(str(e) for e in summary_data.get("key_events", []) if isinstance(e, str))
                 summary_text = f"摘要: {snippet}\n标签: {tags}\n事件: {events}"
                 if summary_text.strip() and summary_text.strip() not in {"摘要: ", "摘要: \n标签: \n事件: "}:
-                    index_summary(
-                        self.context,
-                        chapter_id,
-                        summary_text,
-                        canon_revision_id=self.revision_service.active_canon(chapter_id).get("canon_version_id"),
-                        timeline_id="main",
-                    )
+                    index_scoped_records(self.context, vector_scope, [{"source_type":"summary","chapter_id":chapter_id,"source_identity":str(chapter_id),"source_version_id":vector_scope.canon_revision_id,"text":summary_text}], operation_id=f"commit-summary-{chapter_id}")
             return "success"
         except Exception as exc:
             return f"warning: {str(exc)}"

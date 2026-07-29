@@ -299,14 +299,15 @@ class TestVectorIsolation:
         service = ProjectCloneService(workspace)
         result = service.clone_project(source_ctx, "副本", "clone-novel")
 
-        assert result.vector_sync_operation_id is not None
+        assert result.vector_sync_operation_id is None
         assert result.status in ["completed", "completed_with_warnings"]
+        assert any("VECTOR_SCOPE_REQUIRED" in warning for warning in result.warnings)
 
         clone_ctx = get_project_context(workspace / "projects" / "clone-novel")
         assert (clone_ctx.chapters_dir / "chapter_001.md").exists()
 
-        clone_results = search_similar(clone_ctx, "龙族传说", timeline_id="main")
-        assert len(clone_results) > 0
+        # No branchless vector query is permitted until a complete VectorScope
+        # has been selected for the cloned project.
 
     def test_source_query_not_return_clone(self, workspace: Path) -> None:
         source = _create_source_project(workspace)

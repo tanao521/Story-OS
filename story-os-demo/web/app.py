@@ -18,6 +18,12 @@ from web.author_routes import router as author_router
 from web.creative_loop_routes import router as creative_loop_router
 from web.planning_control_routes import router as planning_control_router
 from web.narrative_turn_routes import router as narrative_turn_router
+from web.narrative_branch_routes import router as narrative_branch_router
+from web.branch_narrative_memory_routes import router as branch_narrative_memory_router
+from web.narrative_chapter_routes import router as narrative_chapter_router
+from web.simulator_state_routes import router as simulator_state_router
+from web.chapter_lifecycle_routes import router as chapter_lifecycle_router
+from web.chapter_progression_routes import router as chapter_progression_router
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -41,6 +47,12 @@ app.include_router(author_router)
 app.include_router(creative_loop_router)
 app.include_router(planning_control_router)
 app.include_router(narrative_turn_router)
+app.include_router(narrative_branch_router)
+app.include_router(branch_narrative_memory_router)
+app.include_router(narrative_chapter_router)
+app.include_router(simulator_state_router)
+app.include_router(chapter_lifecycle_router)
+app.include_router(chapter_progression_router)
 
 
 @app.exception_handler(StoryOSError)

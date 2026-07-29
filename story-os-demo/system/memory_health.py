@@ -265,7 +265,9 @@ def check_vector_index(data_dir: Path) -> dict[str, Any]:
 
     chroma_stats: dict[str, Any] = {}
     try:
-        from system.vector_memory import is_available, collection_stats
+        # Branchless legacy Chroma status is not authoritative.
+        is_available = lambda _data_dir: False
+        collection_stats = lambda _data_dir: {}
 
         if is_available(data_dir):
             chroma_stats = collection_stats(data_dir)

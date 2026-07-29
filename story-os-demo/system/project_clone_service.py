@@ -641,55 +641,12 @@ class ProjectCloneService:
         context: ProjectContext,
         project_id: str,
     ) -> tuple[str | None, list[str]]:
-        from system.vector_sync_run_store import VectorSyncRunStore, VectorSyncOperationType, VectorSyncStatus
-        from system.vector_index_lifecycle import rebuild_project_index
-
-        sync_store = VectorSyncRunStore(context)
-        sync_run = sync_store.create(
-            operation_type=VectorSyncOperationType.CLONE,
-            project_id=project_id,
-            timeline_id="main",
-        )
-
-        sync_store.update_status(sync_run.operation_id, VectorSyncStatus.RUNNING)
-
-        warnings: list[str] = []
-
-        result = rebuild_project_index(context, timeline_id="main")
-
-        if result.get("status") == "success":
-            sync_store.update_status(sync_run.operation_id, VectorSyncStatus.COMPLETED)
-            try:
-                self._update_vector_memory_state(
-                    context.data_dir, project_id,
-                    healthy=True, status="ready",
-                )
-            except Exception as exc:
-                warnings.append(
-                    f"VECTOR_STATE_UPDATE_FAILED: Failed to update cloned project vector state. "
-                    f"Index rebuild succeeded but state may be stale. {str(exc)[:100]}"
-                )
-        else:
-            error_msg = result.get("message", "Unknown error")
-            sync_store.update_status(
-                sync_run.operation_id,
-                VectorSyncStatus.FAILED,
-                error_msg,
-            )
-            warnings.append(f"VECTOR_REBUILD_FAILED: {error_msg[:200]}")
-            try:
-                self._update_vector_memory_state(
-                    context.data_dir, project_id,
-                    healthy=False, status="failed",
-                    last_error=error_msg[:500],
-                )
-            except Exception as exc:
-                warnings.append(
-                    f"VECTOR_STATE_UPDATE_FAILED: Failed to update cloned project vector state. "
-                    f"{str(exc)[:100]}"
-                )
-
-        return sync_run.operation_id, warnings
+        # A clone does not yet have an explicitly selected branch/canon authority.
+        # Indexing here would silently collapse it into a legacy default timeline.
+        return None, [
+            "VECTOR_SCOPE_REQUIRED: cloned vector index was not rebuilt; "
+            "select an open branch and active canon revision before rebuilding."
+        ]
 
     def _read_project_id(self, context: ProjectContext) -> str:
         metadata_path = context.root / "project.json"

@@ -200,6 +200,29 @@ class NarrativeBranchStore:
         _validate_path_containment(self._project_root, path)
         return path
 
+    def _branch_operation_phase_path(self, operation_id: str) -> Path:
+        _validate_path_component(operation_id, "operation_id")
+        path = self._branch_operations_path() / f"{operation_id}.phase.json"
+        _validate_path_containment(self._project_root, path)
+        return path
+
+    def _mutable_operation_path(self, operation_id: str) -> Path:
+        """Use the RC1 phase path for immutable-authority operations.
+
+        Older D tests and records keep the historical mutable ``.json`` layout;
+        a record carrying the RC1 canonical request fingerprint opts into the
+        split authority/phase layout.
+        """
+        authority = self._branch_operation_path(operation_id)
+        if authority.exists():
+            try:
+                data = _load_json(authority)
+            except NarrativeTurnError:
+                data = {}
+            if data.get("canonical_request_fingerprint"):
+                return self._branch_operation_phase_path(operation_id)
+        return authority
+
     # ------------------------------------------------------------------
     # Registry event journal (append-only, sequence-ordered, deterministic)
     # ------------------------------------------------------------------
@@ -691,7 +714,9 @@ class NarrativeBranchStore:
     # Branch operation record (recoverable multi-phase operations)
     # ------------------------------------------------------------------
     def _read_operation_record(self, operation_id: str) -> BranchOperationRecord | None:
-        op_path = self._branch_operation_path(operation_id)
+        authority_path = self._branch_operation_path(operation_id)
+        phase_path = self._branch_operation_phase_path(operation_id)
+        op_path = phase_path if phase_path.exists() else authority_path
         if not op_path.exists():
             return None
         data = _load_json(op_path)
@@ -711,6 +736,7 @@ class NarrativeBranchStore:
             payload_fingerprint=data["payload_fingerprint"],
             created_at=data["created_at"],
             record_fingerprint=data["record_fingerprint"],
+            canonical_request_fingerprint=data.get("canonical_request_fingerprint"),
         )
 
     def _write_operation_phase(
@@ -718,7 +744,7 @@ class NarrativeBranchStore:
         operation_id: str,
         record: dict[str, Any],
     ) -> None:
-        op_path = self._branch_operation_path(operation_id)
+        op_path = self._mutable_operation_path(operation_id)
         _publish_immutable_json(op_path, record)
 
     def _make_operation_payload(
@@ -734,6 +760,7 @@ class NarrativeBranchStore:
         resulting_registry_revision: str | None,
         lifecycle_event_fingerprint: str | None,
         created_at: str,
+        canonical_request_fingerprint: str | None = None,
     ) -> dict[str, Any]:
         payload = {
             "schema_version": SCHEMA_VERSION,
@@ -750,6 +777,7 @@ class NarrativeBranchStore:
             "lifecycle_event_fingerprint": lifecycle_event_fingerprint,
             "payload_fingerprint": "",
             "created_at": created_at,
+            "canonical_request_fingerprint": canonical_request_fingerprint,
         }
         payload_fingerprint = _compute_event_fingerprint(payload)
         payload["payload_fingerprint"] = payload_fingerprint
@@ -798,6 +826,12 @@ class NarrativeBranchStore:
             raise NarrativeTurnError(NarrativeTurnError.SCOPE_MISMATCH, "project_id mismatch")
         registry = self._create_registry_if_missing(timeline_context)
         return registry.get("active_branch_id")
+
+    def get_registry(self, timeline_context: TimelineContext) -> dict[str, Any]:
+        """Return the rebuildable registry projection for a timeline."""
+        if timeline_context.project_id != self._project_id:
+            raise NarrativeTurnError(NarrativeTurnError.SCOPE_MISMATCH, "project_id mismatch")
+        return dict(self._create_registry_if_missing(timeline_context))
 
     def select_branch(self, timeline_context: TimelineContext, branch_id: str, expected_revision: str) -> str:
         if timeline_context.project_id != self._project_id:
@@ -893,6 +927,7 @@ class NarrativeBranchStore:
             resulting_registry_revision=None,
             lifecycle_event_fingerprint=None,
             created_at=created_at,
+            canonical_request_fingerprint=(existing_op.canonical_request_fingerprint if existing_op else None),
         )
         self._write_operation_phase(operation_id, intent_payload)
 
@@ -963,8 +998,9 @@ class NarrativeBranchStore:
                 resulting_registry_revision=new_rev,
                 lifecycle_event_fingerprint=None,
                 created_at=op.created_at,
+                canonical_request_fingerprint=op.canonical_request_fingerprint,
             )
-            op_path = self._branch_operation_path(operation_id)
+            op_path = self._mutable_operation_path(operation_id)
             _publish_immutable_json(op_path.with_name(f"{operation_id}_registry_updated.json"), registry_updated_payload)
             _atomic_write_json(op_path, registry_updated_payload)
 
@@ -1013,8 +1049,9 @@ class NarrativeBranchStore:
                 resulting_registry_revision=op.resulting_registry_revision,
                 lifecycle_event_fingerprint=lifecycle_fp,
                 created_at=op.created_at,
+                canonical_request_fingerprint=op.canonical_request_fingerprint,
             )
-            op_path = self._branch_operation_path(operation_id)
+            op_path = self._mutable_operation_path(operation_id)
             _publish_immutable_json(op_path.with_name(f"{operation_id}_lifecycle_appended.json"), lifecycle_appended_payload)
             _atomic_write_json(op_path, lifecycle_appended_payload)
 
@@ -1049,8 +1086,9 @@ class NarrativeBranchStore:
                 resulting_registry_revision=op.resulting_registry_revision,
                 lifecycle_event_fingerprint=op.lifecycle_event_fingerprint,
                 created_at=op.created_at,
+                canonical_request_fingerprint=op.canonical_request_fingerprint,
             )
-            op_path = self._branch_operation_path(operation_id)
+            op_path = self._mutable_operation_path(operation_id)
             _publish_immutable_json(op_path.with_name(f"{operation_id}_completed.json"), completed_payload)
             _atomic_write_json(op_path, completed_payload)
 
@@ -1080,6 +1118,7 @@ class NarrativeBranchStore:
         branch_id: str,
         replacement_branch_id: str | None = None,
         expected_revision: str = "",
+        operation_id: str | None = None,
     ) -> str:
         if timeline_context.project_id != self._project_id:
             raise NarrativeTurnError(NarrativeTurnError.SCOPE_MISMATCH, "project_id mismatch")
@@ -1100,7 +1139,7 @@ class NarrativeBranchStore:
                     "Must specify replacement branch when archiving active branch",
                 )
             _validate_path_component(replacement_branch_id, "replacement_branch_id")
-            operation_id = new_id("op")
+            operation_id = operation_id or new_id("op")
             effective_revision = expected_revision if expected_revision else registry["revision"]
             return self._active_archive_with_replacement(
                 timeline_context,

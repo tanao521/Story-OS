@@ -1,0 +1,62 @@
+/* Phase 0D5-C: dense extension of the existing night-editing workbench. */
+.simulator-loop-shell { background: var(--bg-workspace); color: var(--text-primary); border-bottom: 1px solid var(--border-subtle); }
+.simulator-loop-shell.hidden { display: none; }
+.simulator-context-bar { position: relative; display: grid; grid-template-columns: minmax(220px, .8fr) minmax(0, 1.8fr); gap: 18px; padding: 18px 22px 14px; border-bottom: 1px solid var(--border-subtle); }
+.simulator-authority-spine { position: absolute; left: 22px; right: 22px; bottom: 0; height: 2px; background: var(--story-gold); opacity: .82; }
+.simulator-context-heading h1, .simulator-panel-heading h2, .simulator-turn-result h2, .simulator-turn-history h2, .simulator-loop-evidence h2, .simulator-recovery h2 { margin: 2px 0 4px; font-family: var(--font-editorial); }
+.simulator-context-heading p, .simulator-feedback, .simulator-count { color: var(--text-muted); font: 11px var(--font-mono); }
+.simulator-context-values { display: grid; grid-template-columns: repeat(4, minmax(110px, 1fr)); gap: 8px; align-content: center; }
+.simulator-context-value { min-width: 0; padding: 7px 9px; border-left: 2px solid var(--border-subtle); }
+.simulator-context-value strong, .simulator-context-value span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.simulator-context-value strong { color: var(--text-muted); font: 10px var(--font-mono); text-transform: uppercase; }
+.simulator-context-value span { margin-top: 3px; font: 12px var(--font-body); }
+.simulator-progress-rail { display: flex; gap: 2px; padding: 8px 22px; border-bottom: 1px solid var(--border-subtle); overflow-x: auto; }
+.simulator-progress-rail button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--text-muted); padding: 7px 12px; font: 11px var(--font-mono); cursor: pointer; }
+.simulator-progress-rail button[data-active="true"] { color: var(--story-gold); border-bottom-color: var(--story-gold); }
+.simulator-progress-rail button:disabled { cursor: not-allowed; opacity: .48; }
+.simulator-loop-layout { display: grid; grid-template-columns: minmax(240px, .75fr) minmax(280px, 1fr) minmax(220px, .65fr); gap: 12px; padding: 14px 22px 18px; }
+.simulator-branch-panel, .simulator-turn-result, .simulator-turn-history, .simulator-loop-evidence, .simulator-recovery, .simulator-candidate-panel, .simulator-candidate-list-panel, .simulator-candidate-workspace, .simulator-chapter-completion, .simulator-commit-recovery { border: 1px solid var(--border-subtle); background: var(--bg-elevated); border-radius: var(--radius-md); padding: 14px; }
+.simulator-panel-heading { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
+.simulator-branch-list, .simulator-history-list, #simulator-loop-evidence-body { display: grid; gap: 8px; margin-top: 12px; }
+.simulator-input-dialog { max-width: min(92vw, 30rem); border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--bg-elevated); color: var(--text-primary); padding: 1.25rem; }
+.simulator-input-dialog::backdrop { background: rgba(0, 0, 0, .58); }
+.simulator-input-dialog form { display: grid; gap: .8rem; min-width: min(70vw, 24rem); }
+.simulator-input-dialog h2 { margin: 0; font-size: 1rem; }
+.simulator-input-dialog label { display: grid; gap: .35rem; color: var(--text-secondary); font-size: .8rem; }
+.simulator-input-dialog input { min-height: 2.4rem; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--bg-workspace); color: var(--text-primary); padding: .45rem .6rem; font: inherit; }
+.simulator-input-dialog form > div { display: flex; justify-content: flex-end; gap: .6rem; }
+.simulator-branch-row { border: 1px solid var(--border-subtle); padding: 10px; }
+.simulator-branch-row[data-active="true"] { border-color: var(--story-gold); }
+.simulator-branch-row-head, .simulator-branch-row-meta, .simulator-branch-row-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.simulator-branch-row-head strong { font: 13px var(--font-body); }
+.simulator-branch-row-meta { margin-top: 5px; color: var(--text-muted); font: 10px var(--font-mono); }
+.simulator-branch-row-actions { justify-content: flex-start; margin-top: 9px; flex-wrap: wrap; }
+.simulator-branch-row-actions button { font-size: 10px; }
+.simulator-history-item { border-left: 2px solid var(--border-subtle); padding: 8px 10px; }
+.simulator-history-item[data-current="true"] { border-left-color: var(--story-gold); }
+.simulator-history-item header { display: flex; justify-content: space-between; gap: 8px; font: 11px var(--font-mono); }
+.simulator-history-item p { margin: 5px 0 0; color: var(--text-secondary); font: 12px var(--font-body); }
+.simulator-evidence-row { display: grid; grid-template-columns: 92px 1fr; gap: 8px; font-size: 12px; }
+.simulator-evidence-row strong { color: var(--text-muted); font: 10px var(--font-mono); text-transform: uppercase; }
+.simulator-turn-result { grid-column: 2; }
+.simulator-turn-result.hidden, .simulator-turn-history.hidden, .simulator-recovery.hidden { display: none; }
+.simulator-recovery { margin: 0 22px 18px; border-color: var(--status-warning); }
+.simulator-recovery p { color: var(--text-secondary); }
+.simulator-candidate-panel, .simulator-candidate-workspace { grid-column: 2; }
+.simulator-candidate-list, .simulator-candidate-scope, .simulator-candidate-evidence { display: grid; gap: 8px; margin-top: 10px; }
+.simulator-candidate-item { min-height: 44px; border: 1px solid var(--border-subtle); background: var(--bg-workspace); color: var(--text-primary); text-align: left; padding: 9px; cursor: pointer; }
+.simulator-candidate-item[aria-pressed="true"] { border-color: var(--story-gold); }
+.simulator-candidate-scope > div, .simulator-candidate-evidence > div { display: grid; grid-template-columns: 110px 1fr; gap: 8px; font-size: 12px; }
+.simulator-candidate-scope strong, .simulator-candidate-evidence strong { color: var(--text-muted); font: 10px var(--font-mono); text-transform: uppercase; }
+.simulator-candidate-content { max-height: 360px; overflow: auto; white-space: pre-wrap; background: var(--bg-workspace); border: 1px solid var(--border-subtle); padding: 12px; font: 13px/1.6 var(--font-body); }
+.simulator-review-controls { display: grid; gap: 8px; margin-top: 12px; }
+.simulator-review-controls input, .simulator-review-controls textarea { min-height: 44px; background: var(--bg-workspace); color: var(--text-primary); border: 1px solid var(--border-subtle); padding: 8px; font: inherit; }
+.simulator-review-actions, .simulator-dialog-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.simulator-commit-dialog { max-width: min(92vw, 38rem); color: var(--text-primary); background: var(--bg-elevated); border: 1px solid var(--border-strong); border-radius: var(--radius-md); padding: 18px; }
+.simulator-commit-dialog::backdrop { background: rgba(0, 0, 0, .62); }
+.simulator-commit-recovery, .simulator-chapter-completion { margin: 0 22px 18px; }
+.simulator-commit-recovery { border-color: var(--status-warning); }
+.simulator-candidate-panel.hidden, .simulator-candidate-workspace.hidden, .simulator-chapter-completion.hidden, .simulator-commit-recovery.hidden { display: none; }
+@media (max-width: 1100px) { .simulator-context-bar { grid-template-columns: 1fr; } .simulator-loop-layout { grid-template-columns: 1fr 1fr; } .simulator-loop-evidence { grid-column: 1 / -1; } }
+@media (max-width: 720px) { .simulator-context-values { grid-template-columns: repeat(2, minmax(0, 1fr)); } .simulator-loop-layout { grid-template-columns: 1fr; padding: 12px; } .simulator-turn-result { grid-column: auto; } .simulator-recovery { margin: 0 12px 12px; } }
+@media (prefers-reduced-motion: reduce) { .simulator-loop-shell *, .simulator-loop-shell *::before, .simulator-loop-shell *::after { transition: none !important; animation: none !important; } }

@@ -14,7 +14,9 @@ def make_service(tmp_path: Path, text: str = "# Chapter 1\n\nOriginal canon even
     path = context.chapters_dir / "chapter_001.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
-    return RevisionService(context)
+    svc = RevisionService(context)
+    svc.initialize_chapter_canon(1, text)
+    return svc
 
 
 def test_revision_candidates_are_append_only_and_apply_creates_new_canon(tmp_path: Path):

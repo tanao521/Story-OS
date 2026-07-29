@@ -254,6 +254,7 @@ def test_legacy_chapter_adoption(temp_project, plan_file):
     legacy_path.write_text(legacy_chapter, encoding="utf-8")
     
     revision_service = RevisionService(temp_project)
+    revision_service.initialize_chapter_canon(1, legacy_chapter)
     active_canon = revision_service.active_canon(1)
     
     assert active_canon["canon_version_id"].startswith("legacy")

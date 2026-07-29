@@ -855,10 +855,30 @@ def pull_obsidian_command(
         return _failed("pull-obsidian", f"回导失败：{str(e)}")
 
 
-def index_vault_command() -> dict[str, Any]:
-    from system.vector_index_lifecycle import rebuild_project_index
+def index_vault_command(
+    *,
+    project_id: str | None = None,
+    timeline_id: str | None = None,
+    branch_id: str | None = None,
+    canon_revision_id: str | None = None,
+) -> dict[str, Any]:
+    from system.memory_repair_service import MemoryRepairService
 
-    result = rebuild_project_index(get_project_context(), timeline_id="main")
+    if not all((project_id, timeline_id, branch_id, canon_revision_id)):
+        return {
+            **_failed(
+            "index-vault",
+            "VECTOR_SCOPE_REQUIRED: Complete VectorScope is required.",
+            ),
+            "code": "VECTOR_SCOPE_REQUIRED",
+        }
+    result = MemoryRepairService(get_project_context()).initialize_vector_index(
+        project_id=project_id,
+        timeline_id=timeline_id,
+        branch_id=branch_id,
+        canon_revision_id=canon_revision_id,
+        rebuild=True,
+    )
     if result.get("status") == "failed":
         return _failed("index-vault", result.get("message", "向量索引构建失败。"))
     return _success(
@@ -904,19 +924,42 @@ def repair_current_quality_report_command(chapter_id: int | None = None, force: 
     return _success("repair-quality-report", "\u5df2\u521b\u5efa\u5f53\u524d\u6b63\u53f2\u8d28\u91cf\u62a5\u544a\u4efb\u52a1\u3002", outputs={"job": jobs[0], "jobs": jobs, "status": status, "chapter_ids": [int(item["chapter_id"]) for item in selected_items]})
 
 
-def initialize_vector_index_command(rebuild: bool = False) -> dict[str, Any]:
+def initialize_vector_index_command(
+    rebuild: bool = False,
+    *,
+    project_id: str | None = None,
+    timeline_id: str | None = None,
+    branch_id: str | None = None,
+    canon_revision_id: str | None = None,
+) -> dict[str, Any]:
     """Queue a project-local vector-index repair with no remote dependency."""
     from system.job_manager import get_job_manager
     from system.memory_repair_service import MemoryRepairService
 
     context = get_project_context()
+    if not all((project_id, timeline_id, branch_id, canon_revision_id)):
+        return {
+            **_failed(
+            "initialize-vector-index",
+            "VECTOR_SCOPE_REQUIRED: Complete VectorScope is required.",
+            ),
+            "code": "VECTOR_SCOPE_REQUIRED",
+        }
     status = MemoryRepairService(context).vector_status()
     if status.get("status") in {"ready", "empty"} and not rebuild:
         return _success("initialize-vector-index", "\u672c\u5730\u5411\u91cf\u7d22\u5f15\u5df2\u53ef\u7528\uff0c\u65e0\u9700\u91cd\u590d\u521d\u59cb\u5316\u3002", outputs={"status": status})
     job_type = "rebuild_vector_index" if rebuild else ("incremental_vector_index" if status.get("status") == "stale" else "initialize_vector_index")
     job = get_job_manager().create_job(
         job_type,
-        {"created_by": "user", "source_snapshot": status.get("source_snapshot", {}), "mode": "rebuild" if rebuild else "initialize"},
+        {
+            "created_by": "user",
+            "source_snapshot": status.get("source_snapshot", {}),
+            "mode": "rebuild" if rebuild else "initialize",
+            "project_id": project_id,
+            "timeline_id": timeline_id,
+            "branch_id": branch_id,
+            "canon_revision_id": canon_revision_id,
+        },
         context=context,
     )
     return _success("initialize-vector-index", "\u5df2\u521b\u5efa\u672c\u5730\u5411\u91cf\u7d22\u5f15\u4efb\u52a1\u3002", outputs={"job": job, "status": status})

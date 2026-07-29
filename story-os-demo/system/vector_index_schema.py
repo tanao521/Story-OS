@@ -25,16 +25,35 @@ class SourceType(str, Enum):
 
 
 @dataclass(frozen=True)
+class VectorScope:
+    project_id: str
+    timeline_id: str
+    branch_id: str
+    canon_revision_id: str
+
+    def __post_init__(self) -> None:
+        for name, value in (("project_id", self.project_id), ("timeline_id", self.timeline_id), ("branch_id", self.branch_id), ("canon_revision_id", self.canon_revision_id)):
+            if not isinstance(value, str) or not value or value == ".." or "/" in value or "\\" in value:
+                raise ValueError(f"VECTOR_SCOPE_REQUIRED:{name}")
+
+
+@dataclass(frozen=True)
 class VectorMetadata:
     schema_version: int = 2
     project_id: str = ""
     timeline_id: str = "main"
+    branch_id: str = ""
     source_type: SourceType = SourceType.CHAPTER
+    source_identity: str = ""
     source_path: str = ""
     chapter_id: int | None = None
     character_name: str = ""
     canon_status: CanonStatus = CanonStatus.ACTIVE
     canon_revision_id: str | None = None
+    branch_lifecycle_status: str = "open"
+    source_version_id: str = ""
+    source_fingerprint: str = ""
+    record_fingerprint: str = ""
     content_hash: str = ""
     indexed_at: str = ""
 
@@ -43,11 +62,17 @@ class VectorMetadata:
             "schema_version": self.schema_version,
             "project_id": self.project_id,
             "timeline_id": self.timeline_id,
+            "branch_id": self.branch_id,
             "source_type": self.source_type.value,
+            "source_identity": self.source_identity,
             "source_path": self.source_path,
             "canon_status": self.canon_status.value,
             "content_hash": self.content_hash,
             "indexed_at": self.indexed_at,
+            "branch_lifecycle_status": self.branch_lifecycle_status,
+            "source_version_id": self.source_version_id,
+            "source_fingerprint": self.source_fingerprint or self.content_hash,
+            "record_fingerprint": self.record_fingerprint,
         }
         if self.chapter_id is not None:
             result["chapter_id"] = self.chapter_id
@@ -63,12 +88,18 @@ class VectorMetadata:
             schema_version=data.get("schema_version", 2),
             project_id=data.get("project_id", ""),
             timeline_id=data.get("timeline_id", "main"),
+            branch_id=data.get("branch_id", ""),
             source_type=SourceType(data.get("source_type", "chapter")),
+            source_identity=data.get("source_identity", ""),
             source_path=data.get("source_path", ""),
             chapter_id=data.get("chapter_id"),
             character_name=data.get("character_name", ""),
             canon_status=CanonStatus(data.get("canon_status", "active")),
             canon_revision_id=data.get("canon_revision_id"),
+            branch_lifecycle_status=data.get("branch_lifecycle_status", "open"),
+            source_version_id=data.get("source_version_id", ""),
+            source_fingerprint=data.get("source_fingerprint", ""),
+            record_fingerprint=data.get("record_fingerprint", ""),
             content_hash=data.get("content_hash", ""),
             indexed_at=data.get("indexed_at", ""),
         )
@@ -133,6 +164,15 @@ def generate_document_id(
     base = f"{project_id}/{timeline_id}/{source_type.value}/{source_identity}/{chunk_index}"
     h = hashlib.sha256(base.encode("utf-8")).hexdigest()[:12]
     return f"{source_type.value}_{h}_{content_hash[:8]}"
+
+
+def generate_scoped_document_id(scope: VectorScope, source_type: SourceType, source_identity: str, chunk_index: int, source_fingerprint: str) -> str:
+    authority = f"{scope.project_id}/{scope.timeline_id}/{scope.branch_id}/{scope.canon_revision_id}/{source_type.value}/{source_identity}/{chunk_index}"
+    return f"{source_type.value}_{hashlib.sha256(authority.encode('utf-8')).hexdigest()[:20]}_{source_fingerprint[:8]}"
+
+
+def branch_manifest_path(data_dir: Path, scope: VectorScope) -> Path:
+    return data_dir / "chroma" / "manifests" / scope.timeline_id / f"{scope.branch_id}.json"
 
 
 def manifest_path(data_dir: Path, timeline_id: str = "main") -> Path:

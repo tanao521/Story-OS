@@ -117,8 +117,10 @@ class MemoryRepairService:
             return self._vector_result("stale", metadata, sources)
         return self._vector_result("ready", metadata, sources)
 
-    def initialize_vector_index(self, *, rebuild: bool = False, job_id: str | None = None) -> dict[str, Any]:
-        from system.vector_memory import build_or_update_index
+    def initialize_vector_index(self, *, project_id: str | None = None, timeline_id: str | None = None, branch_id: str | None = None, canon_revision_id: str | None = None, rebuild: bool = False, job_id: str | None = None) -> dict[str, Any]:
+        from system.vector_index_schema import VectorScope
+        if not all((project_id, timeline_id, branch_id, canon_revision_id)):
+            return {"status": "failed", "code": "VECTOR_SCOPE_REQUIRED", "message": "Complete VectorScope is required", "outputs": {}}
 
         before = self.vector_status()
         metadata = dict(before.get("metadata") or {})
@@ -134,18 +136,22 @@ class MemoryRepairService:
         })
         self._write_vector_metadata(metadata)
         from system.vector_sync_run_store import VectorSyncRunStore, VectorSyncOperationType, VectorSyncStatus
-        from system.vector_index_lifecycle import rebuild_project_index
-        
         sync_store = VectorSyncRunStore(self.context)
         sync_run = sync_store.create(
             operation_type=VectorSyncOperationType.REPAIR,
             project_id=self.context.root.name or "default",
-            timeline_id="main",
+            timeline_id=timeline_id,
         )
         
         sync_store.update_status(sync_run.operation_id, VectorSyncStatus.RUNNING)
         
-        result = rebuild_project_index(self.context, timeline_id="main")
+        scope = VectorScope(project_id, timeline_id, branch_id, canon_revision_id)
+        from system.vector_index_lifecycle import index_scoped_records
+        records = []
+        for chapter_path in sorted(self.context.chapters_dir.glob("chapter_*.md")):
+            chapter_id = int(chapter_path.stem.split("_")[-1])
+            records.append({"source_type":"chapter","chapter_id":chapter_id,"source_identity":str(chapter_id),"source_version_id":canon_revision_id,"text":chapter_path.read_text(encoding="utf-8")})
+        result = index_scoped_records(self.context, scope, records, operation_id=sync_run.operation_id)
         
         if result.get("status") == "success":
             sync_store.update_status(sync_run.operation_id, VectorSyncStatus.COMPLETED)

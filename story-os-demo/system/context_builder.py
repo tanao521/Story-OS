@@ -76,21 +76,8 @@ def _build_legacy_working_context(
     # ── Layer 3: Retrieval Memory (vector search, on-demand) ───────────
     vector_retrieved: list[dict[str, Any]] = []
     retrieval_mode = "keyword"
-    try:
-        from system.vector_index_lifecycle import search_similar
-
-        if query and allow_vector:
-            retrieval_mode = "keyword_plus_vector"
-            results = search_similar(
-                get_project_context(),
-                query,
-                timeline_id="main",
-                max_results=8,
-                exclude_chapter_id=current_chapter,
-            )
-            vector_retrieved = [item for item in results if not _artifact_is_stale("vector_memory", int(item.get("chapter_id", -1) or -1))][:5]
-    except Exception:
-        pass
+    # Branch-aware vector retrieval is injected by ContextAssemblyService only
+    # after a complete VectorScope has been validated.
 
     warnings: list[str] = [
         f"章节原文缺失：chapter_{ch.get('chapter_id', ''):03d}"

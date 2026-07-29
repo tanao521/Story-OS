@@ -103,7 +103,11 @@ def search_vector_memory_if_available(
     question: str,
     data_dir: str | Path = "data",
     max_results: int = 5,
+    *,
+    vector_scope=None,
 ) -> list[dict[str, Any]]:
+    if vector_scope is None:
+        return []
     sources = load_story_sources(data_dir)
     state = sources.get("state", {})
     vector_config = state.get("vector_memory", {}) if isinstance(state, dict) else {}
@@ -113,26 +117,16 @@ def search_vector_memory_if_available(
     if not report_path.exists():
         return []
 
-    from core.project_context import ProjectContext
-    from system.vector_index_lifecycle import search_similar
+    from core.project_context import get_project_context
+    from system.vector_index_lifecycle import search_scoped
 
     try:
-        context = ProjectContext(Path(data_dir).parent)
-        results = search_similar(context, question, timeline_id="main", max_results=max_results)
-        if results:
-            return results
+        context = get_project_context(Path(data_dir).parent)
+        return search_scoped(context, vector_scope, question, max_results=max_results, business=True)
     except Exception:
-        pass
-
-    report = _read_json(report_path)
-    return [{
-        "type": "vector",
-        "path": report_path.as_posix(),
-        "label": "vector_memory",
-        "score": 0.3,
-        "snippet": str(report.get("summary", "向量索引已存在，但语义检索未返回结果。")),
-        "matched_fields": ["vector_index_report"],
-    }]
+        # A scoped vector failure must never fall back to a branchless report
+        # or another branch's retrieval result.
+        return []
 
 
 def answer_from_state(question: str, data_dir: str | Path = "data") -> dict[str, Any]:
@@ -163,10 +157,12 @@ def answer_from_memory(
     question: str,
     data_dir: str | Path = "data",
     use_vector: bool = True,
+    *,
+    vector_scope=None,
 ) -> dict[str, Any]:
     normalized = normalize_question(question)
     summary_results = search_memory_summaries(normalized, data_dir)
-    vector_results = search_vector_memory_if_available(normalized, data_dir) if use_vector else []
+    vector_results = search_vector_memory_if_available(normalized, data_dir, vector_scope=vector_scope) if use_vector else []
     results = summary_results + vector_results
     if not results:
         return _qa_result(
@@ -196,9 +192,11 @@ def answer_from_story(
     data_dir: str | Path = "data",
     use_llm: bool = False,
     use_vector: bool = True,
+    *,
+    vector_scope=None,
 ) -> dict[str, Any]:
     state_result = answer_from_state(question, data_dir)
-    memory_result = answer_from_memory(question, data_dir, use_vector=use_vector)
+    memory_result = answer_from_memory(question, data_dir, use_vector=use_vector, vector_scope=vector_scope)
     usable = [item for item in [state_result, memory_result] if item.get("confidence") != "unknown"]
     if not usable:
         return _qa_result(

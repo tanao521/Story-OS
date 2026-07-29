@@ -98,13 +98,54 @@ class RevisionService:
         return item
 
     def active_canon(self, chapter_id: int) -> dict[str, Any]:
+        result = self.read_active_canon(chapter_id)
+        if result is None:
+            raise CanonVersionNotFoundError("This chapter has no active canon version.")
+        payload = dict(result)
+        payload["content"] = self.store.read_markdown(payload["content_path"], strict=True) or ""
+        return payload
+
+    def initialize_chapter_canon(
+        self, chapter_id: int, content: str, *, publish_chapter: bool = True
+    ) -> dict[str, Any]:
+        existing = self.read_active_canon(chapter_id)
+        if existing is not None:
+            return existing
         index = self._canon_index(chapter_id)
         version = next((item for item in index["versions"] if item.get("active")), None)
-        if not version:
-            raise CanonVersionNotFoundError("This chapter has no active canon version.")
-        result = dict(version)
-        result["content"] = self.store.read_markdown(result["content_path"], strict=True) or ""
-        return result
+        if version:
+            return version
+        if not publish_chapter:
+            version_id = f"canon-chapter-{chapter_id:03d}-v001"
+            record = self._canon_record(
+                chapter_id, 1, version_id, _canon_file_path(chapter_id, 1), content,
+                "chapter_initialize",
+            )
+            record["active"] = True
+            record["activated_at"] = _now()
+            index = {
+                "schema_version": "1.0",
+                "chapter_id": chapter_id,
+                "current_version_id": version_id,
+                "versions": [record],
+            }
+            self.store.write_markdown(record["content_path"], content)
+            self.store.write_json(_canon_index_path(chapter_id), index)
+            return record
+        return self.create_and_apply_revision(chapter_id, content, {"source_type": "chapter_initialize", "source_hash": _hash(content)})
+
+    def read_active_canon(self, chapter_id: int) -> dict[str, Any] | None:
+        """Read the active Canon projection without legacy initialization.
+
+        Product read models must never create a Canon index as a side effect of
+        rendering state.  ``active_canon`` remains the authoritative mutation-
+        aware compatibility API; this method is deliberately projection-only.
+        """
+        raw = self.store.read_json(_canon_index_path(chapter_id), default=None, expected_type=dict)
+        if not isinstance(raw, dict) or not isinstance(raw.get("versions"), list):
+            return None
+        active = next((item for item in raw["versions"] if isinstance(item, dict) and item.get("active")), None)
+        return dict(active) if isinstance(active, dict) else None
 
     def _canon_index(self, chapter_id: int) -> dict[str, Any]:
         path = _canon_index_path(chapter_id)
@@ -134,9 +175,18 @@ class RevisionService:
                 "restored_from_version_id": extra.get("restored_from_version_id", ""), "review_id": extra.get("review_id", ""),
                 "word_count": _word_count(content)}
 
+    def _ensure_canon(self, chapter_id: int) -> None:
+        if self.read_active_canon(chapter_id) is None:
+            content = self.store.read_markdown(_chapter_path(chapter_id), strict=True) or ""
+            self.initialize_chapter_canon(chapter_id, content)
+
     # --- Revisions and candidates --------------------------------------
     def create_revision(self, chapter_id: int, *, reason: str = "", scope: str = "", source_version_id: str | None = None) -> dict[str, Any]:
-        base = self.get_canon_version(chapter_id, source_version_id) if source_version_id else self.active_canon(chapter_id)
+        if source_version_id:
+            base = self.get_canon_version(chapter_id, source_version_id)
+        else:
+            self._ensure_canon(chapter_id)
+            base = self.active_canon(chapter_id)
         revision_id = _id("revision")
         candidate = self._save_candidate(revision_id, chapter_id, base["content"], source="manual", notes="Revision baseline", ordinal=1)
         revision = {"schema_version": "1.0", "revision_id": revision_id, "project_id": self.context.root.name,
@@ -203,7 +253,7 @@ class RevisionService:
 
     # --- Analysis and review -------------------------------------------
     def diff(self, revision_id: str, left_candidate_id: str | None = None, right_candidate_id: str | None = None) -> dict[str, Any]:
-        revision = self.get_revision(revision_id); base = self.active_canon(int(revision["chapter_id"]))
+        revision = self.get_revision(revision_id); self._ensure_canon(int(revision["chapter_id"])); base = self.active_canon(int(revision["chapter_id"]))
         left = self.get_candidate(revision_id, left_candidate_id) if left_candidate_id else base
         right = self.get_candidate(revision_id, right_candidate_id or revision["active_candidate_version_id"])
         lines = list(difflib.unified_diff(left["content"].splitlines(), right["content"].splitlines(), fromfile=left.get("candidate_version_id", base["canon_version_id"]), tofile=right["candidate_version_id"], lineterm=""))
@@ -235,6 +285,7 @@ class RevisionService:
         previous = self.store.read_markdown(_chapter_path(chapter - 1), default="") if chapter > 1 else ""
         following = self.store.read_markdown(_chapter_path(chapter + 1), default="") or ""
         report = check_chapter_continuity(previous, candidate["content"]) if previous else {"verdict": "pass", "score": 1.0, "issues": [], "suggestions": [], "mode": "not_applicable"}
+        self._ensure_canon(chapter)
         removed = self._entity_changes(self.active_canon(chapter)["content"], candidate["content"])["removed"]
         references = [term for term in removed if term and term in following]
         report.update({"revision_id": revision_id, "candidate_version_id": candidate["candidate_version_id"], "chapter_id": chapter, "following_reference_risks": references[:20], "existing_issues": [], "new_issues": report.get("issues", []), "resolved_issues": []})
@@ -245,6 +296,7 @@ class RevisionService:
 
     def impact_analysis(self, revision_id: str, candidate_id: str | None = None) -> dict[str, Any]:
         revision = self.get_revision(revision_id); chapter = int(revision["chapter_id"]); candidate = self.get_candidate(revision_id, candidate_id or revision["active_candidate_version_id"])
+        self._ensure_canon(chapter)
         removed = self._entity_changes(self.active_canon(chapter)["content"], candidate["content"])["removed"]; impacts: list[dict[str, Any]] = []
         for path in sorted(self.store.path("data/chapters").glob("chapter_*.md")):
             match = re.search(r"chapter_(\d+)\.md$", path.name)
@@ -277,13 +329,14 @@ class RevisionService:
         return self.store.read_json(f"data/revisions/{revision['revision_id']}/reports/{value}.json", default={}, expected_type=dict) if value else {}
 
     # --- Canon activation / restore ------------------------------------
-    def apply(self, revision_id: str) -> dict[str, Any]:
+    def apply(self, revision_id: str, *, vector_scope=None) -> dict[str, Any]:
         revision = self.get_revision(revision_id)
         if revision.get("status") != "approved": raise RevisionStateError("A revision must be approved by a human before it can be applied.")
         chapter = int(revision["chapter_id"]); lock = self._lock_for(chapter)
         if not lock.acquire(blocking=False): raise ChapterOperationConflict("A conflicting operation is already running for this chapter.")
         try:
             revision["status"] = "applying"; revision["updated_at"] = _now(); self._save_revision(revision)
+            self._ensure_canon(chapter)
             active = self.active_canon(chapter)
             current_chapter_hash = _hash(self.store.read_markdown(_chapter_path(chapter), strict=True) or "")
             if active["canon_version_id"] != revision["base_canon_version_id"] or active["content_hash"] != revision["base_canon_hash"] or current_chapter_hash != revision["base_chapter_file_hash"]:
@@ -308,44 +361,15 @@ class RevisionService:
             self._mark_derived_stale(chapter, active["canon_version_id"], version_id)
             
             vector_sync_warnings = []
-            try:
-                from system.vector_sync_run_store import VectorSyncRunStore, VectorSyncOperationType, VectorSyncStatus
-                from system.vector_index_lifecycle import index_chapter
-                
-                sync_store = VectorSyncRunStore(self.context)
-                sync_run = sync_store.create(
-                    operation_type=VectorSyncOperationType.CANON_RESTORE,
-                    project_id=self.context.root.name or "default",
-                    timeline_id="main",
-                    chapter_id=chapter,
-                    canon_revision_id=revision_id,
-                )
-                
-                sync_store.update_status(sync_run.operation_id, VectorSyncStatus.RUNNING)
-                
-                content = self.store.read_markdown(_chapter_path(chapter), strict=True) or ""
-                result = index_chapter(self.context, chapter, content, canon_revision_id=revision_id)
-                
-                if result.get("status") == "success":
-                    sync_store.update_status(sync_run.operation_id, VectorSyncStatus.COMPLETED)
-                else:
-                    sync_store.update_status(sync_run.operation_id, VectorSyncStatus.FAILED, result.get("message", "Unknown error"))
-                    vector_sync_warnings.append(f"Vector index sync failed: {result.get('message', 'Unknown error')}. Operation ID: {sync_run.operation_id}")
-            except Exception as exc:
+            if vector_scope is not None and getattr(vector_scope, "canon_revision_id", None) == version_id:
                 try:
-                    from system.vector_sync_run_store import VectorSyncRunStore, VectorSyncOperationType, VectorSyncStatus
-                    sync_store = VectorSyncRunStore(self.context)
-                    sync_run = sync_store.create(
-                        operation_type=VectorSyncOperationType.CANON_RESTORE,
-                        project_id=self.context.root.name or "default",
-                        timeline_id="main",
-                        chapter_id=chapter,
-                        canon_revision_id=revision_id,
-                    )
-                    sync_store.update_status(sync_run.operation_id, VectorSyncStatus.FAILED, str(exc))
-                except Exception:
-                    pass
-                vector_sync_warnings.append(f"Vector index sync failed: {str(exc)[:160]}")
+                    from system.vector_index_lifecycle import index_scoped_records
+                    content = self.store.read_markdown(_chapter_path(chapter), strict=True) or ""
+                    index_scoped_records(self.context, vector_scope, [{"source_type":"chapter","chapter_id":chapter,"source_identity":str(chapter),"source_version_id":version_id,"text":content}], operation_id=f"revision-{revision_id}")
+                except Exception as exc:
+                    vector_sync_warnings.append(f"Vector index sync failed: {str(exc)[:160]}")
+            else:
+                vector_sync_warnings.append("Vector index sync skipped: VECTOR_SCOPE_REQUIRED")
             
             try:
                 from system.narrative_memory_service import NarrativeMemoryService
@@ -428,13 +452,13 @@ class RevisionService:
         except CanonVersionNotFoundError:
             return None
 
-    def restore_canon(self, chapter_id: int, version_id: str, *, confirmed_risks: bool = False) -> dict[str, Any]:
+    def restore_canon(self, chapter_id: int, version_id: str, *, confirmed_risks: bool = False, vector_scope=None) -> dict[str, Any]:
         target = self.get_canon_version(chapter_id, version_id)
         # The revision baseline must remain the current canon; only its candidate carries historical content.
         revision = self.create_revision(chapter_id, reason=f"Restore {version_id}", scope="historical_canon_restore")
         candidate = self.save_candidate(revision["revision_id"], target["content"], source="restored_version", notes=f"Restored from {version_id}")
         self.review(revision["revision_id"], "approve", candidate_id=candidate["candidate_version_id"], confirmed_risks=confirmed_risks, comment="Historical canon restore approved by user.")
-        result = self.apply(revision["revision_id"])
+        result = self.apply(revision["revision_id"], vector_scope=vector_scope)
         result["canon_version"]["restored_from_version_id"] = version_id
         # Persist provenance in the canonical index as well.
         index = self._canon_index(chapter_id)

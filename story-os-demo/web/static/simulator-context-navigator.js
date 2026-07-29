@@ -87,6 +87,15 @@
       if (error.name !== "AbortError") status.textContent = `Context load failed: ${label(error.message, "unknown error")}`;
     }
   }
+  function rebind(changes) {
+    const allowed = {};
+    ["project", "project_id", "timeline_id", "branch_id", "chapter_id", "source_version_id", "panel_execution_id", "view", "turn_id", "action_id"].forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(changes || {}, key)) allowed[key] = changes[key];
+    });
+    if (allowed.project_id && !allowed.project) allowed.project = allowed.project_id;
+    updateUrl(allowed);
+  }
   function init() { bindChanges(); window.addEventListener("popstate", load); window.addEventListener("storyos:dashboard-ready", load); window.addEventListener("storyos:panel-run-created", load); load(); }
+  window.StoryOSContextNavigator = { rebind, load };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init, { once: true }); else init();
 })();

@@ -2,7 +2,7 @@
 .storyos-mode-switch { display: inline-flex; gap: 0.2rem; align-items: center; margin-right: 0.6rem; }
 .storyos-mode-switch button { border: 1px solid var(--border-subtle, rgba(255,255,255,.14)); border-radius: 999px; background: transparent; color: var(--text-muted, #9ba3b5); padding: 0.35rem 0.7rem; font: inherit; cursor: pointer; }
 .storyos-mode-switch button[aria-pressed="true"] { background: var(--accent-gold, #d8ad62); border-color: var(--accent-gold, #d8ad62); color: #18151b; }
-#dashboard-view.storyos-simulator-active .dashboard-main > *:not(#simulator-panel-review):not(#narrative-turn-workspace),
+#dashboard-view.storyos-simulator-active .dashboard-main > *:not(#simulator-panel-review):not(#narrative-turn-workspace):not(#simulator-loop-shell),
 #dashboard-view.storyos-simulator-active #context-inspector { display: none; }
 .storyos-simulator-panel { min-width: 0; }
 .storyos-simulator-review, .storyos-simulator-review > * { min-width: 0; max-width: 100%; }
