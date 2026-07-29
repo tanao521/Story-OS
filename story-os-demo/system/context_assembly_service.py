@@ -114,11 +114,12 @@ class ExternalSyncAdapter:
 class ContextAssemblyService:
     """The sole new composition entrypoint; all adapters are read-only."""
 
-    def __init__(self, context: ProjectContext | None = None, *, vector_retriever: Callable[[str, int], list[dict[str, Any]]] | None = None) -> None:
+    def __init__(self, context: ProjectContext | None = None, *, vector_retriever: Callable[[str, int], list[dict[str, Any]]] | None = None, vector_scope=None) -> None:
         self.context = context or get_project_context()
         self.project = ProjectRef.from_context(self.context)
         self.store = DataStore(self.context)
         self.vector_retriever = vector_retriever
+        self.vector_scope = vector_scope
 
     def assemble(
         self,
@@ -144,11 +145,14 @@ class ContextAssemblyService:
         # initialize the legacy vector client for the same request.
         working = _build_legacy_working_context(
             state, safe_index, query, story_spec or {}, characters or {}, world_bible or {},
-            allow_vector=profile.allow_vector and self.vector_retriever is None,
+            allow_vector=False,
         )
         vector = working.get("vector_retrieved_memories", []) if profile.allow_vector else []
         if self.vector_retriever is not None and profile.allow_vector and query:
             vector = self.vector_retriever(query, profile.vector_results)
+        elif self.vector_scope is not None and profile.allow_vector and query:
+            from system.vector_index_lifecycle import search_scoped
+            vector = search_scoped(self.context, self.vector_scope, query, max_results=profile.vector_results, business=True)
         vector_rows = VectorRetrievalAdapter.read(vector if isinstance(vector, list) else [])[:profile.vector_results]
         working["vector_retrieved_memories"] = vector_rows
         if isinstance(working.get("retrieval_memory"), dict):

@@ -1,0 +1,176 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-07-22T03:54:04.835470+00:00",
+  "git_head": "d7d85465b58452ca7900d1dd4b051cadf697b736",
+  "python_version": "3.14.5",
+  "chroma_version": "1.5.9",
+  "recovery_path": "authoritative_rebuild",
+  "project_identity": "story-os-demo",
+  "file_count": 6,
+  "total_bytes": 1988956,
+  "directory_tree_hash": "7484698e981da461926b7ac11b4ecc3327331d9f8f32ae42371cea69439c9947",
+  "files": [
+    {
+      "path": "61dc4256-b575-4ea1-92d0-657106ee31e0/data_level0.bin",
+      "size": 218800,
+      "mtime_ns": 1784692130626815100,
+      "sha256": "8b15520d9dedcd87b81e502c6c0133af91e7d1fb937883ca4d468e3ca4e965c4"
+    },
+    {
+      "path": "61dc4256-b575-4ea1-92d0-657106ee31e0/header.bin",
+      "size": 100,
+      "mtime_ns": 1784692130625812100,
+      "sha256": "5c8a407226e15554f8aa5e2dc70831bc8e464bd1433ac370e1dc9bef7e839d5a"
+    },
+    {
+      "path": "61dc4256-b575-4ea1-92d0-657106ee31e0/length.bin",
+      "size": 400,
+      "mtime_ns": 1784692130626815100,
+      "sha256": "f0afae3f8245405691f37f42b89acce57798c163713dd4148ae8068566ac2138"
+    },
+    {
+      "path": "61dc4256-b575-4ea1-92d0-657106ee31e0/link_lists.bin",
+      "size": 0,
+      "mtime_ns": 1784692130624812800,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "chroma.sqlite3",
+      "size": 1769472,
+      "mtime_ns": 1784692131425154300,
+      "sha256": "8675001115b013d05a4a73cb3d35711b3bcb1e3a8cd3b3c545803c796844853b"
+    },
+    {
+      "path": "index_manifest_main.json",
+      "size": 184,
+      "mtime_ns": 1784692131431333500,
+      "sha256": "a5f7a847f4ee647644bc3937e545ebb0d6728420ae884f207275e8597721d179"
+    }
+  ],
+  "logical_inventory": {
+    "sqlite_integrity_check": "ok",
+    "sqlite_foreign_key_issue_count": 2,
+    "collection_count": 1,
+    "collections": [
+      {
+        "name": "storyos_memory",
+        "dimension": 512,
+        "record_count": 95,
+        "document_id_set_hash": "97af41f63a3aac64bee85dca730429b7a83281d06969c99ec6f33307ccdda95d",
+        "document_content_set_hash": "edf593170339379762a9ba8f550248e829c6edbf5fb266ed2cf573bb12773339",
+        "metadata_normalized_hash": "44bc679c8731c1e5f0983e59e699e3d38728dad43df532f58f2d89ae6789f365",
+        "source_types": [
+          "chapter",
+          "character",
+          "summary",
+          "world_bible"
+        ],
+        "project_identities": [
+          "story-os-demo"
+        ],
+        "timeline_identities": [
+          "main"
+        ],
+        "canon_revision_count": 0,
+        "canon_revision_set_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "canon_status_counts": {
+          "active": 95
+        },
+        "orphan_source_path_count": 0,
+        "duplicate_document_id_count": 0,
+        "duplicate_document_content_count": 0
+      }
+    ],
+    "embedding_count": 95
+  },
+  "authority_source_assets": {
+    "file_count": 16,
+    "total_bytes": 127402,
+    "asset_set_hash": "4fd10deda7ce1f5baa7d26a401488167356059b4d90125e8312b11b475a6689c",
+    "files": [
+      {
+        "path": "data/chapters/chapter_001.md",
+        "size": 15623,
+        "sha256": "02335d7d661e72882198fb918306f30051b7bffea87932378c396b597aae68cb"
+      },
+      {
+        "path": "data/chapters/chapter_002.md",
+        "size": 17438,
+        "sha256": "f9b3c20bc60f732f746ae16d18ab0091e6702b37068212c9a40bb4ddcdb17d2d"
+      },
+      {
+        "path": "data/chapters/chapter_003.md",
+        "size": 12447,
+        "sha256": "df100c6e164250a1499edcc93e041366c6f462c39fe4a457006a7584ab6edf31"
+      },
+      {
+        "path": "data/chapters/chapter_004.md",
+        "size": 10620,
+        "sha256": "d271ac7938d1aa8edd4dd54d863e58e2e1f7fa25fca1eb2e3fa8233176154a6e"
+      },
+      {
+        "path": "data/chapters/chapter_005.md",
+        "size": 9265,
+        "sha256": "d6ecded204612a5b08d258e5ea7856793daedc735d1a50a4aa4255b4b88bbfe0"
+      },
+      {
+        "path": "data/chapters/chapter_006.md",
+        "size": 12743,
+        "sha256": "6880073aa932682345ed7a7f97fd18b1a129800d35cb1bea456306a66efd7904"
+      },
+      {
+        "path": "data/chapters/chapter_007.md",
+        "size": 10577,
+        "sha256": "dd754efb428b71de6b7e885800d2d8c4607cf9e61315e85ac46ade732b415c48"
+      },
+      {
+        "path": "data/summaries/chapter_001_summary.json",
+        "size": 3648,
+        "sha256": "9811b79d493f8e4855d9aaeec30f44ef016696cda1f7db1e3655593d22daddcc"
+      },
+      {
+        "path": "data/summaries/chapter_002_summary.json",
+        "size": 3937,
+        "sha256": "f198f1c7f7dcc6b6f66c405b8058ee1803ca689d15df26d69ce027420aedb8b6"
+      },
+      {
+        "path": "data/summaries/chapter_003_summary.json",
+        "size": 3897,
+        "sha256": "871b759a0e2d46ad00c33684f84abf312805c3df6b5a52834c9db1f79bb026ef"
+      },
+      {
+        "path": "data/summaries/chapter_004_summary.json",
+        "size": 3874,
+        "sha256": "dbefe855b2cf48c631c7aa7e2a5d6fe598a4fba0798d76471b457644b3867b96"
+      },
+      {
+        "path": "data/summaries/chapter_005_summary.json",
+        "size": 3768,
+        "sha256": "62251a13900141d2a034fcd53f43919e28dc0e41a0ea54e8741c68fb12989eed"
+      },
+      {
+        "path": "data/summaries/chapter_006_summary.json",
+        "size": 3791,
+        "sha256": "4c0ff894813db532e98767edf5aa867c287207d581d3399ab091ded4d5d529fc"
+      },
+      {
+        "path": "data/summaries/chapter_007_summary.json",
+        "size": 3775,
+        "sha256": "3f30bd4d31f8ccdc1e985173352a41e87fff7e190ca43758ac49ccc1e39ea203"
+      },
+      {
+        "path": "data/characters.json",
+        "size": 6635,
+        "sha256": "180cf473609011ac7a5dc4cca58c70bd4646854bbef5629e5b8524c9bdf9d053"
+      },
+      {
+        "path": "data/world_bible.json",
+        "size": 5364,
+        "sha256": "7d061a5795b02274fbb6d203ffece1a0200659443a0b2c9d0256f02fd005bce8"
+      }
+    ]
+  },
+  "quarantine_path": "C:/Users/ta/.codex/quarantine/StoryOS/phase0d2b1-rc3/20260722T113836218/chroma",
+  "recovery_summary": "",
+  "historical_evidence_limit": ""
+}

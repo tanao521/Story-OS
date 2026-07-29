@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
+import tempfile
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,13 +25,17 @@ from .vector_index_schema import (
     save_manifest,
     validate_project_match,
     validate_timeline_id,
+    VectorScope,
+    branch_manifest_path,
+    generate_scoped_document_id,
 )
 
 _COLLECTION_NAME = "storyos_memory"
+_fault_injector = None
 
 
-def _collection(context: ProjectContext):
-    return VectorClientManager().get_collection(context)
+def _collection(context: ProjectContext, manager: VectorClientManager | None = None):
+    return (manager or VectorClientManager()).get_collection(context)
 
 
 class VectorIndexLifecycleError(RuntimeError):
@@ -45,6 +52,223 @@ class ProjectMismatchError(VectorIndexLifecycleError):
 
 class InvalidTimelineError(VectorIndexLifecycleError):
     code = "VECTOR_INDEX_INVALID_TIMELINE"
+
+
+class VectorScopeRequired(VectorIndexLifecycleError):
+    code = "VECTOR_SCOPE_REQUIRED"
+
+
+class BranchVectorNotReady(VectorIndexLifecycleError):
+    code = "BRANCH_VECTOR_NOT_READY"
+
+
+class VectorOperationConflict(VectorIndexLifecycleError):
+    code = "VECTOR_OPERATION_CONFLICT"
+
+
+def _scope_where(scope: VectorScope) -> dict[str, Any]:
+    return {"$and": [{"project_id": scope.project_id}, {"timeline_id": scope.timeline_id}, {"branch_id": scope.branch_id}, {"canon_revision_id": scope.canon_revision_id}, {"canon_status": "active"}, {"branch_lifecycle_status": "open"}]}
+
+
+def _fault(point: str) -> None:
+    """Test-only recovery seam; production leaves this unset."""
+    if _fault_injector is not None:
+        _fault_injector(point)
+
+
+def _manifest_fingerprint(payload: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            {key: value for key, value in payload.items() if key != "record_fingerprint"},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _source_manifest_fingerprint(context: ProjectContext) -> str:
+    """Fingerprint the rebuild source set before claiming an operation."""
+    rows = []
+    for path in sorted(context.chapters_dir.glob("chapter_*.md")):
+        rows.append({
+            "path": path.name,
+            "content_fingerprint": compute_content_hash(path.read_text(encoding="utf-8")),
+        })
+    return hashlib.sha256(json.dumps(rows, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _load_verified_manifest(context: ProjectContext, scope: VectorScope) -> dict[str, Any]:
+    path = branch_manifest_path(context.data_dir, scope)
+    if not path.exists():
+        raise BranchVectorNotReady("Branch vector index is not ready")
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise BranchVectorNotReady("Branch vector manifest is unreadable") from exc
+    expected = {
+        "project_id": scope.project_id,
+        "timeline_id": scope.timeline_id,
+        "branch_id": scope.branch_id,
+        "canon_revision_id": scope.canon_revision_id,
+        "branch_lifecycle_status": "open",
+        "vector_ready": True,
+    }
+    if any(manifest.get(key) != value for key, value in expected.items()):
+        raise BranchVectorNotReady("Branch vector manifest does not match the requested scope")
+    if manifest.get("record_fingerprint") != _manifest_fingerprint(manifest):
+        raise BranchVectorNotReady("Branch vector manifest integrity check failed")
+    return manifest
+
+
+def _write_phase(path: Path, request: dict[str, Any], phase: str, **extra: Any) -> None:
+    payload = {
+        "operation_id": request["operation_id"],
+        "operation_type": request["operation_type"],
+        "project_id": request["project_id"],
+        "timeline_id": request["timeline_id"],
+        "branch_id": request["branch_id"],
+        "canon_revision_id": request["canon_revision_id"],
+        "canonical_request_fingerprint": request["canonical_request_fingerprint"],
+        "phase": phase,
+        **extra,
+    }
+    _atomic_manifest(path, payload)
+
+
+def _verify_phase(phase_path: Path, request: dict[str, Any]) -> dict[str, Any]:
+    if not phase_path.exists():
+        return {}
+    try:
+        phase = json.loads(phase_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise VectorOperationConflict("VECTOR_OPERATION_CONFLICT") from exc
+    keys = ("operation_id", "operation_type", "project_id", "timeline_id", "branch_id", "canon_revision_id", "canonical_request_fingerprint")
+    if any(phase.get(key) != request.get(key) for key in keys):
+        raise VectorOperationConflict("VECTOR_OPERATION_CONFLICT")
+    return phase
+
+
+def _assert_scope(context: ProjectContext, scope: VectorScope, *, business: bool) -> None:
+    if not isinstance(scope, VectorScope) or scope.project_id != _project_id_from_context(context):
+        raise VectorScopeRequired("Complete matching VectorScope is required")
+    from core.contracts.narrative_turn import BranchLifecycleStatus, TimelineContext
+    from system.narrative_branch_store import NarrativeBranchStore
+    timeline = TimelineContext(project_id=scope.project_id, timeline_id=scope.timeline_id)
+    store = NarrativeBranchStore(context)
+    branch = store.get_branch(timeline, scope.branch_id)
+    if branch is None:
+        raise VectorScopeRequired("Branch not found")
+    if branch.lifecycle_status != BranchLifecycleStatus.OPEN:
+        raise VectorScopeRequired("Branch is archived")
+    if business and store.get_active_branch_id(timeline) != scope.branch_id:
+        raise VectorScopeRequired("Branch is inactive")
+
+
+def _atomic_manifest(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True); handle.flush(); os.fsync(handle.fileno())
+        os.replace(name, path)
+    finally:
+        try: os.unlink(name)
+        except OSError: pass
+
+
+def index_scoped_records(context: ProjectContext, scope: VectorScope, records: list[dict[str, Any]], *, operation_id: str, vector_client_manager: VectorClientManager | None = None) -> dict[str, Any]:
+    """Sole E3 branch-aware write entrypoint."""
+    _assert_scope(context, scope, business=False)
+    col = _collection(context) if vector_client_manager is None else _collection(context, vector_client_manager)
+    if col is None:
+        return {"status": "failed", "code": "VECTOR_INTERNAL_ERROR"}
+    ids, docs, metas = [], [], []
+    for record in records:
+        text = str(record.get("text", "")); source_type = SourceType(str(record.get("source_type", "chapter")))
+        source_identity = str(record.get("source_identity", record.get("chapter_id", "source")))
+        source_fingerprint = compute_content_hash(text)
+        doc_id = generate_scoped_document_id(scope, source_type, source_identity, int(record.get("chunk_index", 0)), source_fingerprint)
+        meta = {"schema_version": 3, "project_id": scope.project_id, "timeline_id": scope.timeline_id, "branch_id": scope.branch_id, "canon_revision_id": scope.canon_revision_id, "canon_status": "active", "branch_lifecycle_status": "open", "source_type": source_type.value, "source_identity": source_identity, "chapter_id": int(record.get("chapter_id", 0)), "source_version_id": str(record.get("source_version_id", "")), "source_fingerprint": source_fingerprint, "indexed_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        meta["record_fingerprint"] = hashlib.sha256(json.dumps(meta, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        ids.append(doc_id); docs.append(text); metas.append(meta)
+    _safe_delete(col, {"project_id": scope.project_id, "timeline_id": scope.timeline_id, "branch_id": scope.branch_id, "canon_revision_id": scope.canon_revision_id})
+    _safe_add(col, ids, docs, metas)
+    manifest = {"schema_version": 3, "project_id": scope.project_id, "timeline_id": scope.timeline_id, "branch_id": scope.branch_id, "canon_revision_id": scope.canon_revision_id, "branch_lifecycle_status": "open", "vector_ready": True, "record_count": len(ids), "source_fingerprints": sorted(meta["source_fingerprint"] for meta in metas), "index_revision": hashlib.sha256("".join(ids).encode()).hexdigest(), "last_completed_operation_id": operation_id}
+    manifest["record_fingerprint"] = _manifest_fingerprint(manifest)
+    _atomic_manifest(branch_manifest_path(context.data_dir, scope), manifest)
+    return {"status": "success", "record_count": len(ids), "manifest": manifest}
+
+
+def search_scoped(context: ProjectContext, scope: VectorScope, query: str, *, max_results: int = 5, business: bool = True) -> list[dict[str, Any]]:
+    _assert_scope(context, scope, business=business)
+    _load_verified_manifest(context, scope)
+    col = _collection(context)
+    if col is None:
+        raise BranchVectorNotReady("Vector client unavailable")
+    raw = col.query(query_texts=[query], n_results=max_results, where=_scope_where(scope), include=["documents", "metadatas", "distances"])
+    out = []
+    ids = (raw.get("ids") or [[]])[0]; docs = (raw.get("documents") or [[]])[0]; metas = (raw.get("metadatas") or [[]])[0]
+    for index, doc_id in enumerate(ids):
+        meta = metas[index] if index < len(metas) else {}
+        if any(meta.get(key) != value for key, value in (("project_id", scope.project_id), ("timeline_id", scope.timeline_id), ("branch_id", scope.branch_id), ("canon_revision_id", scope.canon_revision_id), ("canon_status", "active"), ("branch_lifecycle_status", "open"))):
+            continue
+        out.append({"id": doc_id, "text": docs[index] if index < len(docs) else "", "metadata": meta})
+    return out
+
+
+def archive_branch_index(context: ProjectContext, scope: VectorScope, *, vector_client_manager: VectorClientManager | None = None) -> dict[str, Any]:
+    col = _collection(context) if vector_client_manager is None else _collection(context, vector_client_manager)
+    if col is not None:
+        _safe_delete(col, {"project_id": scope.project_id, "timeline_id": scope.timeline_id, "branch_id": scope.branch_id})
+    path = branch_manifest_path(context.data_dir, scope)
+    if path.exists():
+        manifest = json.loads(path.read_text(encoding="utf-8")); manifest["branch_lifecycle_status"] = "archived"; manifest["vector_ready"] = False; manifest["record_fingerprint"] = _manifest_fingerprint(manifest); _atomic_manifest(path, manifest)
+    return {"status": "success", "vector_ready": False}
+
+
+def sync_branch_index(context: ProjectContext, scope: VectorScope, *, operation_id: str, operation_type: str, vector_client_manager: VectorClientManager | None = None) -> dict[str, Any]:
+    """Recoverable archive/rebuild/restore vector synchronization authority."""
+    if operation_type not in {"archive", "restore", "rebuild", "repair"}:
+        raise VectorScopeRequired("Invalid vector operation type")
+    if not operation_id or Path(operation_id).name != operation_id or operation_id in {".", ".."}:
+        raise VectorScopeRequired("Invalid operation_id")
+    operations = context.data_dir / "chroma" / "operations"
+    authority_path = operations / f"{operation_id}.json"; phase_path = operations / f"{operation_id}.phase.json"
+    request = {"operation_id": operation_id, "operation_type": operation_type, "project_id": scope.project_id, "timeline_id": scope.timeline_id, "branch_id": scope.branch_id, "canon_revision_id": scope.canon_revision_id, "source_manifest_fingerprint": _source_manifest_fingerprint(context)}
+    request["canonical_request_fingerprint"] = hashlib.sha256(json.dumps(request, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    if authority_path.exists():
+        authority = json.loads(authority_path.read_text(encoding="utf-8"))
+        if authority.get("canonical_request_fingerprint") != request["canonical_request_fingerprint"]:
+            raise VectorOperationConflict("VECTOR_OPERATION_CONFLICT")
+        phase = _verify_phase(phase_path, request)
+        if phase.get("phase") == "COMPLETED":
+            return {"status": "success", "idempotent_replay": True, "vector_ready": operation_type != "archive"}
+    else:
+        request["created_at"] = datetime.now(timezone.utc).isoformat(); request["record_fingerprint"] = _manifest_fingerprint(request); _atomic_manifest(authority_path, request)
+    _write_phase(phase_path, request, "OPERATION_CLAIMED")
+    _fault("after_authority_claim")
+    if operation_type == "archive":
+        result = archive_branch_index(context, scope, vector_client_manager=vector_client_manager)
+    else:
+        _assert_scope(context, scope, business=False)
+        records=[]
+        for path in sorted(context.chapters_dir.glob("chapter_*.md")):
+            chapter_id=int(path.stem.split("_")[-1]); records.append({"source_type":"chapter","chapter_id":chapter_id,"source_identity":str(chapter_id),"source_version_id":scope.canon_revision_id,"text":path.read_text(encoding="utf-8")})
+        _write_phase(phase_path, request, "SOURCE_SCANNED", source_manifest_fingerprint=request["source_manifest_fingerprint"])
+        _fault("after_source_scan")
+        _write_phase(phase_path, request, "OLD_SCOPE_MARKED_STALE")
+        _fault("after_old_scope_marked_stale")
+        result=index_scoped_records(context, scope, records, operation_id=operation_id, vector_client_manager=vector_client_manager)
+        _fault("after_first_record_batch")
+        _fault("after_all_records_indexed")
+        _write_phase(phase_path, request, "MANIFEST_PUBLISHED")
+        _fault("after_manifest_publication")
+        _load_verified_manifest(context, scope)
+        _fault("after_verification")
+        result["vector_ready"]=result.get("status")=="success"
+    _fault("before_completed_marker")
+    _write_phase(phase_path, request, "COMPLETED", vector_ready=result.get("vector_ready", False))
+    return {**result, "idempotent_replay": False}
 
 
 def _chunk_text(text: str, chunk_size: int = 500, overlap: int = 100) -> list[str]:

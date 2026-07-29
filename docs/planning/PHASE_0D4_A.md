@@ -98,14 +98,14 @@ class NarrativeScope:
 
 **Path Structure (authoritative as of FIX-RC2-FV):**
 ```
-data/narrative_turns/{timeline_id}/{branch_id}/
+data/narrative_turn/{record_type}/{timeline_id}/{branch_id}/
   plans/{turn_id}.json
   validations/{validation_id}.json
   results/{turn_id}.json
   transitions/{turn_id}/{sequence:08d}.json     ← sequence-only filename (FIX-RC)
   operations/{operation_id}.json                ← branch-local index (rebuildable projection)
 
-data/narrative_turn_operations/{operation_id}.json  ← project-root operation authority (FIX-RC)
+data/narrative_turn/operations/{operation_id}.json  ← project-root operation authority (RC1)
 ```
 
 **Immutable publication (`_publish_immutable_json`):**
@@ -190,12 +190,12 @@ Static doc-contract tests (`test_phase_document_paths_match_store_constants`)
 assert these literal strings are present in this document.
 
 ```
-data/narrative_turns/{timeline_id}/{branch_id}/plans/{turn_id}.json
-data/narrative_turns/{timeline_id}/{branch_id}/validations/{validation_id}.json
-data/narrative_turns/{timeline_id}/{branch_id}/results/{turn_id}.json
-data/narrative_turns/{timeline_id}/{branch_id}/transitions/{turn_id}/{sequence:08d}.json
-data/narrative_turns/{timeline_id}/{branch_id}/operations/{operation_id}.json
-data/narrative_turn_operations/{operation_id}.json
+data/narrative_turn/plans/{timeline_id}/{branch_id}/{turn_id}.json
+data/narrative_turn/validations/{timeline_id}/{branch_id}/{validation_id}.json
+data/narrative_turn/results/{timeline_id}/{branch_id}/{turn_id}.json
+data/narrative_turn/transitions/{timeline_id}/{branch_id}/{turn_id}/{sequence:08d}.json
+data/narrative_turn/operation_indexes/{timeline_id}/{branch_id}/{operation_id}.json
+data/narrative_turn/operations/{operation_id}.json
 data/branches/{timeline_id}/branches/{branch_id}.json
 data/branches/{timeline_id}/lifecycle_events/{branch_id}/{sequence:08d}.json
 data/branches/{timeline_id}/registry.json

@@ -83,7 +83,9 @@ def collect_memory_status(data_dir: str | Path = "data") -> dict[str, Any]:
     vector_stats: dict[str, Any] = {}
     report_stats: dict[str, Any] = load_json_if_exists(vector_report, {}) or {}
     try:
-        from system.vector_memory import is_available, collection_stats
+        # Branchless legacy Chroma status is not authoritative.
+        is_available = lambda _data_dir: False
+        collection_stats = lambda _data_dir: {}
 
         vector_available = bool(is_available(data_dir))
         vector_stats = collection_stats(data_dir) or {}

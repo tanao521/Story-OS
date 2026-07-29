@@ -24,8 +24,10 @@
   <link rel="stylesheet" href="/static/creative-evolution.css?v=1">
   <link rel="stylesheet" href="/static/quality-pass.css">
   <link rel="stylesheet" href="/static/narrative-evaluation.css?v=1">
-  <link rel="stylesheet" href="/static/simulator-panel-review.css?v=0d4c-rc2">
+  <link rel="stylesheet" href="/static/simulator-panel-review.css?v=0d4c-rc2-1">
   <link rel="stylesheet" href="/static/simulator-narrative-turn.css?v=0d4c-1">
+  <link rel="stylesheet" href="/static/simulator-usable-loop.css?v=0d5c-2">
+  <link rel="stylesheet" href="/static/simulator-chapter-progression.css?v=0d6c-a-1">
 </head>
 <body>
   <div class="ambient-field" aria-hidden="true"></div>
@@ -166,6 +168,60 @@
 
     <main id="dashboard-view" class="dashboard-layout hidden">
 <section class="dashboard-main">
+        <section id="simulator-loop-shell" class="simulator-loop-shell hidden" data-simulator-loop-shell aria-labelledby="simulator-loop-title">
+          <header class="simulator-context-bar" data-simulator-context-bar>
+            <div class="simulator-authority-spine" aria-hidden="true"></div>
+            <div class="simulator-context-heading"><span class="eyebrow">Simulator / Authority</span><h1 id="simulator-loop-title">Usable story loop</h1><p id="simulator-loop-status" role="status" aria-live="polite">Loading authoritative state…</p></div>
+            <div id="simulator-context-values" class="simulator-context-values"></div>
+          </header>
+          <nav id="simulator-progress-rail" class="simulator-progress-rail" data-chapter-progress-rail aria-label="Simulator chapter progress">
+            <button type="button" data-loop-view="narrative-turn">Turns</button><button type="button" data-loop-view="history">History</button><button type="button" data-loop-view="candidate">Candidate</button><button type="button" data-loop-view="review">Review</button><button type="button" data-loop-view="commit">Commit</button><button type="button" data-loop-view="complete">Complete</button>
+          </nav>
+          <div class="simulator-loop-layout">
+            <section class="simulator-branch-panel" data-branch-control-panel aria-labelledby="simulator-branch-title">
+              <div class="simulator-panel-heading"><div><span class="eyebrow">Branch registry</span><h2 id="simulator-branch-title">Branches</h2></div><button id="simulator-branch-create" class="btn btn-secondary btn-compact" type="button">Create branch</button></div>
+              <div id="simulator-branch-feedback" class="simulator-feedback" role="status" aria-live="polite"></div>
+              <div id="simulator-branch-list" class="simulator-branch-list" data-branch-row-list></div>
+            </section>
+            <section id="simulator-turn-result" class="simulator-turn-result hidden" data-turn-result aria-labelledby="simulator-turn-result-title">
+              <h2 id="simulator-turn-result-title">Turn result</h2><div id="simulator-turn-result-body"></div><button id="simulator-continue-next-turn" class="btn btn-primary" type="button" data-continue-next-turn>Continue to next turn</button>
+            </section>
+            <section id="simulator-turn-history" class="simulator-turn-history hidden" data-turn-history aria-labelledby="simulator-turn-history-title">
+              <div class="simulator-panel-heading"><div><span class="eyebrow">Immutable journal</span><h2 id="simulator-turn-history-title">Turn History</h2></div><span id="simulator-history-count" class="simulator-count"></span></div>
+              <div id="simulator-turn-history-list" class="simulator-history-list"></div>
+            </section>
+            <section id="simulator-candidate-list-panel" class="simulator-candidate-list-panel hidden" data-candidate-list aria-labelledby="simulator-candidate-list-title">
+              <div class="simulator-panel-heading"><div><span class="eyebrow">Candidate authority</span><h2 id="simulator-candidate-list-title">Candidates</h2></div><button id="simulator-candidate-compile" class="btn btn-primary" type="button" aria-describedby="simulator-candidate-compile-reason">Compile candidate</button></div>
+              <p id="simulator-candidate-compile-reason" class="simulator-feedback"></p><div id="simulator-candidate-list" class="simulator-candidate-list" data-candidate-freshness data-candidate-review-status></div>
+            </section>
+            <section id="simulator-candidate-workspace" class="simulator-candidate-workspace hidden" data-candidate-review aria-labelledby="simulator-candidate-title">
+              <header class="simulator-candidate-header" data-candidate-scope><span class="eyebrow">Candidate review</span><h2 id="simulator-candidate-title" tabindex="-1">Candidate detail</h2><div id="simulator-candidate-scope" class="simulator-candidate-scope"></div></header>
+              <div id="simulator-candidate-notice" class="simulator-candidate-notice" role="status" aria-live="polite"></div>
+              <div class="simulator-candidate-grid"><article data-candidate-content aria-labelledby="simulator-candidate-content-title"><h3 id="simulator-candidate-content-title">Compiled Turn content</h3><pre id="simulator-candidate-content" class="simulator-candidate-content"></pre></article><aside class="simulator-candidate-evidence" data-candidate-evidence aria-label="Candidate evidence"><h3>Evidence</h3><div id="simulator-candidate-evidence"></div></aside></div>
+              <section id="simulator-candidate-actions" class="simulator-candidate-actions" aria-labelledby="simulator-candidate-actions-title"><h3 id="simulator-candidate-actions-title">Review decision</h3><label>Reviewer identity<input id="simulator-reviewer-id" value="local-author" maxlength="80" autocomplete="name"></label><label>Reason (optional)<textarea id="simulator-review-reason" rows="2" maxlength="500"></textarea></label><div><button id="simulator-candidate-approve" class="btn btn-primary" type="button" data-candidate-approve>Approve candidate</button><button id="simulator-candidate-reject" class="btn btn-danger" type="button" data-candidate-reject>Reject candidate</button><button id="simulator-candidate-refresh" class="btn btn-secondary" type="button" data-candidate-recovery>Refresh / recompile</button><button id="simulator-commit-open" class="btn btn-primary hidden" type="button" data-commit-open>Commit chapter</button></div></section>
+            </section>
+            <aside id="simulator-loop-evidence" class="simulator-loop-evidence" aria-label="Simulator state evidence"><h2>State evidence</h2><div id="simulator-loop-evidence-body"></div></aside>
+          </div>
+          <section id="simulator-recovery" class="simulator-recovery hidden" data-simulator-recovery role="alert" aria-labelledby="simulator-recovery-title"><h2 id="simulator-recovery-title">Recovery required</h2><p id="simulator-recovery-body"></p><button id="simulator-recovery-refresh" class="btn btn-secondary btn-compact" type="button">Read state again</button></section>
+          <section id="simulator-commit-recovery" class="simulator-recovery hidden" data-commit-recovery role="alert" aria-labelledby="simulator-commit-recovery-title"><h2 id="simulator-commit-recovery-title">Commit recovery</h2><p id="simulator-commit-recovery-body"></p><button id="simulator-commit-recovery-read" class="btn btn-secondary btn-compact" type="button">Read durable commit result</button></section>
+          <section id="simulator-chapter-completion" class="simulator-chapter-completion hidden" data-chapter-completion aria-labelledby="simulator-completion-title"><span class="eyebrow">Chapter completion</span><h2 id="simulator-completion-title" tabindex="-1">Chapter committed</h2><div id="simulator-completion-body"></div><div><button id="simulator-completion-history" class="btn btn-secondary" type="button">Open Turn History</button><button id="simulator-start-next-chapter" class="btn btn-primary" type="button" data-start-next-chapter data-legacy-next-chapter>Start next chapter</button></div></section>
+          <section id="simulator-chapter-progression" class="simulator-chapter-progression hidden" data-chapter-progression aria-labelledby="simulator-chapter-progression-title" aria-busy="false">
+            <header class="simulator-chapter-progression-heading"><div><span class="eyebrow">Cross-chapter progression</span><h2 id="simulator-chapter-progression-title" tabindex="-1">Progression status</h2></div><span id="simulator-chapter-progression-badge" class="simulator-chapter-progression-badge" data-progression-badge></span></header>
+            <div id="simulator-chapter-progression-status" class="simulator-chapter-progression-status" role="status" aria-live="polite"></div>
+            <div id="simulator-chapter-progression-scope" class="simulator-chapter-progression-scope"></div>
+            <div id="simulator-chapter-progression-reasons" class="simulator-chapter-progression-reasons"></div>
+            <div id="simulator-chapter-progression-existing" class="simulator-chapter-progression-existing hidden" data-existing-turn-panel>
+              <p id="simulator-chapter-progression-existing-summary"></p>
+              <button id="simulator-chapter-progression-existing-continue" class="btn btn-secondary" type="button" data-existing-turn-continue>Continue existing Turn</button>
+            </div>
+            <div id="simulator-chapter-progression-start-row" class="simulator-chapter-progression-start-row">
+              <button id="simulator-chapter-progression-start" class="btn btn-primary hidden" type="button" data-progression-start aria-describedby="simulator-chapter-progression-status">Start next chapter</button>
+            </div>
+            <button id="simulator-chapter-progression-refresh" class="btn btn-secondary btn-compact hidden" type="button" data-progression-refresh aria-describedby="simulator-chapter-progression-status">Recheck status</button>
+          </section>
+          <section id="simulator-error-boundary" class="simulator-error-boundary hidden" role="alert" aria-labelledby="simulator-error-title"><h2 id="simulator-error-title" tabindex="-1">Simulator action needs attention</h2><p id="simulator-error-body"></p></section>
+          <dialog id="simulator-commit-dialog" class="simulator-commit-dialog" data-commit-dialog role="dialog" aria-modal="true" aria-labelledby="simulator-commit-dialog-title"><form method="dialog" class="simulator-commit-dialog-surface"><header><span class="eyebrow">Existing commit authority</span><h2 id="simulator-commit-dialog-title">Commit chapter</h2></header><div id="simulator-commit-impact"></div><footer><button id="simulator-commit-back" class="btn btn-secondary" value="cancel" type="button">Back to review</button><button id="simulator-commit-confirm" class="btn btn-primary" type="button" data-commit-confirm>Commit chapter</button></footer></form></dialog>
+        </section>
         <section id="simulator-panel-review" class="storyos-simulator-panel hidden" aria-labelledby="simulator-panel-review-title">
           <header class="storyos-simulator-header">
             <div><span class="eyebrow">Simulator / Panel Review</span><h2 id="simulator-panel-review-title">模型人格面板复核</h2><p id="simulator-panel-review-context">只读复核当前章节的确定性面板与模型补充。</p></div>
@@ -490,6 +546,9 @@
   <script src="/static/simulator-panel-run.js?v=0d3c1-1"></script>
   <script src="/static/simulator-live-consent.js?v=0d3c2-b-1"></script>
   <script src="/static/simulator-narrative-turn.js?v=0d4c-rc2"></script>
+  <script src="/static/simulator-usable-loop.js?v=0d5c-5"></script>
+  <script src="/static/simulator-chapter-progression.js?v=0d6c-b-rc1-2"></script>
+  <script src="/static/simulator-candidate-review.js?v=0d5d2-rc1-5"></script>
   <script src="/static/narrative-evaluation.js?v=1"></script>
   <script src="/static/planning-recovery.js?v=3"></script>
   <script src="/static/planning-control.js?v=1"></script>

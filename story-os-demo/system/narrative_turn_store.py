@@ -194,30 +194,30 @@ class NarrativeTurnStore:
     def _scope_base_path(self, scope: NarrativeScope) -> Path:
         _validate_path_component(scope.timeline_id, "timeline_id")
         _validate_path_component(scope.branch_id, "branch_id")
-        path = self._project_root / "narrative_turns" / scope.timeline_id / scope.branch_id
+        path = self._project_root / "narrative_turn"
         _validate_path_containment(self._project_root, path)
         return path
 
     def _plans_path(self, scope: NarrativeScope) -> Path:
-        return self._scope_base_path(scope) / "plans"
+        return self._scope_base_path(scope) / "plans" / scope.timeline_id / scope.branch_id
 
     def _validations_path(self, scope: NarrativeScope) -> Path:
-        return self._scope_base_path(scope) / "validations"
+        return self._scope_base_path(scope) / "validations" / scope.timeline_id / scope.branch_id
 
     def _results_path(self, scope: NarrativeScope) -> Path:
-        return self._scope_base_path(scope) / "results"
+        return self._scope_base_path(scope) / "results" / scope.timeline_id / scope.branch_id
 
     def _transitions_path(self, scope: NarrativeScope) -> Path:
-        return self._scope_base_path(scope) / "transitions"
+        return self._scope_base_path(scope) / "transitions" / scope.timeline_id / scope.branch_id
 
     def _scope_operations_path(self, scope: NarrativeScope) -> Path:
         """Branch-local operation index (NOT authoritative; rebuildable)."""
-        return self._scope_base_path(scope) / "operations"
+        return self._scope_base_path(scope) / "operation_indexes" / scope.timeline_id / scope.branch_id
 
     def _operation_authority_path(self, operation_id: str) -> Path:
         """Project-root operation authority — authoritative for collision detection."""
         _validate_path_component(operation_id, "operation_id")
-        path = self._project_root / "narrative_turn_operations" / f"{operation_id}.json"
+        path = self._project_root / "narrative_turn" / "operations" / f"{operation_id}.json"
         _validate_path_containment(self._project_root, path)
         return path
 
@@ -657,7 +657,7 @@ class NarrativeTurnStore:
             "operation_type": record_type,
             "payload_fingerprint": record_fingerprint,
             # Relative path only — never persist absolute paths.
-            "result_record_path": f"narrative_turns/{scope.timeline_id}/{scope.branch_id}/{record_type}/{turn_id}.json",
+            "result_record_path": f"narrative_turn/{record_type}s/{scope.timeline_id}/{scope.branch_id}/{turn_id}.json",
             "created_at": now_utc(),
         }
         try:
@@ -690,7 +690,7 @@ class NarrativeTurnStore:
             "turn_id": turn_id,
             "operation_type": record_type,
             "payload_fingerprint": record_fingerprint,
-            "authority_path": f"narrative_turn_operations/{operation_id}.json",
+            "authority_path": f"narrative_turn/operations/{operation_id}.json",
             "recorded_at": now_utc(),
         }
         if not index_path.exists():

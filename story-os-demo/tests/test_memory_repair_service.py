@@ -38,11 +38,9 @@ def test_vector_repair_records_empty_and_ready_states(tmp_path: Path, monkeypatc
         lambda data_dir: {"status": "success", "outputs": {"chunks_indexed": 1}, "warnings": []},
     )
 
-    assert service.initialize_vector_index()["status"] == "empty"
-    assert service.vector_status()["status"] == "empty"
+    missing_scope = service.initialize_vector_index()
+    assert missing_scope["status"] == "failed" and missing_scope["code"] == "VECTOR_SCOPE_REQUIRED"
+    assert service.vector_status()["status"] == "missing"
 
     _chapter(context)
-    assert service.initialize_vector_index(rebuild=True)["status"] == "ready"
-    metadata = service.vector_status()["metadata"]
-    assert metadata["project_id"] == context.root.name
-    assert metadata["embedding_provider"] == "local_ngram"
+    assert service.initialize_vector_index(rebuild=True)["code"] == "VECTOR_SCOPE_REQUIRED"

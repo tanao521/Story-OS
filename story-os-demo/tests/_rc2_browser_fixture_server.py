@@ -190,6 +190,100 @@ def seed_isolated_project(project_root: Path) -> None:
     # so that _read_branch_state returns BRANCH_STATE_UNAVAILABLE.
     store.create_branch(timeline_ctx, "state-missing", "State Missing Branch", "root")
 
+    # Authoritative ready state for RC2 browser progression.  These are
+    # production-shaped fixture records, scoped to the temporary project only.
+    import hashlib
+    from system.narrative_turn_context import branch_state_content_revision
+    ready_text = "林远在清晨走进迷雾森林，发现一枚发光的旧徽记。"
+    versions_dir = ctx.data_dir / "versions"
+    versions_dir.mkdir(parents=True, exist_ok=True)
+    manual_path = ctx.data_dir / "manual" / "chapter_001_manual_v001.json"
+    manual_path.parent.mkdir(parents=True, exist_ok=True)
+    manual_path.write_text(json.dumps({
+        "chapter_id": 1, "chapter_title": "第一章：启程", "version": 1,
+        "version_label": "manual_v001", "manual_text": ready_text,
+        "created_at": "2026-01-01T00:00:00+00:00",
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    (versions_dir / "chapter_001_versions.json").write_text(json.dumps({
+        "version_index": "1.5", "chapter_id": 1, "selected_version_id": "manual_v001",
+        "versions": [{
+            "source_type": "manual", "version": 1, "version_label": "manual_v001",
+            "json_path": manual_path.as_posix(),
+            "version_id": "manual_v001", "chapter_id": 1, "chapter_title": "第一章：启程",
+        }], "drafts": [], "edited": [], "manual": [], "selected": {
+            "source_type": "manual", "version": 1, "version_label": "manual_v001", "json_path": manual_path.as_posix(),
+        }
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    canon_dir = ctx.data_dir / "canon_versions" / "chapter_001"
+    canon_dir.mkdir(parents=True, exist_ok=True)
+    canon_path = canon_dir / "canon_v001.md"
+    canon_path.write_text(ready_text, encoding="utf-8")
+    canon_id = "canon_rc2_c1"
+    canon_hash = hashlib.sha256(ready_text.encode("utf-8")).hexdigest()
+    (canon_dir / "index.json").write_text(json.dumps({
+        "schema_version": "1.0", "chapter_id": 1, "current_version_id": canon_id,
+        "versions": [{"canon_version_id": canon_id, "chapter_id": 1, "version_number": 1,
+                      "content_path": "data/canon_versions/chapter_001/canon_v001.md",
+                      "content_hash": canon_hash, "active": True, "source": "fixture",
+                      "revision_id": "revision_rc2_c1", "created_at": "2026-01-01T00:00:00+00:00",
+                      "activated_at": "2026-01-01T00:00:00+00:00"}]
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    branch_state = {
+        "schema_version": "1.0", "project_id": project_root.name, "timeline_id": "tl-main", "branch_id": "root",
+        "chapter": 1, "time_of_day": "morning", "last_turn_id": None,
+        "last_event_sequence": 0, "last_result_fingerprint": None,
+        "applied_result_fingerprints": [], "updated_at": "2026-01-01T00:00:00+00:00",
+    }
+    branch_state["revision"] = branch_state_content_revision(branch_state)
+    state_path = ctx.narrative_state_dir / "tl-main" / "root" / "current.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(branch_state, ensure_ascii=False, indent=2), encoding="utf-8")
+    alternate_state = dict(branch_state, branch_id="alternate")
+    alternate_state["revision"] = branch_state_content_revision(alternate_state)
+    alternate_state_path = ctx.narrative_state_dir / "tl-main" / "alternate" / "current.json"
+    alternate_state_path.parent.mkdir(parents=True, exist_ok=True)
+    alternate_state_path.write_text(json.dumps(alternate_state, ensure_ascii=False, indent=2), encoding="utf-8")
+    manifest_path = ctx.data_dir / "chroma" / "manifests" / "tl-main" / "root.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps({
+        "schema_version": "1.0", "project_id": project_root.name, "timeline_id": "tl-main",
+        "branch_id": "root", "canon_revision_id": canon_id, "vector_ready": True,
+        "branch_lifecycle_status": "open", "collection_name": "fixture_rc2",
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    alternate_manifest = manifest_path.with_name("alternate.json")
+    alternate_manifest.write_text(json.dumps({
+        "schema_version": "1.0", "project_id": project_root.name, "timeline_id": "tl-main",
+        "branch_id": "alternate", "canon_revision_id": canon_id, "vector_ready": True,
+        "branch_lifecycle_status": "open", "collection_name": "fixture_rc2_alternate",
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # D-RC1: two production-schema, durable confirmed Turns.  These are
+    # fixture-only records written through NarrativeTurnStore; the browser
+    # still compiles them through the real compiler and state route.
+    import hashlib
+    from core.contracts.narrative_turn import (
+        ActionType, NarrativeActionOption, NarrativeCustomActionPolicy,
+        NarrativeScope, NarrativeTurnPlan, NarrativeTurnResult,
+        NarrativeTurnTransition, ResultStatus, TurnState, new_id, now_utc,
+    )
+    from system.narrative_turn_store import NarrativeTurnStore
+    turn_scope = NarrativeScope(project_root.name, "tl-main", "root")
+    turn_store = NarrativeTurnStore(ctx)
+    # Final RC starts from a clean Turn journal so Chromium itself proves the
+    # two Confirm mutations and the distinct third deterministic context.
+    seed_confirmed_turns = os.environ.get("STORYOS_FINAL_RC_EMPTY_TURNS") != "1"
+    for number in ((1, 2) if seed_confirmed_turns else ()):
+        turn_id = f"fixture-turn-{number}"
+        actions = tuple(NarrativeActionOption(f"fixture-action-{number}-{choice}", ActionType.ADVANCE, f"Fixture action {number}-{choice}", f"fixture intent {choice}", (), (), (), (), "deterministic-planner", choice) for choice in (1, 2, 3))
+        plan = NarrativeTurnPlan("1.0", turn_id, turn_scope, 1, "manual_v001", None, "a" * 64, "fixture-planner", canon_id, now_utc(), actions, NarrativeCustomActionPolicy(500, (), ("scope",)))
+        result = NarrativeTurnResult("1.0", turn_id, turn_scope, 1, actions[0].action_id, None, ResultStatus.SUCCESS, f"Fixture confirmed Turn {number} advances the chapter.", (("fixture", str(number)),), (), "b" * 64, "fixture-revision", "c" * 64, now_utc(), f"fixture-confirm-{number}")
+        turn_store.append_plan(plan); turn_store.append_result(result)
+        previous_id = previous_fp = None; state = TurnState.PLANNED
+        for next_state, reason in ((TurnState.AWAITING_ACTION, "plan"), (TurnState.VALIDATING, "validate"), (TurnState.VALIDATED, "validated"), (TurnState.PREVIEWED, "preview"), (TurnState.CONFIRMED, "confirm"), (TurnState.APPLIED_TO_BRANCH, "apply")):
+            sequence = len(turn_store.get_transitions(turn_scope, turn_id)); fingerprint = hashlib.sha256(f"{turn_id}:{state.value}:{next_state.value}:{sequence}".encode()).hexdigest()
+            transition = NarrativeTurnTransition("1.0", new_id("trn"), turn_id, turn_scope, state, next_state, reason, result.operation_id, now_utc(), fingerprint, sequence, previous_id, previous_fp)
+            turn_store.append_transition(transition); previous_id, previous_fp, state = transition.transition_id, transition.record_fingerprint, next_state
+
 
 def setup_workspace(workspace_root: Path) -> dict:
     """Create workspace with .story_os config and a project.
@@ -273,7 +367,115 @@ def main():
     # Import after chdir
     from web.app import app
 
-    uvicorn.run(app, host="127.0.0.1", port=7862, reload=False, log_level="info")
+    # Test-only transport faults. They wrap already-authoritative mutation
+    # routes and drop exactly one successful response after the downstream app
+    # has returned. Production code and production routes remain unchanged.
+    # The audit file is intentionally inside the temporary project so browser
+    # acceptance can prove request counts without exposing a production DTO.
+    audit_path = tmp_dir / "projects" / info["project_id"] / ".drc1_network_audit.json"
+
+    class MutationAuditAndResponseDrop:
+        ROUTES = {
+            "/api/narrative-chapter/compile": ("compile", "STORYOS_DRC_DROP_COMPILE_RESPONSE"),
+            "/api/narrative-chapter/candidates/": ("review", "STORYOS_DRC_DROP_REVIEW_RESPONSE"),
+            "/api/narrative-chapter/commit": ("commit", "STORYOS_DRC_DROP_COMMIT_RESPONSE"),
+        }
+
+        def __init__(self, downstream):
+            self.downstream = downstream
+            self.dropped = set()
+            self.counts = {
+                "confirm": 0, "compile": 0, "review": 0, "commit": 0,
+                "branch_create": 0, "branch_select": 0,
+                "branch_archive": 0, "branch_restore": 0,
+            }
+            self._write_audit()
+
+        def _write_audit(self):
+            audit_path.write_text(
+                json.dumps({"requests": self.counts, "dropped": sorted(self.dropped)}, indent=2),
+                encoding="utf-8",
+            )
+
+        def _kind(self, path):
+            if path == "/api/narrative-turn/confirm":
+                return ("confirm", "")
+            if path == "/api/narrative-chapter/compile":
+                return self.ROUTES[path]
+            if path == "/api/narrative-chapter/commit":
+                return self.ROUTES[path]
+            if path.startswith("/api/narrative-chapter/candidates/") and path.endswith("/review"):
+                return self.ROUTES["/api/narrative-chapter/candidates/"]
+            for action in ("create", "select", "archive", "restore"):
+                if path == f"/api/narrative-branches/{action}":
+                    return (f"branch_{action}", "")
+            return None
+
+        async def __call__(self, scope, receive, send):
+            route = self._kind(scope.get("path", "")) if scope.get("type") == "http" else None
+            if route is None:
+                await self.downstream(scope, receive, send)
+                return
+            kind, env_name = route
+            self.counts[kind] += 1
+            self._write_audit()
+            messages = []
+
+            async def capture(message):
+                messages.append(message)
+
+            await self.downstream(scope, receive, capture)
+            successful = any(
+                message.get("type") == "http.response.start"
+                and int(message.get("status", 500)) < 400
+                for message in messages
+            )
+            if env_name and os.environ.get(env_name) == "1" and kind not in self.dropped and successful:
+                self.dropped.add(kind)
+                self._write_audit()
+                # Send only an incomplete response body, then close the
+                # exchange. The route/service has already completed durably.
+                start = next((message for message in messages if message.get("type") == "http.response.start"), None)
+                if start:
+                    await send(start)
+                body = next((message for message in messages if message.get("type") == "http.response.body"), None)
+                if body and body.get("body"):
+                    await send({"type": "http.response.body", "body": body["body"][:1], "more_body": True})
+                return
+            for message in messages:
+                await send(message)
+
+    server_app = MutationAuditAndResponseDrop(app)
+
+    # RC3-only transport fault. Keep this separate from D-RC1 so the existing
+    # Confirm acceptance remains unchanged.
+    if os.environ.get("STORYOS_RC3_DROP_CONFIRM_RESPONSE") == "1":
+        class DropConfirmResponseAfterCompletion:
+            def __init__(self, downstream):
+                self.downstream = downstream
+                self.dropped = False
+
+            async def __call__(self, scope, receive, send):
+                if scope.get("type") != "http" or scope.get("path") != "/api/narrative-turn/confirm" or self.dropped:
+                    await self.downstream(scope, receive, send)
+                    return
+                messages = []
+                async def capture(message):
+                    messages.append(message)
+                await self.downstream(scope, receive, capture)
+                if any(message.get("type") == "http.response.start" and int(message.get("status", 500)) < 400 for message in messages):
+                    self.dropped = True
+                    (tmp_dir / "projects" / info["project_id"] / ".rc3_response_dropped.json").write_text(
+                        json.dumps({"fault": "drop_next_confirm_response_after_durable_completion", "confirmed": True}),
+                        encoding="utf-8",
+                    )
+                    raise ConnectionResetError("RC3 expected Confirm response interruption after durable completion")
+                for message in messages:
+                    await send(message)
+
+        server_app = DropConfirmResponseAfterCompletion(server_app)
+
+    uvicorn.run(server_app, host="127.0.0.1", port=7862, reload=False, log_level="info")
 
 
 if __name__ == "__main__":

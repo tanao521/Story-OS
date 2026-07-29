@@ -237,6 +237,7 @@ def build_context_wire_dto(snapshot: NarrativeTurnContextSnapshot) -> dict[str, 
         "chapter_id": snapshot.chapter_id,
         "source_version_id": snapshot.source_version_id,
         "context_fingerprint": snapshot.context_fingerprint,
+        "branch_state_revision": snapshot.branch_state_revision,
         "canon_revision": snapshot.canon_revision,
         "planner_revision": snapshot.planner_revision,
         "branch": {

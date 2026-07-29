@@ -103,3 +103,25 @@ class RevisionReviewRequest(BaseModel):
 
 class CanonRestoreRequest(BaseModel):
     confirmed_risks: bool = False
+
+
+class ChapterLifecycleCreateRequest(BaseModel):
+    operation_id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9_-]+$")
+    project_id: str
+    timeline_id: str = Field(default="main", pattern=r"^[A-Za-z0-9_-]+$")
+    current_chapter_id: int | None = Field(default=None, ge=1)
+    expected_completion_status: str | None = None
+    expected_active_branch_id: str | None = None
+    expected_branch_revision: str | None = None
+    planning_chapter_id: int | None = Field(default=None, ge=1)
+    source: Literal["traditional", "simulator"]
+
+
+class ChapterProgressionStartRequest(BaseModel):
+    operation_id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9_-]+$")
+    project_id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9_-]+$")
+    timeline_id: str = Field(default="main", pattern=r"^[A-Za-z0-9_-]+$")
+    branch_id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9_-]+$")
+    previous_chapter_id: int = Field(ge=1)
+    successor_chapter_id: int = Field(ge=1)
+    expected_readiness_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")

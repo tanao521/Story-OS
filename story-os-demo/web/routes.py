@@ -104,12 +104,13 @@ def api_response(
 
 def command_response(result: dict[str, Any]) -> dict[str, Any]:
     ok = result.get("status") != "failed"
+    error_code = str(result.get("code") or result.get("message", "操作失败"))
     return api_response(
         ok=ok,
         message=str(result.get("message", "")),
         result=dict(result.get("outputs", {}) or {}),
         warnings=list(result.get("warnings", []) or []),
-        errors=[] if ok else [str(result.get("message", "操作失败"))],
+        errors=[] if ok else [error_code],
     )
 
 
@@ -626,7 +627,17 @@ async def api_initialize_vector_index(request: Request) -> JSONResponse:
     except Exception:
         payload = {}
     payload = payload if isinstance(payload, dict) else {}
-    return guarded(lambda: command_response(commands.initialize_vector_index_command(rebuild=bool(payload.get("rebuild", False)))))
+    try:
+        response = command_response(commands.initialize_vector_index_command(
+            rebuild=bool(payload.get("rebuild", False)),
+            project_id=payload.get("project_id"),
+            timeline_id=payload.get("timeline_id"),
+            branch_id=payload.get("branch_id"),
+            canon_revision_id=payload.get("canon_revision_id"),
+        ))
+    except Exception:
+        response = api_error("Vector index initialization failed.", ["VECTOR_INDEX_INITIALIZATION_FAILED"])
+    return JSONResponse(response, headers={"Cache-Control": "no-store"})
 
 
 
@@ -1670,38 +1681,65 @@ def _list_from_any(value: Any) -> list[str]:
 
 # Restored Stage 7 narrative-memory API: all reads/writes use the active ProjectContext.
 def _nm() -> NarrativeMemoryService: return NarrativeMemoryService(get_project_context())
+
+def _branch_nm_scope(project_id: str | None, timeline_id: str | None, branch_id: str | None):
+ if any(value is not None for value in (project_id, timeline_id, branch_id)):
+  if not all(isinstance(value, str) and value for value in (project_id, timeline_id, branch_id)):
+   raise ValueError("BRANCH_MEMORY_SCOPE_REQUIRED")
+  from system.branch_narrative_memory_service import BranchMemoryService
+  service=BranchMemoryService(get_project_context()); return service, service.scope(project_id, timeline_id, branch_id)
+ return None
 @router.get("/api/narrative-memory/overview")
-def nm_overview(): return JSONResponse({"ok":True,"message":"","result":_nm().overview(),"warnings":[],"errors":[]})
+def nm_overview(project_id: str | None = None, timeline_id: str | None = None, branch_id: str | None = None):
+ try:
+  branch = _branch_nm_scope(project_id, timeline_id, branch_id)
+  if branch:
+   service, scope = branch; events = service.events(scope, branch_id)
+   return _ok({"events": len(events), "confirmed_events": sum(row.get("status") in {"confirmed", "corrected"} for row in events), "branch_id": branch_id})
+  return _ok({**_nm().overview(), "legacy_unscoped": True, "deprecated": True, "mutation_allowed": False})
+ except Exception as exc: return _fail("NarrativeMemory scope invalid", getattr(exc, "code", "BRANCH_MEMORY_SCOPE_REQUIRED"), 400)
 @router.get("/api/narrative-memory/events")
-def nm_events(chapter_id:int|None=None): return JSONResponse({"ok":True,"message":"","result":{"events":_nm().events(chapter_id)},"warnings":[],"errors":[]})
+def nm_events(chapter_id:int|None=None, project_id: str | None = None, timeline_id: str | None = None, branch_id: str | None = None):
+ try:
+  branch = _branch_nm_scope(project_id, timeline_id, branch_id)
+  if branch:
+   service, scope = branch; return _ok({"events": service.events(scope, branch_id, chapter_id)})
+  return _ok({"events":_nm().events(chapter_id), "legacy_unscoped": True, "deprecated": True, "mutation_allowed": False})
+ except Exception as exc: return _fail("NarrativeMemory scope invalid", getattr(exc, "code", "BRANCH_MEMORY_SCOPE_REQUIRED"), 400)
 @router.post("/api/narrative-memory/chapters/{chapter_id}/extract")
 def nm_extract(chapter_id:int):
- try:return JSONResponse({"ok":True,"message":"","result":{"events":_nm().extract(chapter_id)},"warnings":[],"errors":[]})
- except Exception as exc:return JSONResponse({"ok":False,"message":"Extraction failed.","result":{},"warnings":[],"errors":[str(exc)[:300]]},status_code=409)
+ return _fail('Legacy NarrativeMemory mutation is disabled.','LEGACY_MEMORY_MUTATION_DISABLED',410)
 @router.get("/api/narrative-memory/timeline")
-def nm_timeline(): return JSONResponse({"ok":True,"message":"","result":{"timeline":_nm().store.read_json('data/narrative_memory/timeline.json',default=[],expected_type=list) or []},"warnings":[],"errors":[]})
+def nm_timeline(): return _ok({"timeline":_nm().store.read_json('data/narrative_memory/timeline.json',default=[],expected_type=list) or [],"legacy_unscoped":True,"deprecated":True,"mutation_allowed":False})
 @router.get("/api/narrative-memory/conflicts")
-def nm_conflicts(): return JSONResponse({"ok":True,"message":"","result":{"conflicts":_nm().conflicts()},"warnings":[],"errors":[]})
+def nm_conflicts(): return _ok({"conflicts":_nm().store.read_json('data/narrative_memory/conflicts/conflicts.json',default=[],expected_type=list) or [],"legacy_unscoped":True,"deprecated":True,"mutation_allowed":False})
 @router.post("/api/continuity/preflight")
 async def nm_preflight(request:Request):
- p=await request.json(); r=_nm().preflight(int(p.get('chapter_id',1))); return JSONResponse({"ok":r['status']!='blocked',"message":"","result":r,"warnings":[],"errors":[]},status_code=409 if r['status']=='blocked' else 200)
+ return _fail('Legacy NarrativeMemory mutation is disabled.','LEGACY_MEMORY_MUTATION_DISABLED',410)
 @router.post("/api/narrative-memory/events/{event_id}/confirm")
 async def nm_confirm(event_id:str,request:Request):
- try:
-  payload=await request.json(); decision=str(payload.get('decision','confirmed')); patch=payload.get('patch') or {}
-  if decision not in {'confirmed','corrected','rejected'}: return _fail('Invalid confirmation decision.','INVALID_CONFIRMATION',422)
-  if not isinstance(patch,dict): return _fail('Event patch must be an object.','INVALID_EVENT_PATCH',422)
-  return _ok({'event':_nm().confirm(event_id,decision,patch)},'Narrative event updated.')
- except EventNotFound:return _fail('Narrative event not found.','NARRATIVE_EVENT_NOT_FOUND',404)
- except NarrativeMemoryError as exc:return _fail(str(exc),getattr(exc,'code','NARRATIVE_MEMORY_ERROR'),409)
+ return _fail('Legacy NarrativeMemory mutation is disabled.','LEGACY_MEMORY_MUTATION_DISABLED',410)
 @router.post("/api/narrative-memory/project")
-def nm_project(): return _ok({'state':_nm().project()},'Narrative state projection rebuilt.')
+def nm_project(project_id: str | None = None, timeline_id: str | None = None, branch_id: str | None = None):
+ try:
+  branch = _branch_nm_scope(project_id, timeline_id, branch_id)
+  if branch:
+   service, scope = branch; return _ok({'state':service.project_state(scope, branch_id)},'Branch narrative state projected.')
+  return _fail('Legacy NarrativeMemory mutation is disabled.','LEGACY_MEMORY_MUTATION_DISABLED',410)
+ except Exception as exc: return _fail("NarrativeMemory scope invalid", getattr(exc, "code", "BRANCH_MEMORY_SCOPE_REQUIRED"), 400)
 @router.post("/api/narrative-memory/chapters/{chapter_id}/snapshot")
-def nm_snapshot(chapter_id:int):
- try:return _ok({'snapshot':_nm().snapshot(chapter_id)},'Narrative snapshot saved.')
+def nm_snapshot(chapter_id:int, project_id: str | None = None, timeline_id: str | None = None, branch_id: str | None = None):
+ try:
+  branch = _branch_nm_scope(project_id, timeline_id, branch_id)
+  if branch:
+   service, scope = branch; return _ok({'snapshot':service.snapshot(scope, branch_id, chapter_id)},'Branch narrative snapshot saved.')
+  return _fail('Legacy NarrativeMemory mutation is disabled.','LEGACY_MEMORY_MUTATION_DISABLED',410)
  except Exception as exc:return _fail(str(exc),'NARRATIVE_SNAPSHOT_ERROR',409)
 @router.get("/api/narrative-memory/context-preview")
-def nm_preview(chapter_id:int=1):
+def nm_preview(chapter_id:int=1, project_id: str | None = None, timeline_id: str | None = None, branch_id: str | None = None):
+ branch = _branch_nm_scope(project_id, timeline_id, branch_id)
+ if branch:
+  service, scope = branch; return _ok({'preview':service.retrieval_history(scope, branch_id, chapter_id=chapter_id)})
  context=_ctx(); store=DataStore(context)
  preview=ContextAssemblyService(context).assemble(
   state=store.read_json('data/state.json',default={},expected_type=dict) or {},
@@ -1712,11 +1750,15 @@ def nm_preview(chapter_id:int=1):
   purpose='chapter_drafting',
  )
  preview['context_ref']=f"context:{chapter_id or preview.get('chapter_number',1)}"
- return _ok({'preview':preview})
+ return _ok({'preview':preview,'legacy_unscoped':True,'deprecated':True,'mutation_allowed':False})
 @router.post("/api/narrative-memory/overrides/{kind}")
 async def nm_override(kind:str,request:Request):
  try:
-  payload=await request.json(); return _ok({'values':_nm().set_override(kind,payload.get('value'))},'Narrative override saved.')
+  payload=await request.json()
+  branch = _branch_nm_scope(payload.get('project_id'), payload.get('timeline_id'), payload.get('branch_id'))
+  if branch:
+   service, scope = branch; return _ok({'override':service.override(scope, payload['branch_id'], kind, payload.get('value'))},'Branch narrative override saved.')
+  return _fail('Legacy NarrativeMemory mutation is disabled.','LEGACY_MEMORY_MUTATION_DISABLED',410)
  except NarrativeMemoryError as exc:return _fail(str(exc),getattr(exc,'code','NARRATIVE_MEMORY_ERROR'),422)
 
 

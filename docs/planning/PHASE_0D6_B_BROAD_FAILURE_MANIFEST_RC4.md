@@ -1,0 +1,73 @@
+# Phase 0D6-B-RC4 Broad Failure Manifest
+
+Command: `python -m pytest -q --tb=no`  
+Date: 2026-07-28  
+Result: **2283 passed, 50 failed, 7 skipped, 43 warnings** (exit 1)
+
+RC3 baseline was 52 failures. The RC4 current set is exactly that baseline
+minus the two resolved nodes:
+
+- `tests/test_phase0d4d_rc1.py::test_result_first_writer_wins_two_services`
+- `tests/test_phase0d4e2_memory_concurrency.py::test_same_branch_event_mutations_are_serialized`
+
+Thus: intersection 50, RC3-only 2, RC4-only 0. No new 0D6-B-related or
+uncertain node entered the set.
+
+## Complete RC4 current node-ID set
+
+```text
+tests/test_creative_loop.py::test_reflection_health_and_issues_bind_active_canon
+tests/test_creative_loop.py::test_proposal_needs_author_decision_and_does_not_change_plan
+tests/test_creative_loop.py::test_experiment_selection_never_rewrites_canon
+tests/test_creative_loop.py::test_strategy_outcome_is_correlational_and_handles_missing_data
+tests/test_creative_loop.py::test_chapter_reflection_job_is_bound_to_its_project
+tests/test_creative_loop.py::test_creative_loop_status_machine_audit_and_cache
+tests/test_creative_loop.py::test_health_reports_sources_missing_dimensions_and_standard_cost_profile
+tests/test_creative_loop.py::test_creative_loop_data_is_project_scoped
+tests/test_memory_repair_service.py::test_quality_report_is_bound_to_active_canon
+tests/test_phase0b2_dual_project_isolation.py::TestAnalyticsIsolation::test_story_spec_isolation
+tests/test_phase0b2_dual_project_isolation.py::TestAnalyticsIsolation::test_chapter_analytics_isolation
+tests/test_phase0b2_dual_project_isolation.py::TestAnalyticsIsolation::test_market_analytics_isolation
+tests/test_phase0b2_dual_project_isolation.py::TestNoCrossProjectPollution::test_cwd_independence
+tests/test_phase0c2_rc.py::TestVectorHealthyStateFix::test_rebuild_failure_healthy_false
+tests/test_phase0c2_rc.py::TestVectorHealthyStateFix::test_rebuild_failure_records_last_error
+tests/test_phase0c2_rc.py::TestCLIFix::test_clone_project_help
+tests/test_phase0c2_rc.py::TestCLIFix::test_clone_project_no_source_error
+tests/test_phase0c2_rc.py::TestCLIFix::test_clone_project_no_name_error
+tests/test_phase0c2_rc2.py::TestVectorStateWarningPropagation::test_rebuild_success_state_write_failure_reports_warning
+tests/test_phase0c2_rc2.py::TestVectorStateWarningPropagation::test_rebuild_failure_state_write_failure_reports_both_warnings
+tests/test_phase0c2_rc2.py::TestWindowsReparsePointGuard::test_no_links_allows_clone
+tests/test_phase0c2_rc2_vr.py::TestStaticExceptionPass::test_vector_state_update_failure_propagates_as_warning
+tests/test_phase0c2_rc2_vr.py::TestRealCLISubprocess::test_cli_help_displays_options
+tests/test_phase0c2_rc2_vr.py::TestRealCLISubprocess::test_real_cli_clone_success
+tests/test_phase0c2_vr_verification.py::TestVectorSyncOperation::test_clone_operation_stored_in_target
+tests/test_phase0c3a_obsidian_cli.py::TestObsidianBindCLI::test_bind_success
+tests/test_phase0c3a_obsidian_cli.py::TestObsidianBindCLI::test_bind_with_timeline
+tests/test_phase0c3a_obsidian_cli.py::TestObsidianUnbindCLI::test_unbind_not_found
+tests/test_phase0c3a_obsidian_cli.py::test_cli_help
+tests/test_phase0c3b_mirror_sync.py::TestCLIMirrorSync::test_cli_dry_run_bound_project
+tests/test_phase0c3b_mirror_sync.py::TestCLIMirrorSync::test_cli_sync_creates_files_and_manifest
+tests/test_phase0c3b_mirror_sync.py::TestCLIMirrorSync::test_cli_dry_run_unbound_project
+tests/test_phase0c3b_mirror_sync.py::TestCLIMirrorSync::test_cli_help_flags
+tests/test_phase0c3c_obsidian_pull.py::TestCLIObsidianPull::test_cli_pull_scan_zero_write
+tests/test_phase0c3c_obsidian_pull.py::TestCLIObsidianPull::test_cli_pull_preview
+tests/test_phase0c3c_obsidian_pull.py::TestCLIObsidianPull::test_cli_pull_apply_requires_expected_hash
+tests/test_phase0c3c_obsidian_pull.py::TestCLIObsidianPull::test_cli_pull_unbound_exit_code
+tests/test_phase0c3c_obsidian_pull.py::TestCLIObsidianPull::test_cli_pull_help
+tests/test_phase0d1_reader_simulator.py::TestCLI::test_simulate_reader_cli
+tests/test_phase0d1_reader_simulator.py::TestCLI::test_simulate_reader_cli_help
+tests/test_phase0d1_reader_simulator.py::TestCLI::test_list_reader_simulations_cli
+tests/test_phase0d1_reader_simulator.py::TestCLI::test_cli_no_absolute_paths
+tests/test_phase0d2a_reader_persona_panel.py::TestCLI::test_list_reader_personas_cli
+tests/test_phase0d2a_reader_persona_panel.py::TestCLI::test_run_reader_panel_cli
+tests/test_phase0d2a_reader_persona_panel.py::TestCLI::test_list_reader_panels_cli
+tests/test_phase0d2b1_model_persona_execution.py::TestCLISubprocess::test_help_success
+tests/test_phase0d2b1_model_persona_execution.py::TestCLISubprocess::test_cli_no_absolute_path_output
+tests/test_recovered_routes.py::test_recovered_narrative_endpoints
+tests/test_recovered_routes.py::test_narrative_confirmation_projection_snapshot_and_preview
+tests/test_state_write_failure_vr.py::TestStateWriteFailureNotSilentlySwallowed::test_state_write_failure_reported_in_warnings
+```
+
+The 50 retained rows inherit the per-node domain, reachability, and unrelated
+classification from the RC3 manifest. The two RC3-only rows are now green after
+the RC4 compatibility fix / repeated arbitration evidence.

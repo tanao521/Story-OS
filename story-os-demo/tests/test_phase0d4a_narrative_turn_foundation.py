@@ -939,7 +939,7 @@ class TestImmutablePublication:
     ) -> None:
         plan = make_fixture_plan(fixture_scope)
         turn_store.append_plan(plan)
-        plan_path = temp_project.data_dir / "narrative_turns" / fixture_scope.timeline_id / fixture_scope.branch_id / "plans" / f"{plan.turn_id}.json"
+        plan_path = temp_project.data_dir / "narrative_turn" / "plans" / fixture_scope.timeline_id / fixture_scope.branch_id / f"{plan.turn_id}.json"
         original_content = plan_path.read_text(encoding="utf-8")
         # Attempt to re-publish with different content — should fail.
         conflicting = NarrativeTurnPlan(
@@ -981,7 +981,7 @@ class TestImmutablePublication:
     ) -> None:
         plan = make_fixture_plan(fixture_scope)
         turn_store.append_plan(plan)
-        plan_dir = temp_project.data_dir / "narrative_turns" / fixture_scope.timeline_id / fixture_scope.branch_id / "plans"
+        plan_dir = temp_project.data_dir / "narrative_turn" / "plans" / fixture_scope.timeline_id / fixture_scope.branch_id
         temp_files = [p for p in plan_dir.iterdir() if p.name.startswith(".") and p.suffix == ".tmp"]
         assert temp_files == []
 
@@ -1009,7 +1009,7 @@ class TestImmutablePublication:
         )
         with pytest.raises(NarrativeTurnError):
             turn_store.append_plan(conflicting)
-        plan_dir = temp_project.data_dir / "narrative_turns" / fixture_scope.timeline_id / fixture_scope.branch_id / "plans"
+        plan_dir = temp_project.data_dir / "narrative_turn" / "plans" / fixture_scope.timeline_id / fixture_scope.branch_id
         temp_files = [p for p in plan_dir.iterdir() if p.name.startswith(".") and p.suffix == ".tmp"]
         assert temp_files == []
 
@@ -1433,7 +1433,7 @@ class TestOperationAuthority:
         original_load = nts._load_json
 
         def corrupted_load(path: Path) -> dict[str, Any]:
-            if "narrative_turn_operations" in str(path):
+            if "narrative_turn" in str(path) and "operations" in str(path):
                 # Match production _load_json behavior: wrap JSONDecodeError
                 # in NarrativeTurnError so callers see a domain error.
                 raise NarrativeTurnError(NarrativeTurnError.INVALID_FIELD, "Corrupt JSON")
@@ -2907,8 +2907,8 @@ class TestFactLockingFixRC2FV:
 
         # Required current paths (must all be present).
         required_path_patterns = (
-            "transitions/{turn_id}/{sequence:08d}.json",
-            "narrative_turn_operations/{operation_id}.json",
+            "transitions/{timeline_id}/{branch_id}/{turn_id}/{sequence:08d}.json",
+            "narrative_turn/operations/{operation_id}.json",
             "lifecycle_events/{branch_id}/{sequence:08d}.json",
             "registry_events/{sequence:08d}.json",
             "branch_operations/{operation_id}.json",

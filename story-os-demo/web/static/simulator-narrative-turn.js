@@ -145,7 +145,6 @@
     });
     const url = `${window.location.pathname}?${next.toString()}${window.location.hash}`;
     window.history.pushState({}, "", url);
-    window.dispatchEvent(new PopStateEvent("popstate"));
   }
 
   // ---- API helpers -------------------------------------------------------
@@ -453,6 +452,14 @@
     updateCounter();
 
     textarea.addEventListener("input", () => {
+      if (textarea.value !== state.customText) {
+        state.validationDto = null;
+        state.previewDto = null;
+        state.confirmOperationId = null;
+        hideFeasibilityPanel();
+        hideConsequencePreview();
+        renderPrimaryAction();
+      }
       state.customText = textarea.value;
       updateCounter();
     });
@@ -506,6 +513,11 @@
     const panel = $("nt-feasibility-panel");
     const body = $("nt-feasibility-body");
     if (!panel || !body) return;
+    if (!validation) {
+      panel.classList.add("hidden");
+      clear(body);
+      return;
+    }
     panel.classList.remove("hidden");
     clear(body);
 
@@ -561,6 +573,11 @@
     const panel = $("nt-consequence-preview");
     const body = $("nt-preview-body");
     if (!panel || !body) return;
+    if (!preview) {
+      panel.classList.add("hidden");
+      clear(body);
+      return;
+    }
     panel.classList.remove("hidden");
     clear(body);
 
@@ -616,10 +633,14 @@
     if (vstatus !== "allowed" && vstatus !== "allowed_with_cost") return false;
     if (state.validationDto.turn_id !== state.planDto.turn_id) return false;
     if (state.previewDto.turn_id !== state.planDto.turn_id) return false;
-    if (state.previewDto.preview_fingerprint !== state.validationDto.context_fingerprint
-        && state.previewDto.context_fingerprint !== state.contextDto.context_fingerprint) {
-      return true;
-    }
+    if (state.validationDto.context_fingerprint !== state.contextDto.context_fingerprint) return false;
+    if (state.previewDto.context_fingerprint !== state.contextDto.context_fingerprint) return false;
+    if (state.previewDto.validation_status !== state.validationDto.status) return false;
+    if (state.previewDto.action_source !== state.actionSource) return false;
+    if (state.actionSource === "recommended"
+        && state.previewDto.selected_action_id !== state.selectedActionId) return false;
+    if (state.actionSource === "custom"
+        && state.previewDto.custom_action_text_hash !== state.validationDto.custom_action_text_hash) return false;
     return true;
   }
 
@@ -729,14 +750,36 @@
       renderFeasibilityPanel(null);
       renderConsequencePreview(null);
 
-      if (resp.data.result && resp.data.result.next_context_fingerprint) {
-      }
+      await rebindContextAfterConfirm(parsed, resp.data.branch_state_revision);
+      window.dispatchEvent(new CustomEvent("storyos:narrative-turn-confirmed", { detail: resp.data }));
     } catch (err) {
       if (err && err.name === "AbortError") return;
       state.confirmBusy = false;
       renderPrimaryAction();
       noticeError("确认请求失败；未展示原始异常信息。");
     }
+  }
+
+  async function rebindContextAfterConfirm(parsed, expectedRevision) {
+    const scope = `project_id=${encodeURIComponent(parsed.project_id)}` +
+      `&timeline_id=${encodeURIComponent(parsed.timeline_id)}` +
+      `&branch_id=${encodeURIComponent(parsed.branch_id)}` +
+      `&chapter_id=${encodeURIComponent(parsed.chapter_id)}` +
+      (parsed.source_version_id ? `&source_version_id=${encodeURIComponent(parsed.source_version_id)}` : "");
+    const response = await apiGet(`/api/narrative-turn/context?${scope}`);
+    if (!response.ok) {
+      noticeError("行动已确认，但新的上下文尚未重新绑定；请刷新后核对。");
+      return;
+    }
+    const rebound = response.data;
+    if (expectedRevision && rebound.branch_state_revision !== expectedRevision) {
+      noticeError("行动已确认，但上下文状态版本不一致；请刷新后核对。");
+      return;
+    }
+    state.contextDto = rebound;
+    renderSituationHeader(rebound);
+    renderEvidenceSummary(rebound);
+    renderEvidenceRail(rebound, state.planDto);
   }
 
   function renderConfirmResult(resultDto) {
@@ -754,7 +797,6 @@
     const nextFp = $("nt-confirm-next-fp");
 
     if (summary) summary.textContent = r.event_summary || "";
-    if (status) summary.textContent = r.result_status || "";
     if (status) status.textContent = r.result_status || "";
     if (flags) {
       clear(flags);
@@ -1103,6 +1145,7 @@
       }
       state.previewDto = prevResp.data;
       renderConsequencePreview(state.previewDto);
+      renderPrimaryAction();
       noticeAnnounce("预览已生成（定性）");
     } catch (err) {
       if (err && err.name === "AbortError") return;

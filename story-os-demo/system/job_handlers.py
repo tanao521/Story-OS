@@ -83,7 +83,15 @@ def _run_job_bound(job: dict[str, Any], context: ProjectContext, emit: Emit,
         emit({"name": name, "label": STEP_LABELS[name], "status": "running"})
         if cancellation_requested():
             return {"cancelled": True}
-        result = MemoryRepairService(context).initialize_vector_index(rebuild=job_type == "rebuild_vector_index", job_id=str(job.get("job_id") or ""))
+        params = dict(job.get("parameters") or {})
+        result = MemoryRepairService(context).initialize_vector_index(
+            project_id=params.get("project_id"),
+            timeline_id=params.get("timeline_id"),
+            branch_id=params.get("branch_id"),
+            canon_revision_id=params.get("canon_revision_id"),
+            rebuild=job_type == "rebuild_vector_index",
+            job_id=str(job.get("job_id") or ""),
+        )
         if result.get("status") in {"failed", "not_configured"}:
             raise RuntimeError(str(result.get("message") or "Vector index initialization failed."))
         emit({"name": name, "label": STEP_LABELS[name], "status": "completed", "outputs": result.get("outputs", {})})

@@ -19,8 +19,18 @@
 - Phase 0D4-C-RC1: **ACCEPTED WITH RC2/RC3 CLOSURE** (real browser runtime acceptance, JS syntax verification, security sentinel audit, endpoint no-diff audit, AbortController integration audit, warning inventory, correct test arithmetic; all security boundaries at 0)
 - Phase 0D4-C-RC2: **ACCEPTED WITH RC3 CLOSURE** (Context Navigator reintegration, isolated-fixture browser E2E, workspace visibility fix, delivery report fact correction; all security boundaries at 0)
 - Phase 0D4-C-RC3: **PASSED** (full isolated-fixture browser E2E 75-item checklist, RC3 security sentinel, RC3 zero-write audit, Context Navigator integration tests, branch selector fix, state-missing branch fixture; all security boundaries at 0)
-- Phase 0D4-D: **PASSED** (transactional Turn confirmation, idempotent operation replay, first-writer-wins concurrency, forward recovery, branch-local event journal, branch-local state projection, 22 focused tests + 483 regression tests pass; all security boundaries at 0)
-- Phase 0D4-E: **NOT ENTERED**
+- Phase 0D4-D-RC1: **PASSED**
+- Phase 0D4-D: **SEALED** (project-root operation authority, single Binder/projection state path, atomic Result claim, cross-service branch arbitration, artifact-driven recovery at 10 fault points, real Chromium confirmation, random sentinel, exact filesystem diff; 49 focused + 483 related regression tests pass; category labels overlap and are not additive; all security boundaries at 0)
+- Phase 0D4-E-P: **PASSED** (read-only Branch Lifecycle, NarrativeMemory path, Chroma lifecycle, retrieval entry-point, archive/restore, legacy API, risk, and implementation-split preflight; 41 isolated/static tests pass; no production implementation entered)
+- Phase 0D4-E1-RC2: **PASSED** (final real multi-process matrix, complete recovery fault matrix, authority immutability, PID-reuse safety, and evidence arithmetic closure; 33 focused + 166 limited regression + 565 combined tests pass)
+- Phase 0D4-E1-RC1: **ACCEPTED WITH RC2 CLOSURE**
+- Phase 0D4-E1: **SEALED** (Branch Lifecycle HTTP API and recovery contract complete; no NarrativeMemory or Chroma mutation)
+- Phase 0D4-E implementation: **E1 SEALED; E2 SEALED; E3 SEALED; E-RC PASSED; E SEALED**
+- Phase 0D4-E2-RC1: **PASSED** (legacy production mutation disabled, shared D-RC1 state authority read-only, dry-run-bound migration authority, and partial-copy recovery)
+- Phase 0D4-E2: **SEALED** (branch-aware NarrativeMemory schema, explicit scoped routes, copy-only legacy migration, recovery, and A/B isolation; Chroma/vector mutation remains 0)
+- Phase 0D4-E3: **SEALED** (complete VectorScope, branch metadata/IDs/manifests, mandatory Chroma where filter plus application verification, lifecycle visibility and recoverable sync authority)
+- Phase 0D4-E-RC: **PASSED** (integrated lifecycle/Memory/vector acceptance, operation recovery, Windows client lifecycle, caller propagation, and legacy closure)
+- Phase 0D4-E: **SEALED**
 - Phase 0D4-F: **NOT ENTERED**
 
 ## Global constraints (all sub-phases)
@@ -280,7 +290,47 @@ event log + state delta proposal, with idempotency and recovery.
 
 **Stop condition:** All focused tests pass; no Canon write; no Provider.
 
+**RC1 authority closure (2026-07-26):**
+
+- Branch State authority:
+  `<ProjectRoot>/data/narrative_memory/state/{timeline_id}/{branch_id}/current.json`
+  (ProjectContext root already scopes the project; no duplicate project segment).
+- Confirm operation authority:
+  `<ProjectRoot>/data/narrative_turn/operations/{operation_id}.json`, immutable
+  create-if-absent with full scope + canonical request fingerprint.
+- Turn artifacts:
+  `data/narrative_turn/{plans,validations,results,transitions,events}/...`.
+- Result claim: atomic create-if-absent; competing operation returns
+  `TURN_ALREADY_CONFIRMED`.
+- Branch event allocation and state projection: one cross-service branch
+  transaction lock, unique sequence, one fingerprint chain, no lost Result
+  application.
+- Recovery: durable artifacts are verified and safely repaired; marker-only
+  skipping is forbidden; indeterminate state returns
+  `CONFIRM_RECOVERY_REQUIRED`.
+- Fault injection: all 10 authorized points parameterized with restart/new
+  service and same-operation retry.
+- Browser: real Chromium covered allowed, allowed-with-cost, custom, blocked,
+  clarification, inactive/archived, stale preview, double-click, response-loss
+  replay, result rendering, Context rebind, history/reload, Console, POST and
+  no-store.
+- Validation: 49/49 focused and 483/483 related regression tests; 3 Node
+  syntax checks and Python compileall exit 0.
+- Phase 0D4-D-RC1: PASSED; Phase 0D4-D: SEALED; Phase 0D4-E-P: PASSED; Phase 0D4-E1-RC2: PASSED; Phase 0D4-E1: SEALED; Phase 0D4-E2-RC1: PASSED; Phase 0D4-E2: SEALED; Phase 0D4-E3: SEALED; Phase 0D4-E-RC: PASSED; Phase 0D4-E: SEALED.
+
 ## Phase 0D4-E — Branch create/switch/archive, retrieval isolation
+
+**Preflight status:** Phase 0D4-E-P is **PASSED**. See
+`docs/planning/PHASE_0D4_E_PREFLIGHT.md` for the read-only baseline, path and
+retrieval matrices, risk classification, and E1/E2/E3/E-RC split.
+
+The preflight does not authorize Branch API implementation, NarrativeMemory
+migration, Chroma writes/deletes, or legacy vector API removal.
+
+**Phase 0D4-E1 status:** **SEALED** after RC2; E1-RC1 is **ACCEPTED WITH RC2 CLOSURE**. See
+`docs/planning/PHASE_0D4_E1.md` and
+`docs/planning/PHASE_0D4_E1_DELIVERY_REPORT.md` and the RC1 delivery report.
+E2, E3, and E-RC are complete; Phase F remains separately unauthorized.
 
 **Goal:** Full branch lifecycle and Chroma retrieval isolation.
 
@@ -327,6 +377,10 @@ Canon write.
 ## Phase 0D4-F — Chapter compilation wiring
 
 **Goal:** Wire confirmed Turn records → chapter compilation candidate →
+
+**RC1 closure:** immutable compile/commit authorities, durable result
+artifacts, recovery fault seams, Canon freshness, and branch archive recheck
+are covered by `PHASE_0D4_F_RC1.md` and its delivery report.
 existing `ChapterCommitService` (no bypass).
 
 **Scope:**
@@ -378,7 +432,15 @@ updated only via existing `ChapterCommitService`.
 
 ## Development environment and model
 
-**统一开发环境：** TRAE Work CN / SOLO Coder / 单 Agent / 当前可用默认或最强编码模型 / 推理强度仅在界面支持时设置
+**统一开发环境：** TRAE Work CN / single Agent.
+
+| Phase | Model | Reasoning | Agents |
+|---|---|---|---|
+| 0D4-E1 | Luna | medium | single Agent |
+| 0D4-E2 | Terra | medium | single Agent |
+| 0D4-E3 | Terra | medium-high | single Agent |
+| 0D4-E-RC | Terra | high | single Agent |
+| 0D4-F | Luna | medium | single Agent |
 
 | Phase | Reasoning intensity | Rationale |
 | --- | --- | --- |
@@ -386,5 +448,4 @@ updated only via existing `ChapterCommitService`.
 | 0D4-B | medium-high | feasibility rules; many edge cases |
 | 0D4-C | medium | UI; requires frontend-design skill first |
 | 0D4-D | medium-high | idempotency/recovery; safety-critical |
-| 0D4-E | high | isolation; security-critical |
 | 0D4-F | medium | wiring; reuse existing entry |

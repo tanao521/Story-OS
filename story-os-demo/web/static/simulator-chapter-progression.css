@@ -1,0 +1,45 @@
+/* Phase 0D6-C-A: read-only progression status surface. */
+.simulator-chapter-progression {
+  margin: 0 22px 18px;
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  padding: 14px;
+}
+.simulator-chapter-progression.hidden { display: none; }
+.simulator-chapter-progression[data-progression-state="READY"] { border-left-color: var(--status-success); }
+.simulator-chapter-progression[data-progression-state="EXISTING_TURN"] { border-left-color: var(--story-gold); }
+.simulator-chapter-progression[data-progression-state="BLOCKED"] { border-left-color: var(--status-warning); }
+.simulator-chapter-progression[data-progression-state="RECOVERY_REQUIRED"],
+.simulator-chapter-progression[data-progression-state="CORRUPT"],
+.simulator-chapter-progression[data-progression-state="NETWORK_OR_ROUTE_ERROR"] { border-left-color: var(--status-error); }
+.simulator-chapter-progression-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.simulator-chapter-progression-heading h2 { margin: 2px 0 4px; font-family: var(--font-editorial); }
+.simulator-chapter-progression-status { margin-top: 6px; color: var(--text-secondary); line-height: 1.55; }
+.simulator-chapter-progression-scope { margin-top: 9px; color: var(--text-muted); font: 11px var(--font-mono); overflow-wrap: anywhere; }
+.simulator-chapter-progression-reasons { display: grid; gap: 4px; margin-top: 8px; }
+.simulator-chapter-progression-reasons p { margin: 0; color: var(--text-secondary); }
+.simulator-chapter-progression-existing { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-subtle); }
+.simulator-chapter-progression-existing.hidden { display: none; }
+.simulator-chapter-progression-existing p { margin: 0; color: var(--text-secondary); font: 12px var(--font-mono); overflow-wrap: anywhere; }
+.simulator-chapter-progression-start-row { margin-top: 12px; }
+.simulator-chapter-progression-start-row .btn { min-height: 44px; }
+.simulator-chapter-progression-start-row .btn.hidden { display: none; }
+.simulator-chapter-progression-refresh { margin-top: 12px; }
+.simulator-chapter-progression-refresh.hidden { display: none; }
+.simulator-chapter-progression-badge { flex: 0 0 auto; border: 1px solid var(--border-subtle); border-radius: 999px; padding: 4px 8px; color: var(--text-muted); font: 10px var(--font-mono); letter-spacing: .04em; }
+.simulator-chapter-progression-badge[data-severity="positive"] { color: var(--status-success); border-color: var(--status-success); }
+.simulator-chapter-progression-badge[data-severity="warning"] { color: var(--status-warning); border-color: var(--status-warning); }
+.simulator-chapter-progression-badge[data-severity="error"] { color: var(--status-error); border-color: var(--status-error); }
+.simulator-chapter-progression button:focus-visible { outline: 2px solid var(--story-gold); outline-offset: 2px; }
+@media (max-width: 720px) {
+  .simulator-chapter-progression { margin: 0 12px 12px; }
+  .simulator-chapter-progression-existing { align-items: stretch; flex-direction: column; }
+  .simulator-chapter-progression-existing .btn { width: 100%; min-height: 44px; }
+  .simulator-chapter-progression-start-row .btn { width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .simulator-chapter-progression *, .simulator-chapter-progression *::before, .simulator-chapter-progression *::after { transition: none !important; animation: none !important; }
+}

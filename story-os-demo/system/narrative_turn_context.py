@@ -97,6 +97,57 @@ def _stable_fingerprint(data: Any) -> str:
     return sha256(_canonical_json(data).encode("utf-8")).hexdigest()
 
 
+_BRANCH_STATE_REVISION_EXCLUDED_FIELDS = {
+    "revision",
+    "updated_at",
+    "last_applied_turn_id",
+    "last_event_sequence",
+    "last_result_fingerprint",
+    "applied_result_fingerprints",
+}
+
+
+def branch_state_content_revision(state: dict[str, Any]) -> str:
+    """Canonical revision for authoritative narrative-state content."""
+    return _stable_fingerprint(
+        {
+            key: value
+            for key, value in state.items()
+            if key not in _BRANCH_STATE_REVISION_EXCLUDED_FIELDS
+        }
+    )
+
+
+def context_fingerprint_for(
+    snapshot: "NarrativeTurnContextSnapshot",
+    *,
+    branch_state_revision: str | None,
+) -> str:
+    """Recompute the Binder fingerprint with one authoritative state revision."""
+    return _stable_fingerprint(
+        {
+            "planner_revision": snapshot.planner_revision,
+            "project_id": snapshot.scope.project_id,
+            "timeline_id": snapshot.scope.timeline_id,
+            "branch_id": snapshot.scope.branch_id,
+            "chapter_id": snapshot.chapter_id,
+            "source_version_id": snapshot.source_version_id,
+            "source_fingerprint": snapshot.source_fingerprint,
+            "canon_revision": snapshot.canon_revision,
+            "planning_revision": snapshot.planning_revision,
+            "chapter_plan_revision": snapshot.chapter_plan_revision,
+            "dependency_revision": snapshot.dependency_revision,
+            "branch_state_revision": branch_state_revision,
+            "world_revision": snapshot.world_revision,
+            "character_revision": snapshot.character_revision,
+            "location_revision": snapshot.location_revision,
+            "resource_revision": snapshot.resource_revision,
+            "relationship_revision": snapshot.relationship_revision,
+            "time_state_revision": snapshot.time_state_revision,
+        }
+    )
+
+
 # ---------------------------------------------------------------------------
 # Recursive freeze — deep immutability
 # ---------------------------------------------------------------------------
@@ -815,5 +866,17 @@ class NarrativeTurnContextBinder:
         if rec_branch and rec_branch != branch_id:
             return None, None, "BRANCH_STATE_BRANCH_MISMATCH"
 
-        revision = _stable_fingerprint(data)
+        revision_value = data.get("revision")
+        if data.get("schema_version") == SCHEMA_VERSION:
+            if (
+                rec_project != self._project_id
+                or rec_timeline != timeline_ctx.timeline_id
+                or rec_branch != branch_id
+                or not isinstance(revision_value, str)
+                or not revision_value
+                or not isinstance(data.get("applied_result_fingerprints"), list)
+                or revision_value != branch_state_content_revision(data)
+            ):
+                return None, None, "BRANCH_STATE_INVALID"
+        revision = revision_value if isinstance(revision_value, str) and revision_value else _stable_fingerprint(data)
         return revision, data, None
