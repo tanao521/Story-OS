@@ -57,12 +57,13 @@ class TestStateWriteFailureNotSilentlySwallowed:
             ) as mock_update:
                 result = service.clone_project(source_context, "Cloned Project")
 
-                mock_update.assert_called_once()
+                mock_rebuild.assert_not_called()
+                mock_update.assert_not_called()
 
                 assert result.status == "completed_with_warnings", \
                     f"Expected completed_with_warnings, got {result.status}"
-                assert any("state" in w.lower() or "write" in w.lower() for w in result.warnings), \
-                    f"No state write warning found in: {result.warnings}"
+                assert any("VECTOR_SCOPE_REQUIRED" in w for w in result.warnings)
+                assert result.vector_sync_operation_id is None
 
     def test_state_write_failure_does_not_rollback_clone(self, tmp_path):
         """Clone should persist even when state write fails."""

@@ -35,9 +35,14 @@ class CrossChapterTurnStartError(RuntimeError):
 
 class CrossChapterTurnStartService:
     def __init__(self, context: ProjectContext,
-                 *, fault_injector: Callable[[str], None] | None = None) -> None:
+                 *, canonical_project_id: str | None = None,
+                 fault_injector: Callable[[str], None] | None = None) -> None:
         self.context = context
-        self.readiness = CrossChapterReadinessService(context)
+        self.storage_project_id = context.root.name or "default"
+        self.project_id = canonical_project_id or self.storage_project_id
+        self.readiness = CrossChapterReadinessService(
+            context, canonical_project_id=self.project_id
+        )
         self.lifecycle = ChapterLifecycleService(context)
         self.branch_lifecycle = BranchLifecycleService(context)
         self.turns = NarrativeTurnStore(context)
@@ -90,7 +95,9 @@ class CrossChapterTurnStartService:
             outcome = body.pop("outcome_fingerprint", None)
             if outcome != _fingerprint(body):
                 return None
-            scope = NarrativeScope(request["project_id"], request["timeline_id"], request["branch_id"])
+            scope = NarrativeScope(
+                self.storage_project_id, request["timeline_id"], request["branch_id"]
+            )
             matching = []
             for turn_id in self.turns.list_plans(scope):
                 plan = self.turns.get_plan(scope, turn_id)
@@ -198,14 +205,13 @@ class CrossChapterTurnStartService:
             raise CrossChapterTurnStartError(
                 "CORRUPT_OPERATION", "Durable phase has no result effect")
 
-    @staticmethod
-    def _preview_payload(preview: Any) -> dict[str, Any]:
+    def _preview_payload(self, preview: Any) -> dict[str, Any]:
         return {
             "schema_version": preview.schema_version,
             "preview_id": preview.preview_id,
             "turn_id": preview.turn_id,
             "scope": {
-                "project_id": preview.scope.project_id,
+                "project_id": self.project_id,
                 "timeline_id": preview.scope.timeline_id,
                 "branch_id": preview.scope.branch_id,
             },
@@ -227,7 +233,7 @@ class CrossChapterTurnStartService:
     def assert_branch_archive_safe(self, timeline_id: str, branch_id: str) -> None:
         if not self.operations.exists():
             return
-        target = ScopeTarget(self.context.root.name, timeline_id, branch_id)
+        target = ScopeTarget(self.project_id, timeline_id, branch_id)
         basenames = {
             path.name[:-11] if path.name.endswith(".phase.json")
             else path.name[:-12] if path.name.endswith(".result.json")
@@ -287,6 +293,8 @@ class CrossChapterTurnStartService:
                    branch_id: str, previous_chapter_id: int,
                    successor_chapter_id: int,
                    expected_readiness_fingerprint: str) -> dict[str, Any]:
+        if project_id != self.project_id:
+            raise CrossChapterTurnStartError("SCOPE_MISMATCH", "Project scope mismatch")
         request = {
             "project_id": project_id, "timeline_id": timeline_id,
             "branch_id": branch_id, "previous_chapter_id": previous_chapter_id,
@@ -387,7 +395,7 @@ class CrossChapterTurnStartService:
                         and (turn_id is None or fresh.get("existing_turn_id") == turn_id)):
                     raise CrossChapterTurnStartError(
                         "TURN_START_SOURCE_CHANGED", "Start authority changed")
-            scope = NarrativeScope(project_id, timeline_id, branch_id)
+            scope = NarrativeScope(self.storage_project_id, timeline_id, branch_id)
             snapshot = NarrativeTurnContextBinder(self.context).bind(
                 scope, successor_chapter_id)
             if snapshot.context_fingerprint != claim["readiness_authority"]["planning_context_fingerprint"]:

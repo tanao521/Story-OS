@@ -20,12 +20,11 @@ REPO_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 
-def seed_project(project_root: Path) -> None:
+def seed_project(project_root: Path, canonical_project_id: str, *, sibling: bool) -> None:
     from core.project_context import get_project_context
     from system.chapter_lifecycle_service import ChapterLifecycleService
     from system.narrative_branch_lifecycle_service import BranchLifecycleService
 
-    project_root.mkdir(parents=True, exist_ok=True)
     ctx = get_project_context(project_root)
     data = ctx.data_dir
     for directory in (
@@ -34,11 +33,6 @@ def seed_project(project_root: Path) -> None:
         data / "chapter_lifecycle" / "operations",
     ):
         directory.mkdir(parents=True, exist_ok=True)
-    (project_root / "project.json").write_text(json.dumps({
-        "schema_version": "1.0", "project_id": project_root.name,
-        "slug": project_root.name, "title": "0D6-C-FV isolated project",
-        "genre": "fixture", "project_root": "projects/0d6c-fv-project",
-    }), encoding="utf-8")
     (data / "story_spec.json").write_text(json.dumps({
         "schema_version": "1.0", "title": "0D6-C-FV isolated project",
         "genre": "fixture", "length": "short",
@@ -50,6 +44,17 @@ def seed_project(project_root: Path) -> None:
     (data / "derived_state.json").write_text("{}", encoding="utf-8")
     (data / "next_chapter_plan.json").write_text(
         json.dumps({"chapter_id": 2, "revision": "plan-2"}), encoding="utf-8")
+    drafts = data / "drafts"
+    drafts.mkdir(exist_ok=True)
+    successor_text = "# Chapter 002\n\nThe successor Turn has been durably confirmed in the isolated fixture."
+    (drafts / "chapter_002_draft_v001.json").write_text(json.dumps({
+        "chapter_id": 2,
+        "version_label": "draft_v001",
+        "draft_text": successor_text,
+        "actual_word_count": len(successor_text),
+        "generation": {"mode": "fixture", "fallback_used": True},
+    }), encoding="utf-8")
+    (drafts / "chapter_002_draft_v001.md").write_text(successor_text, encoding="utf-8")
     (data / "chapters" / "chapter_001.md").write_text(
         "# Chapter 001\n\nThe fixture chapter is durably committed.", encoding="utf-8")
     commits = data / "chapter_commits"
@@ -63,12 +68,37 @@ def seed_project(project_root: Path) -> None:
     from core.project_context import get_project_context
     context = get_project_context(project_root)
     scope = {"project_id": project_root.name, "timeline_id": "main"}
-    branches = BranchLifecycleService(context)
+    scope = {"project_id": canonical_project_id, "timeline_id": "main"}
+    branches = BranchLifecycleService(
+        context, canonical_project_id=canonical_project_id
+    )
     branches.create("branch-create", {**scope, "branch_id": "main"})
+    if sibling:
+        branches.create(
+            "branch-create-sibling",
+            {**scope, "branch_id": "sibling", "display_name": "Sibling"},
+        )
     revision = branches.list_branches(**scope)["registry_revision"]
     branches.select("branch-select", {
         **scope, "branch_id": "main", "expected_registry_revision": revision,
     })
+    # The formal browser completion flow consumes the real simulator read model,
+    # which requires an existing branch-scoped vector manifest before Compile.
+    # This is fixture-only authority data; it does not create or modify a
+    # production vector index.
+    manifest_dir = data / "chroma" / "manifests" / "main"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    for branch_id in ("main", "sibling") if sibling else ("main",):
+        (manifest_dir / f"{branch_id}.json").write_text(json.dumps({
+            "schema_version": 2,
+            "project_id": canonical_project_id,
+            "timeline_id": "main",
+            "branch_id": branch_id,
+            "vector_ready": True,
+            "branch_lifecycle_status": "open",
+            "canon_revision_id": "canon-001",
+            "collection_name": f"fixture_{branch_id}",
+        }), encoding="utf-8")
     ChapterLifecycleService(context).create_next_chapter(operation_id="chapter-create")
 
     # Narrative Turn context inputs used after the successor rebind.  They are
@@ -112,22 +142,29 @@ def seed_project(project_root: Path) -> None:
 
 
 def setup_workspace(root: Path) -> dict[str, Any]:
-    projects = root / "projects"
-    project = projects / "0d6c-fv-project"
-    seed_project(project)
-    config = root / ".story_os"
-    config.mkdir(parents=True, exist_ok=True)
-    (config / "config.json").write_text(json.dumps({
-        "active_project": "projects/0d6c-fv-project",
-        "web": {"host": "127.0.0.1", "port": 7863, "open_browser": False},
-    }), encoding="utf-8")
-    (config / "projects.json").write_text(json.dumps({
-        "schema_version": "1.0", "projects": [{
-            "project_id": "0d6c-fv-project", "project_root": "projects/0d6c-fv-project",
-            "title": "0D6-C-FV isolated project",
-        }],
-    }), encoding="utf-8")
-    return {"workspace": root, "project": project, "project_id": project.name}
+    from system.project_manager import ProjectManager
+
+    manager = ProjectManager(root)
+    payload = {
+        "genre": "fixture", "premise": "RC11 browser fixture",
+        "protagonist": "Fixture", "goal": "Verify isolation",
+        "conflict": "Delayed transport", "tone": "precise",
+        "target_words": 1000, "chapter_count": 2,
+    }
+    project_a = manager.create_project({**payload, "title": "RC11 Project A"})
+    project_b = manager.create_project({**payload, "title": "RC11 Project B"})
+    root_a = root / project_a["project_root"]
+    root_b = root / project_b["project_root"]
+    seed_project(root_a, project_a["project_id"], sibling=True)
+    seed_project(root_b, project_b["project_id"], sibling=False)
+    manager.activate_project(project_a["project_id"])
+    return {
+        "workspace": root,
+        "project": root_a,
+        "project_id": project_a["project_id"],
+        "project_a": project_a,
+        "project_b": project_b,
+    }
 
 
 class ProgressionAuditMiddleware:
@@ -143,14 +180,17 @@ class ProgressionAuditMiddleware:
         # mutations.  These controls are test-fixture-only and delay a response
         # only after the real route/service has produced it.
         self.readiness_delay = float(os.environ.get("STORYOS_RC4_READINESS_DELAY", "0") or 0)
+        self.readiness_delay_remaining = 1
 
     def _save(self) -> None:
         self.audit_path.write_text(json.dumps({"requests": self.records}, indent=2), encoding="utf-8")
 
     async def __call__(self, scope, receive, send):
-        if scope.get("type") != "http" or scope.get("path") not in {
+        audited_paths = {
             "/api/chapter-progression/readiness", "/api/chapter-progression/start-turn",
-        }:
+            "/api/narrative-chapter/compile", "/api/narrative-chapter/commit",
+        }
+        if scope.get("type") != "http" or scope.get("path") not in audited_paths:
             await self.downstream(scope, receive, send)
             return
         body = b""
@@ -161,7 +201,9 @@ class ProgressionAuditMiddleware:
             return message
         record: dict[str, Any] = {
             "method": scope.get("method"), "path": scope.get("path"),
+            "query_string": scope.get("query_string", b"").decode("utf-8", "replace"),
             "body": None, "status": None, "dropped": False,
+            "request_received_monotonic": asyncio.get_running_loop().time(),
         }
         messages: list[dict[str, Any]] = []
         async def capture(message):
@@ -175,10 +217,27 @@ class ProgressionAuditMiddleware:
         for message in messages:
             if message.get("type") == "http.response.start":
                 record["status"] = message.get("status")
+            if message.get("type") == "http.response.body" and message.get("body"):
+                try:
+                    response_body = json.loads(message["body"].decode("utf-8"))
+                    if isinstance(response_body, dict) and isinstance(response_body.get("error"), dict):
+                        record["error_code"] = response_body["error"].get("code")
+                        record["error_message"] = response_body["error"].get("message")
+                    result = response_body.get("result") if isinstance(response_body, dict) else None
+                    if isinstance(result, dict):
+                        for key in ("turn_id", "candidate_id", "candidate_version_id", "commit_id", "status"):
+                            if result.get(key) is not None:
+                                record[key] = result[key]
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    pass
+        record["durable_effect_monotonic"] = asyncio.get_running_loop().time()
+        self.records.append(record)
+        self._save()
         if scope.get("path") == "/api/chapter-progression/start-turn" and self.delay:
             await asyncio.sleep(self.delay)
-        if scope.get("path") == "/api/chapter-progression/readiness" and self.readiness_delay:
+        if scope.get("path") == "/api/chapter-progression/readiness" and self.readiness_delay and self.readiness_delay_remaining:
             await asyncio.sleep(self.readiness_delay)
+            self.readiness_delay_remaining = 0
         drop = (
             self.drop_remaining and scope.get("path") == "/api/chapter-progression/start-turn"
             and record.get("status") == 200
@@ -186,7 +245,7 @@ class ProgressionAuditMiddleware:
         if drop:
             self.drop_remaining = False
             record["dropped"] = True
-        self.records.append(record)
+        record["response_released_monotonic"] = asyncio.get_running_loop().time()
         self._save()
         if drop:
             await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json")]})
@@ -205,13 +264,15 @@ def main() -> None:
     os.chdir(workspace)
     audit_path = info["project"] / ".fv_network_audit.json"
     app.add_middleware(ProgressionAuditMiddleware, audit_path=audit_path)
+    port = int(os.environ.get("STORYOS_FV_PORT", "7863"))
     print(json.dumps({
         "workspace": str(workspace), "project": str(info["project"]),
-        "project_id": info["project_id"], "url":
-        "http://127.0.0.1:7863/?mode=simulator&view=narrative-turn&project_id=0d6c-fv-project&timeline_id=main&branch_id=main&chapter_id=1",
+        "project_id": info["project_id"],
+        "project_a": info["project_a"], "project_b": info["project_b"], "url":
+        f"http://127.0.0.1:{port}/?mode=simulator&view=narrative-turn&project_id={info['project_id']}&timeline_id=main&branch_id=main&chapter_id=1",
         "audit": str(audit_path),
     }), flush=True)
-    uvicorn.run(app, host="127.0.0.1", port=7863, log_level="warning")
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 
 
 if __name__ == "__main__":

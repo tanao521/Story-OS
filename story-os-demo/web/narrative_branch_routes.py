@@ -7,8 +7,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from core.contracts.narrative_turn import NarrativeTurnError
-from core.project_context import get_project_context
 from system.narrative_branch_lifecycle_service import BranchLifecycleService
+from system.project_identity_resolver import ProjectIdentityResolutionError, ProjectIdentityResolver
 from web.narrative_branch_wire import branch_list_wire, branch_operation_wire, branch_wire
 from web.narrative_turn_wire import error_envelope
 
@@ -63,6 +63,9 @@ async def _json_body(request: Request) -> dict[str, Any]:
 def _map(exc: Exception) -> tuple[str, str, int]:
     if isinstance(exc, _RequestError):
         return exc.code, exc.message, exc.status
+    if isinstance(exc, ProjectIdentityResolutionError):
+        status = 404 if exc.code == "PROJECT_NOT_FOUND" else 503
+        return exc.code, str(exc), status
     if isinstance(exc, NarrativeTurnError):
         mapping = {
             NarrativeTurnError.SCOPE_MISMATCH: ("PROJECT_NOT_FOUND", "Project not found", 404),
@@ -89,14 +92,15 @@ def _map(exc: Exception) -> tuple[str, str, int]:
     return "INTERNAL_ERROR", "服务器内部错误。", 500
 
 
-def _service() -> BranchLifecycleService:
-    return BranchLifecycleService(get_project_context())
+def _service(project_id: str) -> BranchLifecycleService:
+    identity = ProjectIdentityResolver().resolve(project_id)
+    return BranchLifecycleService(identity.context, canonical_project_id=identity.project_id)
 
 
 @router.get("")
 async def list_branches(project_id: str, timeline_id: str) -> JSONResponse:
     try:
-        result = _service().list_branches(project_id, timeline_id)
+        result = _service(project_id).list_branches(project_id, timeline_id)
         return _ok({"ok": True, "message": "", "result": branch_list_wire(result), "warnings": [], "errors": []})
     except Exception as exc:
         code, message, status = _map(exc)
@@ -106,7 +110,7 @@ async def list_branches(project_id: str, timeline_id: str) -> JSONResponse:
 @router.get("/{branch_id}")
 async def get_branch(branch_id: str, project_id: str, timeline_id: str) -> JSONResponse:
     try:
-        result = _service().get_branch(project_id, timeline_id, branch_id)
+        result = _service(project_id).get_branch(project_id, timeline_id, branch_id)
         result["branch"] = branch_wire(result["branch"])
         return _ok({"ok": True, "message": "", "result": result, "warnings": [], "errors": []})
     except Exception as exc:
@@ -120,7 +124,7 @@ async def _mutate(request: Request, operation: str) -> JSONResponse:
         operation_id = _operation_id(data)
         for field in ("project_id", "timeline_id", "branch_id"):
             _required(data, field)
-        result = getattr(_service(), operation)(operation_id, data)
+        result = getattr(_service(data["project_id"]), operation)(operation_id, data)
         result["operation_type"] = operation
         return _ok({"ok": True, "message": "", "result": branch_operation_wire(result), "warnings": [], "errors": []})
     except Exception as exc:

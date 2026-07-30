@@ -28,6 +28,7 @@ class TestObsidianBindCLI:
             [sys.executable, str(main_path)] + args,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=cwd or self.temp_workspace,
             env=env,
         )
@@ -122,6 +123,7 @@ class TestObsidianStatusCLI:
             [sys.executable, str(main_path)] + args,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=self.temp_workspace,
             env=env,
         )
@@ -167,6 +169,7 @@ class TestObsidianUnbindCLI:
             [sys.executable, str(main_path)] + args,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=self.temp_workspace,
             env=env,
         )
@@ -187,6 +190,8 @@ def test_cli_help():
         [sys.executable, "main.py", "obsidian-bind", "--help"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
     )
     assert result.returncode == 0
     assert "--project" in result.stdout

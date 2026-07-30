@@ -1,15 +1,29 @@
 from __future__ import annotations
 
 from typing import Any
+import uuid
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from core.project_context import get_project_context
 from system.narrative_chapter_compiler import CompilationScope, NarrativeCompilationError, NarrativeChapterCompiler, NarrativeChapterCommitService
 from system.narrative_candidate_review_service import NarrativeCandidateReviewService
+from system.project_identity_resolver import ProjectIdentityResolutionError, ProjectIdentityResolver
 
 router = APIRouter(prefix="/api/narrative-chapter", tags=["narrative-chapter"])
 _HEADERS = {"Cache-Control": "no-store"}
+
+def _project_boundary(project_id: str):
+    """Resolve formal UUIDs once at the legacy storage boundary."""
+    try:
+        uuid.UUID(project_id)
+    except (ValueError, AttributeError):
+        context = get_project_context()
+        if project_id != context.root.name:
+            raise ProjectIdentityResolutionError("PROJECT_NOT_FOUND", "Project not found")
+        return context, project_id
+    identity = ProjectIdentityResolver().resolve(project_id)
+    return identity.context, identity.project_id
 
 def _scope(data: dict[str, Any]) -> CompilationScope:
     try:
@@ -60,7 +74,8 @@ def _error(exc: Exception) -> JSONResponse:
 async def compile_candidate(request: Request):
     try:
         data = await request.json(); scope = _scope(data)
-        result = NarrativeChapterCompiler(get_project_context()).compile_candidate(operation_id=str(data.get("operation_id") or ""), scope=scope)
+        context, canonical_project_id = _project_boundary(scope.project_id)
+        result = NarrativeChapterCompiler(context, canonical_project_id=canonical_project_id).compile_candidate(operation_id=str(data.get("operation_id") or ""), scope=scope)
         return JSONResponse({"ok": True, "result": result, "warnings": [], "errors": []}, headers=_HEADERS)
     except Exception as exc:
         return _error(exc)
@@ -69,7 +84,8 @@ async def compile_candidate(request: Request):
 async def commit_candidate(request: Request):
     try:
         data = await request.json(); scope = _scope(data)
-        result = NarrativeChapterCommitService(get_project_context()).commit_candidate(operation_id=str(data.get("operation_id") or ""), scope=scope, candidate_version_id=str(data.get("candidate_version_id") or ""), ordered_turn_ids=list(data.get("ordered_turn_ids") or []))
+        context, canonical_project_id = _project_boundary(scope.project_id)
+        result = NarrativeChapterCommitService(context, canonical_project_id=canonical_project_id).commit_candidate(operation_id=str(data.get("operation_id") or ""), scope=scope, candidate_version_id=str(data.get("candidate_version_id") or ""), ordered_turn_ids=list(data.get("ordered_turn_ids") or []))
         return JSONResponse({"ok": True, "result": result, "warnings": [], "errors": []}, headers=_HEADERS)
     except Exception as exc:
         return _error(exc)
@@ -78,7 +94,8 @@ async def commit_candidate(request: Request):
 async def review_candidate(candidate_id: str, request: Request):
     try:
         data = await request.json(); scope = _scope(data)
-        result = NarrativeCandidateReviewService(get_project_context()).review_candidate(
+        context, canonical_project_id = _project_boundary(scope.project_id)
+        result = NarrativeCandidateReviewService(context, canonical_project_id=canonical_project_id).review_candidate(
             operation_id=str(data.get("operation_id") or ""), scope=scope, candidate_id=candidate_id,
             candidate_version_id=data.get("candidate_version_id"), decision=str(data.get("decision") or ""),
             reviewer_id=str(data.get("reviewer_id") or ""), reason=str(data.get("reason") or ""),

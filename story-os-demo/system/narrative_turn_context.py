@@ -27,6 +27,7 @@ from core.contracts.narrative_turn import (
     TimelineContext,
 )
 from core.project_context import ProjectContext
+from system.version_manager import list_versions, read_version_payload
 
 
 SCHEMA_VERSION = "1.0"
@@ -654,35 +655,31 @@ class NarrativeTurnContextBinder:
         Uses list_versions (read-only) instead of get_selected_version (which
         calls load_versions_index → save_versions_index, writing on every call).
         """
-        versions_index_path = (
-            self._project_context.data_dir
-            / "versions"
-            / f"chapter_{chapter_id:03d}_versions.json"
-        )
-        index_data = _read_json_file(versions_index_path)
+        versions = list_versions(chapter_id, self._project_context.data_dir)
+        selected_entry = versions.get("selected") if isinstance(versions.get("selected"), dict) else None
+        if not selected_entry:
+            for kind in ("manual", "edited", "drafts"):
+                candidates = versions.get(kind)
+                if isinstance(candidates, list) and candidates:
+                    selected_entry = candidates[-1]
+                    break
 
-        if index_data and isinstance(index_data.get("versions"), list):
-            versions = index_data["versions"]
-            selected_vid = index_data.get("selected_version_id")
-            selected_entry = None
-
-            if selected_vid:
-                for v in versions:
-                    if v.get("version_id") == selected_vid:
-                        selected_entry = v
-                        break
-
-            if selected_entry is None and versions:
-                # Fallback: use the last version.
-                selected_entry = versions[-1]
-
-            if selected_entry:
-                content = self._read_version_content(chapter_id, selected_entry)
-                version_id = str(
-                    selected_entry.get("version_label")
-                    or f"{selected_entry.get('source_type')}_v{selected_entry.get('version', 0):03d}"
-                )
-                return _stable_fingerprint(content), version_id
+        if selected_entry:
+            try:
+                payload = read_version_payload(selected_entry)
+            except (OSError, ValueError, TypeError):
+                payload = {}
+            content = str(
+                payload.get("manual_text")
+                or payload.get("edited_text")
+                or payload.get("draft_text")
+                or ""
+            )
+            version_id = str(
+                selected_entry.get("version_label")
+                or f"{selected_entry.get('source_type')}_v{selected_entry.get('version', 0):03d}"
+            )
+            return _stable_fingerprint(content), version_id
 
         # No version index — try reading the canonical chapter file.
         content = self._read_chapter_raw(chapter_id)

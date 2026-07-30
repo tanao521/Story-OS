@@ -37,4 +37,4 @@ def test_handoff_is_in_memory_and_scope_bound():
 
 
 def test_rc1_module_version_is_cache_busted_without_ui_markup_changes():
-    assert '/static/simulator-chapter-progression.js?v=0d6c-b-rc1-2' in TEMPLATE
+    assert '/static/simulator-chapter-progression.js?v=0d6c-b-rc19-1' in TEMPLATE

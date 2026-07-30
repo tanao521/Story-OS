@@ -4,6 +4,7 @@ from core.project_context import get_project_context
 from creative_loop.integration import CreativeLoop
 from system.data_store import DataStore
 from system.job_manager import JobManager
+from system.revision_service import RevisionService
 import time
 
 
@@ -14,7 +15,8 @@ def _context(tmp_path):
     (tmp_path / ".story_os").mkdir(exist_ok=True)
     context = get_project_context(tmp_path)
     store = DataStore(context)
-    store.write_markdown("data/chapters/chapter_001.md", "林舟在雨夜发现旧钥匙，却必须在救人和保守秘密之间做出选择。")
+    chapter = "林舟在雨夜发现旧钥匙，却必须在救人和保守秘密之间做出选择。"
+    RevisionService(context).initialize_chapter_canon(1, chapter)
     store.write_json("data/next_chapter_plan.json", {"chapter_id": 1, "goal": "推动钥匙谜团并迫使主角选择", "planning_version_id": "plan-v1"})
     return context, store
 
@@ -139,7 +141,7 @@ def test_creative_loop_data_is_project_scoped(tmp_path):
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
     first, second = get_project_context(tmp_path / "a"), get_project_context(tmp_path / "b")
-    DataStore(first).write_markdown("data/chapters/chapter_001.md", "第一项目的冲突。")
+    RevisionService(first).initialize_chapter_canon(1, "第一项目的冲突。")
     DataStore(first).write_json("data/next_chapter_plan.json", {"chapter_id": 1})
     CreativeLoop(first).reflect_chapter(1)
     assert CreativeLoop(first).reflections.list()

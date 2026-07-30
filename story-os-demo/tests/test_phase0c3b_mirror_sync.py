@@ -791,6 +791,7 @@ class TestCLIMirrorSync:
             [sys.executable, str(self.main_py)] + args,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=str(self.project_dir),
             env=env,
         )
@@ -848,6 +849,7 @@ class TestCLIMirrorSync:
                 [sys.executable, str(self.main_py), "sync-obsidian", "--dry-run"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 cwd=str(empty_project),
                 env=env,
             )
@@ -862,6 +864,8 @@ class TestCLIMirrorSync:
             [sys.executable, str(self.main_py), "sync-obsidian", "--help"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
         )
         assert result.returncode == 0
         assert "--dry-run" in result.stdout

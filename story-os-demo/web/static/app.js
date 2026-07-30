@@ -285,7 +285,38 @@ async function loadVersionContent(sourceType, version) {
   renderVersionContent(data.result);
   await loadQualityReport(sourceType, version);
   await loadContinuityReport(sourceType, version);
+  await loadReviewAssemblyEvidence(sourceType, version);
   navigateToSection("preview-panel");
+}
+
+async function loadReviewAssemblyEvidence(sourceType, version) {
+  const panel = document.getElementById("review-assembly-evidence");
+  const status = document.getElementById("review-assembly-evidence-status");
+  const details = document.getElementById("review-assembly-evidence-details");
+  if (!panel || !status || !details) return;
+  panel.className = "review-assembly-evidence is-loading";
+  status.textContent = "正在核对该精确版本的组装证据…";
+  details.innerHTML = "";
+  try {
+    const data = await apiGet(`/api/review/assembly-evidence?source_type=${encodeURIComponent(sourceType)}&version=${encodeURIComponent(version)}`);
+    const result = data.result || {};
+    const evidence = result.evidence || null;
+    const state = String(result.status || "INVALID").toLowerCase();
+    panel.className = `review-assembly-evidence is-${state}`;
+    status.textContent = result.message || "组装证据不可用，不能作为当前审核依据。";
+    if (!evidence) return;
+    const fingerprint = String(evidence.source_fingerprint || "");
+    const rows = [
+      ["版本", evidence.source_version_id || "—"],
+      ["证据", evidence.evidence_id || "—"],
+      ["内容指纹", fingerprint ? `${fingerprint.slice(0, 12)}…` : "—"],
+      ["生成时间", evidence.generated_at || "—"],
+    ];
+    details.innerHTML = rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("");
+  } catch (_error) {
+    panel.className = "review-assembly-evidence is-invalid";
+    status.textContent = "无法读取该版本的组装证据；它不会被当作当前审核证据。";
+  }
 }
 async function selectVersion(sourceType, version) { await runAction("选择版本", () => apiPost("/api/versions/select", { source_type: sourceType, version })); await refreshAll(); }
 async function archiveVersion(sourceType, version, chapterId) {

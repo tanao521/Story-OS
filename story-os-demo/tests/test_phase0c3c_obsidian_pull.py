@@ -821,6 +821,7 @@ class TestCLIObsidianPull:
             [sys.executable, str(self.main_py)] + args,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=str(self.project_dir),
             env=env,
         )
@@ -874,6 +875,7 @@ class TestCLIObsidianPull:
                 [sys.executable, str(self.main_py), "pull-obsidian"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 cwd=str(empty_project),
                 env=env,
             )
@@ -887,6 +889,8 @@ class TestCLIObsidianPull:
             [sys.executable, str(self.main_py), "pull-obsidian", "--help"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
         )
         assert result.returncode == 0
         assert "--file" in result.stdout

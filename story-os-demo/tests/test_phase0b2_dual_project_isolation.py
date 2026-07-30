@@ -56,11 +56,15 @@ def two_projects(tmp_path: Path) -> tuple[Path, Path]:
         "genre": "玄幻",
         "focus": ["修仙", "剑道", "宗门争斗"],
     }
-    (project_a / "data" / "story_spec.json").write_text(json.dumps(story_spec_a, ensure_ascii=False))
+    (project_a / "data" / "story_spec.json").write_text(
+        json.dumps(story_spec_a, ensure_ascii=False), encoding="utf-8"
+    )
 
     # Project A chapter
     chapter_a = "# 第一章：剑起苍穹\n\n少年李青站在剑崖之上...\n\n这是玄幻故事的开头。"
-    (project_a / "data" / "chapters" / "chapter_001.md").write_text(chapter_a)
+    (project_a / "data" / "chapters" / "chapter_001.md").write_text(
+        chapter_a, encoding="utf-8"
+    )
 
     # Project B: 悬疑小说
     project_b.mkdir(parents=True)
@@ -83,11 +87,15 @@ def two_projects(tmp_path: Path) -> tuple[Path, Path]:
         "genre": "悬疑",
         "focus": ["推理", "连环案件", "心理博弈"],
     }
-    (project_b / "data" / "story_spec.json").write_text(json.dumps(story_spec_b, ensure_ascii=False))
+    (project_b / "data" / "story_spec.json").write_text(
+        json.dumps(story_spec_b, ensure_ascii=False), encoding="utf-8"
+    )
 
     # Project B chapter
     chapter_b = "# 第一章：深夜来电\n\n侦探张明接到一个神秘电话...\n\n这是悬疑故事的开头。"
-    (project_b / "data" / "chapters" / "chapter_001.md").write_text(chapter_b)
+    (project_b / "data" / "chapters" / "chapter_001.md").write_text(
+        chapter_b, encoding="utf-8"
+    )
 
     return project_a, project_b
 
@@ -421,13 +429,16 @@ class TestAnalyticsIsolation:
         assert analytics_file_b.exists()
 
         # Verify content is different
-        content_a = json.loads(analytics_file_a.read_text())
-        content_b = json.loads(analytics_file_b.read_text())
+        content_a = json.loads(analytics_file_a.read_text(encoding="utf-8"))
+        content_b = json.loads(analytics_file_b.read_text(encoding="utf-8"))
 
         assert content_a["chapter_id"] == 1
         assert content_b["chapter_id"] == 1
-        # Word counts should differ
-        assert content_a.get("word_count") != content_b.get("word_count") or True  # May be same
+        source_a = (project_a / "data" / "chapters" / "chapter_001.md").read_text(encoding="utf-8")
+        source_b = (project_b / "data" / "chapters" / "chapter_001.md").read_text(encoding="utf-8")
+        assert source_a != source_b
+        assert content_a["word_count"] == len(source_a)
+        assert content_b["word_count"] == len(source_b)
 
     def test_market_analytics_isolation(self, two_projects: tuple[Path, Path]) -> None:
         """Market analytics use project-specific genre."""

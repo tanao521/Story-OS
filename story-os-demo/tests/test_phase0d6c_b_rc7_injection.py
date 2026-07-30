@@ -72,6 +72,12 @@ def test_sync_branch_index_uses_explicit_manager_and_publishes_valid_manifest(tm
     context = _context(tmp_path)
     client = LocalClient()
     manager = VectorClientManager(client_factory=lambda _: client, collection_name=f"rc7_{uuid4().hex}")
+    # RC10 made the repository n-gram embedding contract mandatory even for
+    # injected clients. This local fixture ignores embeddings, but must still
+    # provide an explicit injected embedding seam instead of relying on the
+    # optional chromadb package being installed in this test environment.
+    manager._chromadb_module = object()
+    manager._embedding_fn = lambda values: values
     scope = VectorScope(context.root.name, "main", "main", "canon-rc7")
     result = sync_branch_index(
         context, scope, operation_id="rc7-sync", operation_type="rebuild",

@@ -73,8 +73,10 @@ class NarrativeCandidateReviewService:
 
     schema_version = "1.0"
 
-    def __init__(self, context: ProjectContext):
+    def __init__(self, context: ProjectContext, canonical_project_id: str | None = None):
         self.context = context
+        self.canonical_project_id = canonical_project_id or context.root.name
+        self.storage_project_id = context.root.name
         self.branches = NarrativeBranchStore(context)
         self.revisions = RevisionService(context)
         self._fault_injector = None
@@ -139,7 +141,7 @@ class NarrativeCandidateReviewService:
                 raise NarrativeCompilationError("SOURCE_VERSION_STALE", "Source fingerprint changed.")
         elif any(versions.get(kind) for kind in ("drafts", "edited", "manual")):
             raise NarrativeCompilationError("SOURCE_VERSION_STALE", "Source version is unavailable.")
-        timeline = TimelineContext(scope.project_id, scope.timeline_id)
+        timeline = TimelineContext(self.storage_project_id, scope.timeline_id)
         branch = self.branches.get_branch(timeline, scope.branch_id)
         if branch is None or branch.lifecycle_status.value == "archived":
             raise NarrativeCompilationError("BRANCH_ARCHIVED", "Candidate branch is not available.")
@@ -163,7 +165,7 @@ class NarrativeCandidateReviewService:
         return path, existing
 
     def review_candidate(self, *, operation_id: str, scope: CompilationScope, candidate_id: str, candidate_version_id: str | None, decision: str, reviewer_id: str, reason: str = "") -> dict[str, Any]:
-        scope.validate(self.context)
+        scope.validate(self.context, self.canonical_project_id)
         decision = str(decision).lower()
         if decision not in {"approved", "rejected"} or not reviewer_id.strip() or not candidate_id:
             raise NarrativeCompilationError("REVIEW_SCOPE_REQUIRED", "candidate, reviewer identity, and approved/rejected decision are required.")

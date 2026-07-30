@@ -38,14 +38,15 @@ class TestStaticExceptionPass:
                 )
 
     def test_vector_state_update_failure_propagates_as_warning(self):
-        """Verify state update failure is converted to VECTOR_STATE_UPDATE_FAILED warning."""
+        """Verify clone refuses an implicit vector rebuild without branch/canon scope."""
         import inspect
         from system.project_clone_service import ProjectCloneService
 
         source = inspect.getsource(ProjectCloneService._rebuild_vector_index)
-        assert "VECTOR_STATE_UPDATE_FAILED" in source, (
-            "_rebuild_vector_index must contain VECTOR_STATE_UPDATE_FAILED warning code"
+        assert "VECTOR_SCOPE_REQUIRED" in source, (
+            "_rebuild_vector_index must fail closed until explicit vector scope exists"
         )
+        assert "rebuild_project_index(" not in source
 
 
 class TestRealCLISubprocess:
