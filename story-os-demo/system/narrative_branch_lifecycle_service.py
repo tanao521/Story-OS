@@ -99,14 +99,22 @@ def _publish_if_absent(path: Path, payload: dict[str, Any]) -> bool:
 class BranchLifecycleService:
     """Idempotent, scope-checked facade over ``NarrativeBranchStore``."""
 
-    def __init__(self, context: ProjectContext, *, fault_injector: Callable[[str], None] | None = None) -> None:
+    def __init__(
+        self,
+        context: ProjectContext,
+        *,
+        canonical_project_id: str | None = None,
+        fault_injector: Callable[[str], None] | None = None,
+    ) -> None:
         self.context = context
-        self.project_id = context.root.name or "default"
+        self.storage_project_id = context.root.name or "default"
+        self.project_id = canonical_project_id or self.storage_project_id
         self.store = NarrativeBranchStore(context)
         self._operations_dir = context.data_dir / "branch_operations"
         self._locks_dir = self._operations_dir / ".locks"
         self._fault_injector = fault_injector
         _validate_path_component(self.project_id, "project_id")
+        _validate_path_component(self.storage_project_id, "storage_project_id")
 
     def _fault(self, point: str) -> None:
         if self._fault_injector is not None:
@@ -118,7 +126,7 @@ class BranchLifecycleService:
 
     def _timeline(self, timeline_id: str) -> TimelineContext:
         self._validate_id(timeline_id, "timeline_id")
-        return TimelineContext(project_id=self.project_id, timeline_id=timeline_id)
+        return TimelineContext(project_id=self.storage_project_id, timeline_id=timeline_id)
 
     def _assert_scope(self, project_id: str, timeline_id: str) -> TimelineContext:
         if project_id != self.project_id:
@@ -469,7 +477,9 @@ class BranchLifecycleService:
                     timeline.timeline_id, values["branch_id"]
                 )
                 from system.cross_chapter_turn_start_service import CrossChapterTurnStartService
-                CrossChapterTurnStartService(self.context).assert_branch_archive_safe(
+                CrossChapterTurnStartService(
+                    self.context, canonical_project_id=self.project_id
+                ).assert_branch_archive_safe(
                     timeline.timeline_id, values["branch_id"]
                 )
             except ChapterLifecycleRecoveryRequiredError as exc:

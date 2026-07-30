@@ -49,13 +49,13 @@ class CompilationScope:
     expected_canon_revision_id: str
     expected_branch_registry_revision: str
 
-    def validate(self, context: ProjectContext) -> None:
+    def validate(self, context: ProjectContext, canonical_project_id: str | None = None) -> None:
         values = (self.project_id, self.timeline_id, self.branch_id, self.expected_canon_revision_id, self.expected_branch_registry_revision)
         if any(not isinstance(v, str) or not v.strip() for v in values) or self.chapter_id < 1:
             raise NarrativeCompilationError("COMPILATION_SCOPE_REQUIRED", "Complete compilation scope is required.")
         if not self.source_version_id and not self.expected_source_fingerprint:
             raise NarrativeCompilationError("COMPILATION_SCOPE_REQUIRED", "source_version_id or expected_source_fingerprint is required.")
-        if self.project_id != context.root.name:
+        if self.project_id != (canonical_project_id or context.root.name):
             raise NarrativeCompilationError("COMPILATION_SCOPE_REQUIRED", "project_id does not match the project context.")
 
     def scope(self) -> NarrativeScope:
@@ -101,8 +101,10 @@ def _publish_immutable_json(path: Path, payload: dict[str, Any]) -> dict[str, An
 class NarrativeChapterCompiler:
     compiler_revision = "0D4-F.1"
 
-    def __init__(self, context: ProjectContext):
+    def __init__(self, context: ProjectContext, canonical_project_id: str | None = None):
         self.context = context
+        self.canonical_project_id = canonical_project_id or context.root.name
+        self.storage_project_id = context.root.name
         self.turns = NarrativeTurnStore(context)
         self.branches = NarrativeBranchStore(context)
         self._fault_injector = None
@@ -114,6 +116,9 @@ class NarrativeChapterCompiler:
     def _fault(self, point: str) -> None:
         if self._fault_injector:
             self._fault_injector(point)
+
+    def _storage_scope(self, scope: CompilationScope) -> NarrativeScope:
+        return NarrativeScope(self.storage_project_id, scope.timeline_id, scope.branch_id)
 
     def _authority(self, operation_id: str, request: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
         if not operation_id or "/" in operation_id or "\\" in operation_id:
@@ -168,7 +173,7 @@ class NarrativeChapterCompiler:
             raise NarrativeCompilationError("COMPILATION_OPERATION_CONFLICT", "Durable result request fingerprint does not match authority.")
 
     def _branch_check(self, scope: CompilationScope) -> None:
-        timeline = TimelineContext(scope.project_id, scope.timeline_id)
+        timeline = TimelineContext(self.storage_project_id, scope.timeline_id)
         branch = self.branches.get_branch(timeline, scope.branch_id)
         if branch is None: raise NarrativeCompilationError("BRANCH_NOT_ACTIVE", "Branch does not exist.")
         if branch.lifecycle_status.value == "archived": raise NarrativeCompilationError("BRANCH_ARCHIVED", "Archived branches cannot compile.")
@@ -202,14 +207,15 @@ class NarrativeChapterCompiler:
 
     def _eligible(self, scope: CompilationScope, *, allow_included: bool = False) -> list[tuple[str, Any, list[Any], Any]]:
         found = []
-        for plan_id in self.turns.list_plans(scope.scope()):
-            plan = self.turns.get_plan(scope.scope(), plan_id)
+        storage_scope = self._storage_scope(scope)
+        for plan_id in self.turns.list_plans(storage_scope):
+            plan = self.turns.get_plan(storage_scope, plan_id)
             if plan is None:
                 continue
             if plan.chapter_id != scope.chapter_id or plan.source_version_id != scope.source_version_id and scope.source_version_id:
                 continue
             try:
-                transitions = self.turns.get_transitions(scope.scope(), plan.turn_id)
+                transitions = self.turns.get_transitions(storage_scope, plan.turn_id)
             except Exception as exc:
                 raise NarrativeCompilationError("TURN_CHAIN_INVALID", "Turn transition chain is invalid.") from exc
             if not transitions: continue
@@ -219,13 +225,13 @@ class NarrativeChapterCompiler:
                 continue
             if TurnState.INCLUDED_IN_CHAPTER in states or TurnState.COMMITTED in states:
                 if allow_included and TurnState.COMMITTED not in states:
-                    result = self.turns.get_result(scope.scope(), plan.turn_id)
+                    result = self.turns.get_result(storage_scope, plan.turn_id)
                     if result is not None:
                         applied = next((t for t in transitions if t.to_state == TurnState.APPLIED_TO_BRANCH), transitions[-1])
                         found.append((plan.turn_id, plan, transitions, result, applied.sequence))
                     continue
                 raise NarrativeCompilationError("TURN_ALREADY_INCLUDED", f"Turn {plan.turn_id} is already included.")
-            result = self.turns.get_result(scope.scope(), plan.turn_id)
+            result = self.turns.get_result(storage_scope, plan.turn_id)
             if result is None: continue
             applied = next(t for t in transitions if t.to_state == TurnState.APPLIED_TO_BRANCH)
             found.append((plan.turn_id, plan, transitions, result, applied.sequence))
@@ -234,7 +240,7 @@ class NarrativeChapterCompiler:
         return found
 
     def compile_candidate(self, *, operation_id: str, scope: CompilationScope) -> dict[str, Any]:
-        scope.validate(self.context); self._branch_check(scope)
+        scope.validate(self.context, self.canonical_project_id); self._branch_check(scope)
         source_id, source_fp, base_text, source_version = self._source(scope)
         existing_authority_path = self._root / f"{operation_id}.json"
         existing_phase_path = existing_authority_path.with_suffix(".phase.json")
@@ -302,7 +308,7 @@ class NarrativeChapterCompiler:
             if any(t.to_state == TurnState.INCLUDED_IN_CHAPTER for t in transitions): continue
             last = transitions[-1]
             record_fp = _sha({"operation_id": operation_id, "turn_id": turn_id, "to_state": "included_in_chapter"})
-            self.turns.append_transition(NarrativeTurnTransition(SCHEMA_VERSION, new_id("trn"), turn_id, scope.scope(), last.to_state, TurnState.INCLUDED_IN_CHAPTER, "candidate_compiled", operation_id, now_utc(), record_fp, len(transitions), last.transition_id, last.record_fingerprint))
+            self.turns.append_transition(NarrativeTurnTransition(SCHEMA_VERSION, new_id("trn"), turn_id, self._storage_scope(scope), last.to_state, TurnState.INCLUDED_IN_CHAPTER, "candidate_compiled", operation_id, now_utc(), record_fp, len(transitions), last.transition_id, last.record_fingerprint))
             self._fault("after_first_included_transition")
 
     def _candidate_result(self, authority: dict[str, Any]) -> dict[str, Any]:
@@ -313,8 +319,11 @@ class NarrativeChapterCompiler:
 
 class NarrativeChapterCommitService:
     """Commit only approved candidates through ChapterCommitService."""
-    def __init__(self, context: ProjectContext):
-        self.context = context; self.compiler = NarrativeChapterCompiler(context); self.turns = self.compiler.turns
+    def __init__(self, context: ProjectContext, canonical_project_id: str | None = None):
+        self.context = context
+        self.canonical_project_id = canonical_project_id or context.root.name
+        self.compiler = NarrativeChapterCompiler(context, canonical_project_id=self.canonical_project_id)
+        self.turns = self.compiler.turns
         self._commit_calls: dict[str, Any] = {}
         self._fault_injector = None
 
@@ -323,7 +332,7 @@ class NarrativeChapterCommitService:
             self._fault_injector(point)
 
     def commit_candidate(self, *, operation_id: str, scope: CompilationScope, candidate_version_id: str, ordered_turn_ids: list[str] | None = None) -> dict[str, Any]:
-        scope.validate(self.context)
+        scope.validate(self.context, self.canonical_project_id)
         versions = list_versions(scope.chapter_id, self.context.data_dir); matches = [x for k in ("manual", "edited", "drafts") for x in versions.get(k, []) if x.get("version_label") == candidate_version_id]
         if not matches: raise NarrativeCompilationError("CANDIDATE_COLLISION", "Candidate version does not exist.")
         payload = read_version_payload(matches[0]); provenance = payload.get("narrative_compilation") if isinstance(payload.get("narrative_compilation"), dict) else {}
@@ -360,7 +369,9 @@ class NarrativeChapterCommitService:
         if not recovered_durable_result:
             self.compiler._branch_check(scope)
             from system.narrative_candidate_review_service import NarrativeCandidateReviewService
-            NarrativeCandidateReviewService(self.context).assert_commit_approved(
+            NarrativeCandidateReviewService(
+                self.context, canonical_project_id=self.canonical_project_id
+            ).assert_commit_approved(
                 scope=scope, candidate_id=candidate_id, candidate_version_id=candidate_version_id,
                 candidate_fingerprint=candidate_fp,
             )
@@ -390,7 +401,7 @@ class NarrativeChapterCommitService:
         self._fault("after_chapter_commit_success")
         _atomic_json(phase, {"operation_id": operation_id, "phase": "CHAPTER_COMMIT_SUCCEEDED", "scope": asdict(scope), "commit_id": result.commit_id, "updated_at": now_utc()})
         for turn_id in ordered_turn_ids or authority.get("ordered_turn_ids") or []:
-            scope_obj = scope.scope(); transitions = self.turns.get_transitions(scope_obj, turn_id)
+            scope_obj = self.compiler._storage_scope(scope); transitions = self.turns.get_transitions(scope_obj, turn_id)
             if not transitions or transitions[-1].to_state == TurnState.COMMITTED: continue
             last = transitions[-1]
             if last.to_state != TurnState.INCLUDED_IN_CHAPTER: continue

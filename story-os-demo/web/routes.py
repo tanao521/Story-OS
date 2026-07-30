@@ -722,6 +722,69 @@ def api_get_continuity_report(
         return compatibility_response(api_error("操作失败", [str(exc)]), "/api/continuity-report", status_code=500)
 
 
+@router.get("/api/review/assembly-evidence")
+def api_review_assembly_evidence(
+    source_type: str = Query(..., pattern="^(draft|edited|manual)$"),
+    version: int = Query(..., ge=1),
+) -> JSONResponse:
+    """Read only the 0D7-A evidence that belongs to one review version."""
+    try:
+        from system.chapter_assembly_evidence_service import (
+            ChapterAssemblyEvidenceScope,
+            ChapterAssemblyEvidenceService,
+        )
+
+        current = build_version_content(source_type, version)
+        context = get_project_context()
+        registry_path = context.data_dir / "branches" / "main" / "registry.json"
+        registry = _load_json_safe(registry_path, {})
+        timeline_id = str(registry.get("timeline_id") or "main")
+        branch_id = str(registry.get("active_branch_id") or "")
+        if not branch_id:
+            return api_ok(result={
+                "status": "INVALID",
+                "code": "BRANCH_SCOPE_MISMATCH",
+                "message": "当前版本没有可用的主时间线分支证据上下文。",
+            })
+        scope = ChapterAssemblyEvidenceScope(
+            project_id=context.root.name,
+            timeline_id=timeline_id,
+            branch_id=branch_id,
+            chapter_id=int(current["chapter_id"]),
+            source_version_id=str(current["version_label"]),
+        )
+        result = ChapterAssemblyEvidenceService(context).read_status(scope)
+        record = result.get("record") if isinstance(result.get("record"), dict) else {}
+        identity = record.get("identity") if isinstance(record.get("identity"), dict) else {}
+        return api_ok(result={
+            "status": result.get("status", "INVALID"),
+            "code": result.get("code"),
+            "message": _assembly_evidence_message(str(result.get("status") or "INVALID")),
+            "evidence": {
+                "evidence_id": identity.get("evidence_id"),
+                "source_version_id": identity.get("source_version_id"),
+                "source_fingerprint": identity.get("source_fingerprint"),
+                "generated_at": record.get("generated_at"),
+                "classification": record.get("classification"),
+            } if record else None,
+        })
+    except Exception:
+        return api_ok(result={
+            "status": "INVALID",
+            "code": "EVIDENCE_UNAVAILABLE",
+            "message": "无法读取该版本的组装证据；它不会被当作当前审核证据。",
+        })
+
+
+def _assembly_evidence_message(status: str) -> str:
+    return {
+        "CURRENT": "证据与当前查看的精确版本一致，可供人工审核参考。",
+        "STALE": "发现历史证据，但它不再对应当前版本，不能作为当前审核依据。",
+        "MISSING": "该版本尚未生成组装证据。",
+        "INVALID": "组装证据不可用，不能作为当前审核依据。",
+    }.get(status, "组装证据不可用，不能作为当前审核依据。")
+
+
 @router.post("/api/continuity-check")
 async def api_continuity_check(request: Request) -> JSONResponse:
     try:
@@ -1959,7 +2022,7 @@ def api_simulator_context(
                 })
         except Exception:
             branches_payload = []
-        return _ok({"project": {"project_id": project["project_id"], "title": project["title"], "legacy": project.get("legacy", False), "scope_project_id": str(state.get("project_id") or "default-project")}, "timelines": [{"timeline_id": effective_timeline, "title": "主时间线"}], "chapters": chapters, "selected_chapter_id": selected_chapter, "source_versions": versions, "source_available": source_available, "panel_runs": runs, "branches": branches_payload})
+        return _ok({"project": {"project_id": project["project_id"], "title": project["title"], "legacy": project.get("legacy", False), "scope_project_id": project["project_id"]}, "timelines": [{"timeline_id": effective_timeline, "title": "主时间线"}], "chapters": chapters, "selected_chapter_id": selected_chapter, "source_versions": versions, "source_available": source_available, "panel_runs": runs, "branches": branches_payload})
     except ProjectManagerError:
         return _fail("Project not found", "PROJECT_NOT_FOUND", 404)
     except Exception:

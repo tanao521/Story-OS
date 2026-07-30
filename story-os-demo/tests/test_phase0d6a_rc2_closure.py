@@ -412,9 +412,10 @@ def test_success_filesystem_diff_is_allowlisted_and_staging_is_cleaned(tmp_path:
         "data/chapter_lifecycle/operations/fs-success.result.json",
         "data/chapters/chapter_002.md",
         "data/versions/chapter_002_versions.json",
-        "data/canon_versions/chapter_002/canon_v001.md",
-        "data/canon_versions/chapter_002/index.json",
-    }
+            "data/canon_versions/chapter_002/canon_v001.md",
+            "data/canon_versions/chapter_002/index.json",
+            "data/narrative_memory/continuity/main/a/chapter_001_to_002.json",
+        }
     _assert_no_residue(root)
 
 

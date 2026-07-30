@@ -40,9 +40,10 @@ def _read_object(path: Path) -> dict[str, Any]:
 class CrossChapterReadinessService:
     """Aggregate sealed durable facts without creating or repairing anything."""
 
-    def __init__(self, context: ProjectContext) -> None:
+    def __init__(self, context: ProjectContext, *, canonical_project_id: str | None = None) -> None:
         self.context = context
-        self.project_id = context.root.name or "default"
+        self.storage_project_id = context.root.name or "default"
+        self.project_id = canonical_project_id or self.storage_project_id
         self.lifecycle = ChapterLifecycleService(context)
         self.branches = NarrativeBranchStore(context)
         self.turns = NarrativeTurnStore(context)
@@ -93,7 +94,7 @@ class CrossChapterReadinessService:
         complete: list[tuple[str, dict[str, Any], dict[str, Any], dict[str, Any]]] = []
         incomplete = conflict = corrupt = False
         target = ScopeTarget(
-            project_id=self.project_id,
+            project_id=self.storage_project_id,
             timeline_id=timeline,
             branch_id=branch_id,
             previous_chapter_id=previous,
@@ -161,7 +162,7 @@ class CrossChapterReadinessService:
                 if claim_scope in (AMBIGUOUS, CORRUPT):
                     corrupt = True
                     continue
-                if (claim.get("project_id") != self.project_id
+                if (claim.get("project_id") != self.storage_project_id
                         or request.get("timeline_id") != timeline
                         or int(request.get("current_chapter_id", 0) or 0) != previous):
                     corrupt = True
@@ -199,7 +200,7 @@ class CrossChapterReadinessService:
                     continue
                 if (result.get("operation_id") != operation_id
                         or result.get("operation_type") != "create_next_chapter"
-                        or result.get("project_id") != self.project_id
+                        or result.get("project_id") != self.storage_project_id
                         or int(result.get("chapter_id", 0) or 0) != int(request.get("next_chapter_id", 0) or 0)):
                     corrupt = True
                     continue
@@ -258,7 +259,9 @@ class CrossChapterReadinessService:
             return blocked("BLOCKED_BRANCH_NOT_ACTIVE", branch_id=None,
                            previous_chapter_id=previous_chapter_id)
         try:
-            branch = self.branches.get_branch(TimelineContext(project_id, timeline_id), branch_id)
+            branch = self.branches.get_branch(
+                TimelineContext(self.storage_project_id, timeline_id), branch_id
+            )
             if branch is None:
                 raise ValueError
             if branch.lifecycle_status == BranchLifecycleStatus.ARCHIVED:
@@ -287,7 +290,7 @@ class CrossChapterReadinessService:
                                    previous_chapter_id=previous_chapter_id)
 
         resolved = self.lifecycle.resolve_next_chapter(
-            project_id=project_id, timeline_id=timeline_id,
+            project_id=self.storage_project_id, timeline_id=timeline_id,
             current_chapter_id=previous_chapter_id)
         resolver_successor = (int(resolved.get("next_chapter_id", 0) or 0)
                               if resolved.get("status") == "NEXT_CHAPTER_AVAILABLE" else None)
@@ -332,7 +335,7 @@ class CrossChapterReadinessService:
                            previous_chapter_id=previous_chapter_id,
                            successor_chapter_id=successor,
                            lifecycle_operation_id=op_id)
-        scope = NarrativeScope(project_id, timeline_id, branch_id)
+        scope = NarrativeScope(self.storage_project_id, timeline_id, branch_id)
         try:
             snapshot = NarrativeTurnContextBinder(self.context).bind(scope, successor)
         except (NarrativeTurnError, OSError, ValueError):

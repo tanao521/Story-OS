@@ -70,6 +70,38 @@ class ProjectManager:
                 return project
         raise ProjectNotFound(f"Project not found: {project_id}")
 
+    def get_registered_project(self, project_id: str) -> dict[str, Any]:
+        """Resolve one canonical id from the registry without directory discovery."""
+        warnings: list[str] = []
+        registry = self._registry(warnings)
+        if warnings:
+            raise ProjectManagerError("Project registry is unavailable or invalid.")
+        matches = [
+            dict(item)
+            for item in registry.get("projects", [])
+            if isinstance(item, dict) and str(item.get("project_id") or "") == project_id
+        ]
+        if not matches:
+            raise ProjectNotFound(f"Project not found: {project_id}")
+        if len(matches) != 1:
+            raise ProjectManagerError(f"Project registry identity is ambiguous: {project_id}")
+        record = matches[0]
+        project_root = self._resolve(str(record.get("project_root") or ""))
+        if project_root is None or not project_root.is_dir():
+            raise ProjectManagerError(f"Registered project path is invalid: {project_id}")
+        metadata = DataStore(get_project_context(project_root)).read_json(
+            project_root / "project.json", default=None, expected_type=dict
+        )
+        if (
+            metadata is None
+            or str(metadata.get("project_id") or "") != project_id
+            or str(record.get("slug") or "") != project_root.name
+            or str(metadata.get("slug") or "") != project_root.name
+            or self._resolve(str(metadata.get("project_root") or "")) != project_root
+        ):
+            raise ProjectManagerError(f"Registered project identity is inconsistent: {project_id}")
+        return {**record, "project_root_path": project_root}
+
     def get_active_project(self) -> dict[str, Any] | None:
         return next((project for project in self.list_projects()["projects"] if project["active"]), None)
 

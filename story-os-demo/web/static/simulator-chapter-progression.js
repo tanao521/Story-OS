@@ -20,6 +20,8 @@
     activeStartPromise: null,
     startedResult: null,
     handoff: null,
+    modelEpoch: 0,
+    readinessModelEpoch: -1,
   };
 
   const PRESENTATION = {
@@ -67,16 +69,26 @@
 
   function text(value, fallback = "") { return value === null || value === undefined || value === "" ? fallback : String(value); }
   function mode() { return new URLSearchParams(window.location.search).get("mode") || "traditional"; }
+  function urlProjectIdentity() {
+    const reader = window.StoryOSContextNavigator && window.StoryOSContextNavigator.readCanonicalProjectIdentity;
+    if (typeof reader === "function") return reader();
+    const params = new URLSearchParams(window.location.search);
+    const project = params.get("project") || "";
+    const projectId = params.get("project_id") || "";
+    const mismatch = !!project && !!projectId && project !== projectId;
+    return { project, project_id: projectId, canonical_project_id: mismatch ? "" : (projectId || project), consistent: !mismatch, mismatch };
+  }
   function urlScope() {
     const params = new URLSearchParams(window.location.search);
-    return { project_id: params.get("project_id") || params.get("project") || "", timeline_id: params.get("timeline_id") || "", branch_id: params.get("branch_id") || "", chapter_id: Number(params.get("chapter_id") || 0) };
+    const identity = urlProjectIdentity();
+    return { project_id: identity.consistent ? identity.canonical_project_id : "", timeline_id: params.get("timeline_id") || "", branch_id: params.get("branch_id") || "", chapter_id: Number(params.get("chapter_id") || 0), identity_consistent: identity.consistent };
   }
   function contextFromModel(model) {
     const scope = model && model.scope || {};
     const branch = model && model.branch || {};
     const url = urlScope();
     const context = {
-      project_id: text(url.project_id, text(scope.project_id)),
+      project_id: url.identity_consistent ? text(url.project_id, text(scope.project_id)) : "",
       timeline_id: text(url.timeline_id, text(scope.timeline_id, "main")),
       branch_id: text(url.branch_id, text(scope.branch_id)),
       previous_chapter_id: Number(url.chapter_id || scope.chapter_id || 0),
@@ -102,6 +114,10 @@
   function handoffMatches(context) {
     return !!state.handoff && state.handoff.contextKey === context.key && !!state.handoff.turn_id;
   }
+  function completionReleasesHandoff(context) {
+    const chapter = state.model && state.model.chapter_progression || {};
+    return handoffMatches(context) && modelMatchesContext(context) && chapter.completed === true;
+  }
   function canOwnReadiness(context) {
     if (!validContext(context)) return false;
     if (handoffMatches(context) || !modelMatchesContext(context)) return false;
@@ -118,6 +134,13 @@
   function safeReason(code) { return (PRESENTATION[code] || FALLBACK.CORRUPT).message; }
   function scopeMatches(result, context) {
     return result && String(result.project_id) === String(context.project_id) && String(result.timeline_id || "main") === String(context.timeline_id) && String(result.branch_id) === String(context.branch_id) && Number(result.previous_chapter_id) === Number(context.previous_chapter_id);
+  }
+  function responseStillOwnsCurrentContext(epoch, context) {
+    // The URL is the live navigation authority.  Rebuild the full context at
+    // response time so a response cannot survive a same-project branch switch
+    // merely because the previous simulator read model has not returned yet.
+    if (epoch !== state.epoch || state.contextKey !== context.key) return false;
+    return contextFromModel(state.model).key === context.key;
   }
   function startFieldsValid(result, intent) {
     return !!result && String(result.operation_id) === String(intent.snapshot.operation_id) && String(result.project_id) === String(intent.snapshot.project_id) && String(result.timeline_id || "main") === String(intent.snapshot.timeline_id) && String(result.branch_id) === String(intent.snapshot.branch_id) && Number(result.previous_chapter_id) === Number(intent.snapshot.previous_chapter_id) && Number(result.successor_chapter_id) === Number(intent.snapshot.successor_chapter_id) && String(result.readiness_fingerprint) === String(intent.snapshot.expected_readiness_fingerprint) && !!result.turn_id && result.turn_status === "awaiting_action";
@@ -161,7 +184,7 @@
     render();
     state.controller = new AbortController();
     requestReadiness(context, state.controller.signal).then((result) => {
-      if (epoch !== state.epoch || state.contextKey !== context.key) return;
+      if (!responseStillOwnsCurrentContext(epoch, context)) return;
       state.readiness = result;
       state.errorCode = result.readiness_code;
       const safe = PRESENTATION[result.readiness_code];
@@ -171,7 +194,7 @@
       render(); announce(`Progression status: ${presentation().title}`);
     }).catch((error) => {
       if (error && error.name === "AbortError") return;
-      if (epoch !== state.epoch || state.contextKey !== context.key) return;
+      if (!responseStillOwnsCurrentContext(epoch, context)) return;
       state.readiness = null;
       state.errorCode = PRESENTATION[error && error.code] ? error.code : "";
       state.status = state.errorCode ? PRESENTATION[state.errorCode].category : (error && error.code === "CORRUPT" ? "CORRUPT" : "NETWORK_OR_ROUTE_ERROR");
@@ -186,8 +209,11 @@
       return;
     }
     const context = contextFromModel(state.model);
+    if (completionReleasesHandoff(context)) state.handoff = null;
     if (!canOwnReadiness(context)) {
+      const changed = context.key !== state.contextKey;
       if (state.controller) state.controller.abort();
+      if (changed) state.epoch += 1;
       clearStartIntent(); state.context = context; state.contextKey = context.key; state.startedResult = null; clearTransient();
       setStatus(handoffMatches(context) || activeTurnOwnsWorkspace(context) ? "HANDOFF_COMPLETE" : "UNAVAILABLE");
       return;
@@ -199,7 +225,10 @@
     }
     if (!changed && ["STARTING", "START_RETRYABLE_ERROR"].includes(state.status)) return;
     if (!force && !changed && context.key === state.contextKey && ["LOADING_READINESS", "READY", "EXISTING_TURN", "BLOCKED", "RECOVERY_REQUIRED", "CORRUPT", "NETWORK_OR_ROUTE_ERROR", "STARTING", "START_RETRYABLE_ERROR"].includes(state.status)) return;
-    if (context.key !== state.contextKey || force) beginReadiness(context);
+    if (context.key !== state.contextKey || force || (state.status === "UNAVAILABLE" && state.readinessModelEpoch !== state.modelEpoch)) {
+      state.readinessModelEpoch = state.modelEpoch;
+      beginReadiness(context);
+    }
   }
   function schedule(force) {
     state.scheduledForce = state.scheduledForce || !!force;
@@ -320,7 +349,13 @@
     $("simulator-chapter-progression-refresh")?.addEventListener("click", () => { if (state.status === "START_TERMINAL_ERROR") clearStartIntent(); schedule(true); });
     $("simulator-chapter-progression-start")?.addEventListener("click", onStartClick);
     $("simulator-chapter-progression-existing-continue")?.addEventListener("click", continueExistingTurn);
-    window.addEventListener("storyos:simulator-state", (event) => { state.model = event.detail || null; schedule(true); });
+    window.addEventListener("storyos:simulator-state", (event) => {
+      const wasCompleted = !!(state.model && state.model.chapter_progression && state.model.chapter_progression.completed);
+      state.model = event.detail || null;
+      state.modelEpoch += 1;
+      const isCompleted = !!(state.model && state.model.chapter_progression && state.model.chapter_progression.completed);
+      schedule(!wasCompleted && isCompleted);
+    });
     window.addEventListener("storyos:panel-context-ready", () => schedule(false));
     window.addEventListener("popstate", () => schedule(false));
     window.addEventListener("storyos:dashboard-ready", () => schedule(false));

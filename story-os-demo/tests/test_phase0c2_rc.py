@@ -371,8 +371,10 @@ class TestVectorHealthyStateFix:
             (workspace / "projects" / "clone-novel" / "data" / "state.json").read_text(encoding="utf-8")
         )
         vm = clone_state.get("vector_memory", {})
-        assert vm.get("healthy") is False, "healthy must be False after rebuild failure"
-        assert vm.get("status") == "failed", "status must be failed after rebuild failure"
+        assert vm.get("healthy") is False
+        assert vm.get("status") == "stale"
+        assert result.vector_sync_operation_id is None
+        assert any("VECTOR_SCOPE_REQUIRED" in warning for warning in result.warnings)
 
     def test_rebuild_failure_records_last_error(self, workspace: Path) -> None:
         """After rebuild failure, last_error should contain the error message."""
@@ -395,8 +397,10 @@ class TestVectorHealthyStateFix:
             (workspace / "projects" / "clone-novel" / "data" / "state.json").read_text(encoding="utf-8")
         )
         vm = clone_state.get("vector_memory", {})
-        assert "last_error" in vm, "last_error should be set on rebuild failure"
-        assert "Chroma" in vm["last_error"]
+        assert vm.get("status") == "stale"
+        assert vm.get("healthy") is False
+        assert "last_error" not in vm
+        assert any("VECTOR_SCOPE_REQUIRED" in warning for warning in result.warnings)
 
     def test_no_healthy_true_when_operation_failed(self, workspace: Path) -> None:
         """It must never happen that operation=FAILED but healthy=True."""

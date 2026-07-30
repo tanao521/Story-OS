@@ -28,6 +28,8 @@ Custom action raw text never enters URL, logs, response, or exception text.
 from __future__ import annotations
 
 import re
+import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -49,6 +51,7 @@ from system.narrative_turn_context import NarrativeTurnContextBinder
 from system.narrative_turn_planner import NarrativeTurnPlanner
 from system.narrative_turn_preview import NarrativeTurnPreviewService
 from system.narrative_turn_service import NarrativeTurnService
+from system.project_identity_resolver import ProjectIdentityResolutionError, ProjectIdentityResolver
 from web.narrative_turn_wire import (
     assert_json_safe,
     build_confirm_result_wire_dto,
@@ -199,6 +202,40 @@ def _build_scope(
     )
 
 
+def _storage_boundary(scope: NarrativeScope) -> tuple[Any, NarrativeScope]:
+    """Resolve formal UUID scope; preserve exact legacy low-level calls."""
+    try:
+        uuid.UUID(scope.project_id)
+    except (ValueError, AttributeError):
+        context = get_project_context()
+        if scope.project_id != context.root.name:
+            raise _RequestError("SCOPE_MISMATCH", "Project scope is unavailable.", 404)
+        return context, scope
+    try:
+        identity = ProjectIdentityResolver().resolve(scope.project_id)
+    except ProjectIdentityResolutionError as exc:
+        status = 404 if exc.code == "PROJECT_NOT_FOUND" else 503
+        raise _RequestError(exc.code, str(exc), status) from exc
+    return identity.context, NarrativeScope(
+        identity.storage_project_id, scope.timeline_id, scope.branch_id
+    )
+
+
+def _canonicalize_project_id(value: Any, canonical_id: str, storage_id: str) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: (
+                canonical_id
+                if key == "project_id" and item == storage_id
+                else _canonicalize_project_id(item, canonical_id, storage_id)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_canonicalize_project_id(item, canonical_id, storage_id) for item in value]
+    return value
+
+
 def _bind_context(
     scope: NarrativeScope,
     chapter_id: int,
@@ -210,20 +247,20 @@ def _bind_context(
     FastAPI middleware in ``web.app``. We never write to any store
     here; the binder is read-only.
     """
-    project_context = get_project_context()
+    project_context, storage_scope = _storage_boundary(scope)
     binder = NarrativeTurnContextBinder(project_context)
-    if scope.project_id != project_context.root.name:
+    if storage_scope.project_id != project_context.root.name:
         raise _RequestError(
             "SCOPE_MISMATCH",
             "project_id 与当前活动项目不匹配。",
             404,
         )
     try:
-        return binder.bind(
-            scope,
+        return replace(binder.bind(
+            storage_scope,
             chapter_id,
             source_version_id=source_version_id or None,
-        )
+        ), scope=scope)
     except NarrativeTurnError as exc:
         raise _map_domain_error(exc) from exc
     except (FileNotFoundError, OSError) as exc:
@@ -566,15 +603,17 @@ async def post_confirm(request: Request) -> JSONResponse:
         body = await _read_json_body(request)
         fields = _extract_confirm_body(body)
 
-        project_context = get_project_context()
-        if fields["scope"].project_id != project_context.root.name:
+        project_context, storage_scope = _storage_boundary(fields["scope"])
+        if storage_scope.project_id != project_context.root.name:
             raise _RequestError(
                 "SCOPE_MISMATCH",
                 "project_id 与当前活动项目不匹配。",
                 404,
             )
 
-        service = NarrativeTurnService(project_context)
+        service = NarrativeTurnService(
+            project_context, canonical_project_id=fields["scope"].project_id
+        )
 
         custom_raw_text = fields["custom_action_text"]
 
@@ -595,7 +634,11 @@ async def post_confirm(request: Request) -> JSONResponse:
         except NarrativeTurnError as exc:
             raise _map_domain_error(exc) from exc
 
-        dto = build_confirm_result_wire_dto(confirm_result)
+        dto = _canonicalize_project_id(
+            build_confirm_result_wire_dto(confirm_result),
+            fields["scope"].project_id,
+            storage_scope.project_id,
+        )
         return _ok(dto)
     except _RequestError as err:
         return _fail(err.code, err.message, err.status)

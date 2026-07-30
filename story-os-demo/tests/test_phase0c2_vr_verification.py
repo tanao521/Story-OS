@@ -586,13 +586,11 @@ class TestVectorSyncOperation:
         ctx = get_project_context(source)
         service = ProjectCloneService(workspace)
         result = service.clone_project(ctx, "副本", "clone-novel")
-        assert result.vector_sync_operation_id is not None
+        assert result.vector_sync_operation_id is None
+        assert any("VECTOR_SCOPE_REQUIRED" in warning for warning in result.warnings)
         clone_ctx = get_project_context(workspace / "projects" / "clone-novel")
         sync_store = VectorSyncRunStore(clone_ctx)
-        run = sync_store.get(result.vector_sync_operation_id)
-        assert run is not None
-        assert run.operation_type == VectorSyncOperationType.CLONE
-        assert run.project_id == result.project_id
+        assert sync_store.list_by_project(result.project_id) == []
 
     def test_clone_operation_not_in_source(self, workspace: Path) -> None:
         source = _create_full_source(workspace)

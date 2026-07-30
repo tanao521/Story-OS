@@ -53,10 +53,15 @@ def test_recovered_job_endpoints(monkeypatch,tmp_path:Path):
 def test_recovered_narrative_endpoints(monkeypatch,tmp_path:Path):
     monkeypatch.chdir(tmp_path); chapter=tmp_path/'data'/'chapters'/'chapter_001.md'; chapter.parent.mkdir(parents=True); chapter.write_text('# One\n\nHe arrived at the gate.',encoding='utf-8')
     with TestClient(app) as client:
-        assert client.post('/api/narrative-memory/chapters/1/extract').status_code==200
+        extract = client.post('/api/narrative-memory/chapters/1/extract')
+        assert extract.status_code == 410
+        assert 'LEGACY_MEMORY_MUTATION_DISABLED' in str(extract.json())
         assert client.get('/api/narrative-memory/timeline').status_code==200
         assert client.get('/api/narrative-memory/conflicts').status_code==200
-        assert client.post('/api/continuity/preflight',json={'chapter_id':2}).status_code in {200,409}
+        preflight = client.post('/api/continuity/preflight',json={'chapter_id':2})
+        assert preflight.status_code == 410
+        assert 'LEGACY_MEMORY_MUTATION_DISABLED' in str(preflight.json())
+    assert not (tmp_path / 'data' / 'narrative_memory').exists()
 
 def test_narrative_confirmation_projection_snapshot_and_preview(monkeypatch, tmp_path: Path):
     monkeypatch.chdir(tmp_path)
@@ -64,19 +69,25 @@ def test_narrative_confirmation_projection_snapshot_and_preview(monkeypatch, tmp
     chapter.parent.mkdir(parents=True)
     chapter.write_text('# One\n\nThe guide arrived at the gate.', encoding='utf-8')
     with TestClient(app) as client:
-        extracted = client.post('/api/narrative-memory/chapters/1/extract').json()['result']['events']
-        assert extracted and extracted[0]['confirmation_status'] == 'unreviewed'
-        event = client.post(
-            f"/api/narrative-memory/events/{extracted[0]['event_id']}/confirm",
-            json={'decision': 'corrected', 'patch': {'state_changes': [{'entity_type': 'locations', 'entity_id': 'gate', 'patch': {'occupied': True}}]}},
-        ).json()['result']['event']
-        assert event['confirmation_status'] == 'corrected'
-        assert client.post('/api/narrative-memory/project').status_code == 200
-        overview = client.get('/api/narrative-memory/overview').json()['result']
-        assert overview['state']['locations']['gate']['occupied'] is True
-        assert client.post('/api/narrative-memory/chapters/1/snapshot').status_code == 200
+        responses = [
+            client.post('/api/narrative-memory/chapters/1/extract'),
+            client.post(
+                '/api/narrative-memory/events/legacy-event/confirm',
+                json={'decision': 'corrected', 'patch': {'state_changes': []}},
+            ),
+            client.post('/api/narrative-memory/project'),
+            client.post('/api/narrative-memory/chapters/1/snapshot'),
+            client.post(
+                '/api/narrative-memory/overrides/pins',
+                json={'value': 'Preserve the gate arrival.'},
+            ),
+        ]
+        for response in responses:
+            assert response.status_code == 410
+            assert 'LEGACY_MEMORY_MUTATION_DISABLED' in str(response.json())
+        assert not (tmp_path / 'data' / 'narrative_memory').exists()
         assert client.get('/api/narrative-memory/context-preview?chapter_id=2').status_code == 200
-        assert client.post('/api/narrative-memory/overrides/pins', json={'value': 'Preserve the gate arrival.'}).status_code == 200
+        assert client.get('/api/narrative-memory/overview').status_code == 200
 
 def test_recovery_client_contract():
     root=Path(__file__).resolve().parents[1]

@@ -225,12 +225,15 @@ class NarrativeTurnService:
         self,
         project_context: ProjectContext,
         *,
+        canonical_project_id: str | None = None,
         fault_injector: Callable[[str], None] | None = None,
     ) -> None:
         self._project_root = project_context.data_dir
-        project_id = project_context.root.name
-        _validate_path_component(project_id, "project_id")
-        self._project_id = project_id
+        storage_project_id = project_context.root.name
+        _validate_path_component(storage_project_id, "storage_project_id")
+        self._storage_project_id = storage_project_id
+        self._canonical_project_id = canonical_project_id or storage_project_id
+        _validate_path_component(self._canonical_project_id, "canonical_project_id")
         self._turn_store = NarrativeTurnStore(project_context)
         self._context_binder = NarrativeTurnContextBinder(project_context)
         self._project_context = project_context
@@ -346,7 +349,7 @@ class NarrativeTurnService:
         payload = {
             "schema_version": SCHEMA_VERSION,
             "operation_id": operation_id,
-            "project_id": scope.project_id,
+            "project_id": self._canonical_project_id,
             "timeline_id": scope.timeline_id,
             "branch_id": scope.branch_id,
             "turn_id": turn_id,
@@ -922,16 +925,17 @@ class NarrativeTurnService:
         full transition chain, branch event journal, state projection,
         and forward recovery.
         """
-        if scope.project_id != self._project_id:
+        if scope.project_id != self._canonical_project_id:
             raise NarrativeTurnError(NarrativeTurnError.SCOPE_MISMATCH, "project_id mismatch")
 
+        canonical_scope = scope
         _validate_path_component(operation_id, "operation_id")
         request_custom_hash: str | None = None
         if action_source == "custom" and isinstance(custom_action_text, str):
             request_custom_hash = normalize_custom_action(custom_action_text).text_hash
         request_fingerprint = _stable_fingerprint(
             {
-                "project_id": scope.project_id,
+                "project_id": canonical_scope.project_id,
                 "timeline_id": scope.timeline_id,
                 "branch_id": scope.branch_id,
                 "chapter_id": chapter_id,
@@ -945,7 +949,12 @@ class NarrativeTurnService:
                 "custom_action_text_hash": request_custom_hash,
             }
         )
-        self._claim_operation(operation_id, scope, request_fingerprint)
+        self._claim_operation(operation_id, canonical_scope, request_fingerprint)
+        scope = NarrativeScope(
+            self._storage_project_id,
+            canonical_scope.timeline_id,
+            canonical_scope.branch_id,
+        )
 
         custom_raw_text: str | None = None
         try:
@@ -1294,7 +1303,7 @@ class NarrativeTurnService:
         result_fp = phase_record["result_fingerprint"]
         current_phase = phase_record["phase"]
 
-        if phase_record.get("project_id") != scope.project_id:
+        if phase_record.get("project_id") != self._canonical_project_id:
             raise NarrativeTurnError(NarrativeTurnError.SCOPE_MISMATCH, "project_id mismatch")
         if phase_record.get("timeline_id") != scope.timeline_id:
             raise NarrativeTurnError(NarrativeTurnError.SCOPE_MISMATCH, "timeline_id mismatch")

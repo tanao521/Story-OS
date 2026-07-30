@@ -1,5 +1,13 @@
 # Phase 0D6-C-FV — Browser, Recovery & Accessibility Final Verification
 
+> **Final status update — 2026-07-30: Phase 0D6-C — SEALED.**
+>
+> The historical FV hold and RC requirements recorded below were closed by
+> RC13–RC19 and the authorized FV2 independent verification. The authoritative
+> final ledger is `PHASE_0D6_C_SEAL.md`: 2399 passed, 0 failed, 0 skipped;
+> symlink security 7/7; and the frozen Chromium matrix 20/20 remains valid
+> with no production drift after its baseline.
+>
 > RC1 status update: the successor-as-previous readiness defect is corrected in Phase 0D6-C-B-RC1. FV remains unsealed until the authorized FV2 browser matrix is completed.
 >
 > RC10 status update: versioned n-gram namespace, metadata validation, cold
@@ -7,6 +15,17 @@
 > remains unauthorized because ProjectManager registry UUIDs and narrative
 > Branch/Simulator slug identities cannot yet form the required same-service
 > multi-project browser fixture.
+
+> RC11 update: Branch/Simulator now have a registry-authoritative UUID/storage
+> compatibility path and the formal fixture is constructible. Chromium exposed
+> the remaining Narrative Turn/chapter-progression caller mismatch. RC12 is
+> required; FV2 remains unauthorized.
+
+> RC12 update: Narrative Turn and chapter progression now preserve canonical
+> UUID scope across browser/API/DTO/operation boundaries while using the
+> registered slug only for legacy storage. A sibling-branch delayed GET can
+> still render the prior branch's held READY response. RC13 is required and
+> FV2 remains unauthorized.
 
 ## Purpose
 

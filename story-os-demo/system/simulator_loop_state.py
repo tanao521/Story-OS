@@ -144,9 +144,10 @@ class SimulatorLoopState:
 class SimulatorLoopStateService:
     """Build a scoped, immutable-in-memory read model from existing authorities."""
 
-    def __init__(self, context: ProjectContext):
+    def __init__(self, context: ProjectContext, *, canonical_project_id: str | None = None):
         self.context = context
-        self.project_id = context.root.name
+        self.storage_project_id = context.root.name
+        self.project_id = canonical_project_id or self.storage_project_id
         self.turns = NarrativeTurnStore(context)
         self.branches = BranchLifecycleService(context)
         self.revisions = RevisionService(context)
@@ -160,7 +161,7 @@ class SimulatorLoopStateService:
             raise SimulatorLoopStateError("PROJECT_NOT_FOUND", "Project does not match the active project context")
         if type(chapter_id) is not int or chapter_id < 1:
             raise SimulatorLoopStateError("SCOPE_REQUIRED", "chapter_id must be positive")
-        return NarrativeScope(project_id, timeline_id, branch_id)
+        return NarrativeScope(self.storage_project_id, timeline_id, branch_id)
 
     def _branch(self, scope: NarrativeScope) -> tuple[dict[str, Any], BranchReadiness]:
         result = self.branches.list_branches(scope.project_id, scope.timeline_id)
@@ -400,12 +401,13 @@ class SimulatorLoopStateService:
         canon = self._canon(chapter_id)
         canon_revision_id = str((canon or {}).get("canon_version_id") or (canon or {}).get("revision_id") or "") or None
         scope = _scope_dict(scope_obj, chapter_id, source_id, canon_revision_id, source_fp)
+        product_scope = {**scope, "project_id": self.project_id}
         branch, branch_readiness = self._branch(scope_obj)
         branch_data = {**branch, "vector_readiness": branch_readiness.vector_readiness, "blocking_reason": branch_readiness.blocking_reason}
-        recovery = self._recovery(scope)
+        recovery = self._recovery(product_scope)
         history, current, latest_plan = self._history_and_turns(scope_obj, chapter_id)
-        candidates = self._candidates(scope, chapter_id, canon_revision_id, source_fp)
-        commit = self._commit(scope)
+        candidates = self._candidates(product_scope, chapter_id, canon_revision_id, source_fp)
+        commit = self._commit(product_scope)
         current_candidate = candidates[-1] if candidates else None
         if current_candidate:
             current_candidate = next((item for item in candidates if item.candidate_version_id == (commit.get("candidate_version_id") or current_candidate.candidate_version_id)), current_candidate)
@@ -476,4 +478,4 @@ class SimulatorLoopStateService:
             stage = "ENTRY"
         if not branch_readiness.active or branch_readiness.lifecycle_status == "archived":
             stage = "BLOCKED"
-        return SimulatorLoopState(scope, stage, branch_data, turn_data, candidate_data, commit, chapter_data, recovery, {"status": review_status, "can_review": bool(current_candidate and current_candidate.freshness == "fresh"), "can_approve": bool(current_candidate and review_status == "pending" and current_candidate.freshness == "fresh"), "can_reject": bool(current_candidate and review_status == "pending" and current_candidate.freshness == "fresh"), "can_commit": bool(current_candidate and review_status == "approved" and current_candidate.freshness == "fresh"), "blocking_reason": blocking})
+        return SimulatorLoopState(product_scope, stage, branch_data, turn_data, candidate_data, commit, chapter_data, recovery, {"status": review_status, "can_review": bool(current_candidate and current_candidate.freshness == "fresh"), "can_approve": bool(current_candidate and review_status == "pending" and current_candidate.freshness == "fresh"), "can_reject": bool(current_candidate and review_status == "pending" and current_candidate.freshness == "fresh"), "can_commit": bool(current_candidate and review_status == "approved" and current_candidate.freshness == "fresh"), "blocking_reason": blocking})

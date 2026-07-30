@@ -8,23 +8,35 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from core.project_context import get_project_context
+from system.project_manager import ProjectManager
 from web.app import app
 
 
 @pytest.fixture
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.chdir(tmp_path)
-    ctx = get_project_context(tmp_path)
-    return TestClient(app), ctx
+    project = ProjectManager(tmp_path).create_project({
+        "title": "Formal branch route fixture",
+        "genre": "fixture",
+        "premise": "Formal UUID identity only",
+        "protagonist": "Fixture",
+        "goal": "Exercise branch routes",
+        "conflict": "None",
+        "tone": "precise",
+        "target_words": 1000,
+        "chapter_count": 2,
+    })
+    ctx = get_project_context(tmp_path / project["project_root"])
+    return TestClient(app), ctx, project["project_id"]
 
 
-def _scope(ctx):
-    return {"project_id": ctx.root.name, "timeline_id": "main"}
+def _scope(project_id: str):
+    return {"project_id": project_id, "timeline_id": "main"}
 
 
 def test_create_list_get_and_replay(client):
-    http, ctx = client
-    body = {**_scope(ctx), "operation_id": "branch-op-create", "branch_id": "alpha", "display_name": "Alpha"}
+    http, _ctx, project_id = client
+    body = {**_scope(project_id), "operation_id": "branch-op-create", "branch_id": "alpha", "display_name": "Alpha"}
     created = http.post("/api/narrative-branches/create", json=body)
     assert created.status_code == 200
     assert created.headers["cache-control"] == "no-store"
@@ -32,17 +44,17 @@ def test_create_list_get_and_replay(client):
     replay = http.post("/api/narrative-branches/create", json=body)
     assert replay.status_code == 200
     assert replay.json()["result"]["idempotent_replay"] is True
-    listed = http.get("/api/narrative-branches", params=_scope(ctx))
+    listed = http.get("/api/narrative-branches", params=_scope(project_id))
     assert listed.status_code == 200
     assert listed.json()["result"]["branches"][0]["activity"] == "inactive"
-    detail = http.get("/api/narrative-branches/alpha", params=_scope(ctx))
+    detail = http.get("/api/narrative-branches/alpha", params=_scope(project_id))
     assert detail.status_code == 200
     assert "fingerprint" not in detail.text
 
 
 def test_select_archive_restore_and_safe_errors(client):
-    http, ctx = client
-    scope = _scope(ctx)
+    http, _ctx, project_id = client
+    scope = _scope(project_id)
     for op, branch in (("create-a", "alpha"), ("create-b", "beta")):
         assert http.post("/api/narrative-branches/create", json={**scope, "operation_id": op, "branch_id": branch}).status_code == 200
     revision = http.get("/api/narrative-branches", params=scope).json()["result"]["registry_revision"]
@@ -66,8 +78,8 @@ def test_select_archive_restore_and_safe_errors(client):
 
 
 def test_operation_conflict_and_stale_revision(client):
-    http, ctx = client
-    scope = _scope(ctx)
+    http, _ctx, project_id = client
+    scope = _scope(project_id)
     first = {**scope, "operation_id": "same-op", "branch_id": "alpha"}
     assert http.post("/api/narrative-branches/create", json=first).status_code == 200
     conflict = http.post("/api/narrative-branches/create", json={**first, "branch_id": "beta"})

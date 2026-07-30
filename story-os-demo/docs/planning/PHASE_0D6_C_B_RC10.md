@@ -74,6 +74,14 @@ servers, and changes to sealed progression/authority semantics. Therefore a
 coherent same-service Project A/B plus sibling Branch A/B browser fixture
 cannot be built within this phase.
 
+## RC11 Follow-Up
+
+RC11 closed the registry-to-storage resolver gap for Branch and Simulator and
+proved formal same-service Project A/B plus sibling Branch construction. Real
+Chromium then found the remaining Narrative Turn/progression caller mismatch;
+the current status is `PARTIALLY PASSED — RC12 REQUIRED`. FV2 remains
+unauthorized.
+
 ## Chromium, FV2, and Non-Goals
 
 The Chromium delayed GET/POST, history, and exactly-once matrix was not entered

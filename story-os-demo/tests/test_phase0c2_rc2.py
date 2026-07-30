@@ -49,12 +49,14 @@ class TestVectorStateWarningPropagation:
                 service,
                 "_update_vector_memory_state",
                 side_effect=IOError("Permission denied")
-            ):
+            ) as mock_update:
                 result = service.clone_project(source_context, "Cloned Project")
 
                 assert result.status == "completed_with_warnings"
-                assert any("VECTOR_STATE_UPDATE_FAILED" in w for w in result.warnings)
-                assert not any("VECTOR_REBUILD_FAILED" in w for w in result.warnings)
+                assert any("VECTOR_SCOPE_REQUIRED" in w for w in result.warnings)
+                assert result.vector_sync_operation_id is None
+                mock_rebuild.assert_not_called()
+                mock_update.assert_not_called()
 
     def test_rebuild_failure_state_write_failure_reports_both_warnings(self, tmp_path):
         workspace_root = tmp_path / "workspace"
@@ -91,12 +93,14 @@ class TestVectorStateWarningPropagation:
                 service,
                 "_update_vector_memory_state",
                 side_effect=IOError("State write error")
-            ):
+            ) as mock_update:
                 result = service.clone_project(source_context, "Cloned Project")
 
                 assert result.status == "completed_with_warnings"
-                assert any("VECTOR_REBUILD_FAILED" in w for w in result.warnings)
-                assert any("VECTOR_STATE_UPDATE_FAILED" in w for w in result.warnings)
+                assert any("VECTOR_SCOPE_REQUIRED" in w for w in result.warnings)
+                assert result.vector_sync_operation_id is None
+                mock_rebuild.assert_not_called()
+                mock_update.assert_not_called()
 
     def test_state_write_failure_does_not_rollback_clone(self, tmp_path):
         workspace_root = tmp_path / "workspace"
@@ -275,7 +279,10 @@ class TestWindowsReparsePointGuard:
 
             result = service.clone_project(source_context, "Cloned")
 
-            assert result.status == "completed"
+            assert result.status == "completed_with_warnings"
+            assert any("VECTOR_SCOPE_REQUIRED" in w for w in result.warnings)
+            assert result.vector_sync_operation_id is None
+            mock_rebuild.assert_not_called()
             target_dir = projects_dir / result.project_slug
             assert target_dir.exists()
 

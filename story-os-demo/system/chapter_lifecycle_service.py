@@ -29,6 +29,10 @@ from typing import Any, Callable
 
 from core.project_context import ProjectContext
 from system.data_store import DataStore
+from system.branch_memory_continuity_service import (
+    BranchMemoryContinuityError,
+    BranchMemoryContinuityService,
+)
 from system.revision_service import RevisionService
 from system.version_manager import (
     format_chapter_id,
@@ -92,6 +96,10 @@ class CanonInitializationError(ChapterLifecycleError):
 
 class ChapterLifecycleRecoveryRequiredError(ChapterLifecycleError):
     code = "CHAPTER_LIFECYCLE_RECOVERY_REQUIRED"
+
+
+class MemoryContinuityError(ChapterLifecycleError):
+    code = "MEMORY_CONTINUITY_RECOVERY_REQUIRED"
 
 
 def _now() -> str:
@@ -177,6 +185,7 @@ class ChapterLifecycleService:
         self.project_id = context.root.name or "default"
         self.store = DataStore(context)
         self.revision_service = RevisionService(context)
+        self.memory_continuity = BranchMemoryContinuityService(context)
         self._operations_dir = context.data_dir / "chapter_lifecycle" / "operations"
         self._locks_dir = self._operations_dir / ".locks"
         self._fault_injector = fault_injector
@@ -915,12 +924,24 @@ class ChapterLifecycleService:
                 has_versions = self._has_versions_index(next_chapter_id)
                 has_canon = self._has_canon_index(next_chapter_id)
                 if has_versions and has_canon:
+                    continuity = self._capture_memory_continuity(
+                        operation_id=operation_id,
+                        authority=authority,
+                        timeline_id=timeline_id,
+                        active_branch=active_branch,
+                        branch_revision=branch_revision,
+                        current_chapter_id=current_chapter_id,
+                        next_chapter_id=next_chapter_id,
+                    )
                     result = {
                         "status": "NEXT_CHAPTER_ALREADY_EXISTS",
                         "chapter_id": next_chapter_id,
                         "message": f"Chapter {next_chapter_id} already exists with complete assets.",
                         "chapter_created": False,
                         "creation_source": "existing",
+                        "memory_readiness": "ready",
+                        "vector_readiness": "not_ready",
+                        "memory_continuity": self._continuity_result(continuity),
                     }
                     return self._complete(operation_id, authority, result, recovery_performed=True)
                 raise NextChapterAlreadyExistsError(
@@ -1003,6 +1024,7 @@ class ChapterLifecycleService:
             ("initializing_versions", self._step_init_versions),
             ("initializing_canon", self._step_init_canon),
             ("publishing_chapter", self._step_publishing),
+            ("capturing_memory_continuity", self._step_memory_continuity),
             ("completed", self._step_completed),
         ]
         start_index = 0
@@ -1180,6 +1202,56 @@ class ChapterLifecycleService:
         self._phase(op_id, "initializing_canon")
         self._fault("after_canon_init")
 
+    @staticmethod
+    def _continuity_result(continuity: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "snapshot_id": continuity["snapshot_id"],
+            "source_fingerprint": continuity["source_fingerprint"],
+            "record_fingerprint": continuity["record_fingerprint"],
+            "completion_state": continuity["completion_state"],
+            "vector_role": continuity["vector_role"],
+        }
+
+    def _capture_memory_continuity(
+        self,
+        *,
+        operation_id: str,
+        authority: dict[str, Any],
+        timeline_id: str,
+        active_branch: str,
+        branch_revision: str,
+        current_chapter_id: int,
+        next_chapter_id: int,
+    ) -> dict[str, Any]:
+        request = authority.get("request", {})
+        try:
+            return self.memory_continuity.create(
+                operation_id=operation_id,
+                project_id=self.project_id,
+                timeline_id=timeline_id,
+                branch_id=active_branch,
+                branch_revision=branch_revision,
+                previous_chapter_id=current_chapter_id,
+                successor_chapter_id=next_chapter_id,
+                completion_authority=request.get("completion_authority", {}),
+            )
+        except BranchMemoryContinuityError as exc:
+            raise MemoryContinuityError(str(exc)) from exc
+
+    def _step_memory_continuity(self, **kwargs: Any) -> None:
+        op_id = kwargs["operation_id"]
+        self._capture_memory_continuity(
+            operation_id=op_id,
+            authority=kwargs["authority"],
+            timeline_id=kwargs["timeline_id"],
+            active_branch=kwargs["active_branch"],
+            branch_revision=kwargs["branch_revision"],
+            current_chapter_id=kwargs["current_chapter_id"],
+            next_chapter_id=kwargs["next_chapter_id"],
+        )
+        self._fault("after_memory_continuity_snapshot")
+        self._phase(op_id, "capturing_memory_continuity")
+
     def _step_completed(self, **kwargs: Any) -> None:
         op_id = kwargs["operation_id"]
         authority = kwargs["authority"]
@@ -1189,6 +1261,16 @@ class ChapterLifecycleService:
         active_branch = kwargs["active_branch"]
         branch_revision = kwargs["branch_revision"]
         self._validate_bound_authorities(authority)
+        try:
+            continuity = self.memory_continuity.read(
+                project_id=self.project_id,
+                timeline_id=kwargs["timeline_id"],
+                branch_id=active_branch,
+                previous_chapter_id=current_chapter_id,
+                successor_chapter_id=next_chapter_id,
+            )
+        except BranchMemoryContinuityError as exc:
+            raise MemoryContinuityError(str(exc)) from exc
 
         result = {
             "status": "CHAPTER_CREATED",
@@ -1196,7 +1278,7 @@ class ChapterLifecycleService:
             "chapter_created": True,
             "chapter_navigation_ready": True,
             "turn_start_ready": False,
-            "memory_readiness": "not_ready",
+            "memory_readiness": "ready",
             "vector_readiness": "not_ready",
             "blocking_reason": None,
             "warnings": [],
@@ -1206,6 +1288,7 @@ class ChapterLifecycleService:
                 "branch_id": active_branch,
                 "branch_revision": branch_revision,
             },
+            "memory_continuity": self._continuity_result(continuity),
             "commit_snapshot": {
                 "source_chapter_id": current_chapter_id,
                 "source_status": commit_status,
