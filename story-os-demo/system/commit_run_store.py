@@ -49,6 +49,7 @@ class CommitRun:
     chapter_path: str | None = None
     summary_path: str | None = None
     timeline_id: str = "main"
+    approval_provenance: dict[str, Any] = field(default_factory=dict)
     core_commit: dict[str, Any] = field(default_factory=dict)
     post_commit: dict[str, PostCommitTaskState] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
@@ -68,6 +69,7 @@ class CommitRun:
             "chapter_path": self.chapter_path,
             "summary_path": self.summary_path,
             "timeline_id": self.timeline_id,
+            "approval_provenance": self.approval_provenance,
             "core_commit": self.core_commit,
             "post_commit": {k: v.to_dict() for k, v in self.post_commit.items()},
             "warnings": self.warnings,
@@ -96,6 +98,7 @@ class CommitRun:
             chapter_path=data.get("chapter_path"),
             summary_path=data.get("summary_path"),
             timeline_id=data.get("timeline_id", "main"),
+            approval_provenance=data.get("approval_provenance", {}) if isinstance(data.get("approval_provenance", {}), dict) else {},
             core_commit=data.get("core_commit", {}),
             post_commit=post_commit,
             warnings=data.get("warnings", []),

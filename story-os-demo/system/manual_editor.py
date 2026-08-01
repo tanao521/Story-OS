@@ -13,6 +13,7 @@ from system.version_manager import (
 from core.contracts import HashGuard, ProjectRef
 from core.project_context import get_project_context
 from system.version_writer_facade import VersionWriterFacade
+from system.review_decision_service import content_fingerprint
 
 
 TEXT_FIELD_BY_TYPE = {
@@ -82,12 +83,18 @@ def create_manual_version(
     source_version: int,
     manual_text: str,
     data_dir: str | Path = "data",
+    *,
+    expected_source_fingerprint: str | None = None,
+    revision_transition_id: str | None = None,
+    revision_source_identity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     valid, warnings = is_valid_manual_text(manual_text)
     if not valid:
         raise ValueError("; ".join(warnings))
 
     source = load_source_version_text(chapter_id, source_type, source_version, data_dir)
+    if expected_source_fingerprint and content_fingerprint(str(source.get("text", ""))) != expected_source_fingerprint:
+        raise ValueError("SOURCE_FINGERPRINT_MISMATCH")
     version = get_next_version_number(chapter_id, "manual", data_dir)
     paths = build_versioned_paths(chapter_id, "manual", version, data_dir)
     now = _now()
@@ -116,6 +123,9 @@ def create_manual_version(
             "warnings": warnings,
         },
     }
+    if revision_transition_id:
+        manual["revision_transition_id"] = str(revision_transition_id)
+        manual["revision_source_identity"] = dict(revision_source_identity or {})
 
     json_path = Path(paths["json_path"])
     markdown_path = Path(paths["markdown_path"])
@@ -150,6 +160,8 @@ def create_manual_version(
             "source_version": source_version,
             "source_path": source.get("json_path", ""),
         },
+        "content_fingerprint": content_fingerprint(manual_text),
+        "revision_transition_id": revision_transition_id,
         "manual": manual,
     }
 

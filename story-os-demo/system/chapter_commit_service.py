@@ -12,6 +12,11 @@ from core.project_context import ProjectContext
 from system.commit_run_store import CommitRun, CommitRunStore, PostCommitTaskState
 from system.data_store import DataStore, DataWriteError
 from system.revision_service import RevisionService
+from system.commit_authority import (
+    ApprovedCommitAuthority,
+    CommitAuthorityError,
+    validate_approved_commit,
+)
 
 
 class PostCommitPolicy(str, Enum):
@@ -50,6 +55,7 @@ class CommitResult:
     core_commit: dict[str, str] = field(default_factory=dict)
     post_commit: dict[str, str] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    approval_provenance: dict[str, Any] = field(default_factory=dict)
 
 
 class ChapterCommitService:
@@ -67,9 +73,68 @@ class ChapterCommitService:
         post_commit_policy: PostCommitPolicy = PostCommitPolicy.LOCAL_ONLY,
         *,
         vector_scope=None,
+        approved_identity=None,
+        approval_decision_id: str | None = None,
     ) -> CommitResult:
         with self._lock:
-            return self._do_commit(chapter_id, source_version_id, post_commit_policy, vector_scope)
+            authority: ApprovedCommitAuthority | None = None
+            if approved_identity is not None:
+                try:
+                    authority = validate_approved_commit(
+                        self.context,
+                        approved_identity,
+                        decision_id=approval_decision_id,
+                    )
+                except CommitAuthorityError as exc:
+                    return CommitResult(
+                        status=CommitStatus.FAILED,
+                        project_id=self.context.root.name or "default",
+                        chapter_id=chapter_id,
+                        commit_id="",
+                        source_type=SourceType.DRAFT,
+                        source_version_id=source_version_id,
+                        source_hash="",
+                        canon_revision_id=None,
+                        chapter_path=None,
+                        summary_path=None,
+                        warnings=[f"{exc.code}: {exc.message}"],
+                    )
+                exact_source = authority.identity.source_version_id
+                if source_version_id and source_version_id != exact_source:
+                    return CommitResult(
+                        status=CommitStatus.FAILED,
+                        project_id=self.context.root.name or "default",
+                        chapter_id=chapter_id,
+                        commit_id="",
+                        source_type=SourceType.DRAFT,
+                        source_version_id=source_version_id,
+                        source_hash="",
+                        canon_revision_id=None,
+                        chapter_path=None,
+                        summary_path=None,
+                        warnings=["COMMIT_SOURCE_MISMATCH: Explicit source differs from approved source."],
+                    )
+                source_version_id = exact_source
+            return self._do_commit(chapter_id, source_version_id, post_commit_policy, vector_scope, authority)
+
+    def commit_approved_chapter(
+        self,
+        chapter_id: int,
+        approved_identity,
+        *,
+        approval_decision_id: str | None = None,
+        post_commit_policy: PostCommitPolicy = PostCommitPolicy.LOCAL_ONLY,
+        vector_scope=None,
+    ) -> CommitResult:
+        """Commit only an exact, currently approved work-version identity."""
+        return self.commit_chapter(
+            chapter_id,
+            source_version_id=getattr(approved_identity, "source_version_id", None),
+            post_commit_policy=post_commit_policy,
+            vector_scope=vector_scope,
+            approved_identity=approved_identity,
+            approval_decision_id=approval_decision_id,
+        )
 
     def _do_commit(
         self,
@@ -77,6 +142,7 @@ class ChapterCommitService:
         source_version_id: str | None,
         post_commit_policy: PostCommitPolicy,
         vector_scope=None,
+        authority: ApprovedCommitAuthority | None = None,
     ) -> CommitResult:
         project_id = self.context.root.name or "default"
 
@@ -113,12 +179,56 @@ class ChapterCommitService:
                     warnings=[f"Source resolution failed: {phase_b.reason}"],
                 )
 
+            if authority is not None:
+                # Revalidate immediately before any snapshot or Canon write;
+                # this catches content/selection/decision TOCTOU drift.
+                try:
+                    authority = validate_approved_commit(
+                        self.context,
+                        authority.identity,
+                        decision_id=authority.decision_id,
+                    )
+                except CommitAuthorityError as exc:
+                    return CommitResult(
+                        status=CommitStatus.FAILED,
+                        project_id=project_id,
+                        chapter_id=chapter_id,
+                        commit_id="",
+                        source_type=phase_b.source_type,
+                        source_version_id=phase_b.source_version_id,
+                        source_hash=phase_b.source_hash,
+                        canon_revision_id=None,
+                        chapter_path=None,
+                        summary_path=None,
+                        source_path=phase_b.source_path,
+                        warnings=[f"{exc.code}: {exc.message}"],
+                    )
+                if phase_b.source_version_id != authority.identity.source_version_id or phase_b.source_hash != authority.identity.content_fingerprint or phase_b.source_type.value != authority.identity.source_type:
+                    return CommitResult(
+                        status=CommitStatus.FAILED,
+                        project_id=project_id,
+                        chapter_id=chapter_id,
+                        commit_id="",
+                        source_type=phase_b.source_type,
+                        source_version_id=phase_b.source_version_id,
+                        source_hash=phase_b.source_hash,
+                        canon_revision_id=None,
+                        chapter_path=None,
+                        summary_path=None,
+                        source_path=phase_b.source_path,
+                        warnings=["COMMIT_SOURCE_MISMATCH: Resolved source differs from frozen approval identity."],
+                    )
+
             commit_key = self._generate_commit_key(project_id, chapter_id, phase_b)
             existing_run = self._check_idempotency(commit_key, phase_b.source_hash, chapter_id)
             if existing_run:
                 return self._handle_existing_run(existing_run, phase_b, post_commit_policy)
 
-            phase_c = self._phase_c_prepare(chapter_id, phase_b)
+            phase_c = self._phase_c_prepare(
+                chapter_id,
+                phase_b,
+                approval_provenance=authority.to_dict() if authority is not None else None,
+            )
             snapshot = self._create_snapshot(chapter_id)
 
             # Create commit run record before core commit
@@ -129,6 +239,7 @@ class ChapterCommitService:
                 source_hash=phase_b.source_hash,
                 source_version_id=phase_b.source_version_id,
                 post_commit_policy=post_commit_policy.value,
+                approval_provenance=authority.to_dict() if authority is not None else {},
             )
 
             try:
@@ -196,6 +307,7 @@ class ChapterCommitService:
                 core_commit=phase_d.core_commit,
                 post_commit=phase_e.get("post_commit", {}),
                 warnings=all_warnings,
+                approval_provenance=authority.to_dict() if authority is not None else {},
             )
 
         except Exception as exc:
@@ -412,7 +524,13 @@ class ChapterCommitService:
         core_commit: dict[str, str] = field(default_factory=dict)
         warnings: list[str] = field(default_factory=list)
 
-    def _phase_c_prepare(self, chapter_id: int, phase_b: SourceResolutionResult) -> PrepareResult:
+    def _phase_c_prepare(
+        self,
+        chapter_id: int,
+        phase_b: SourceResolutionResult,
+        *,
+        approval_provenance: dict[str, Any] | None = None,
+    ) -> PrepareResult:
         chapter_markdown = f"# 第{chapter_id}章 {phase_b.chapter_title}\n\n{phase_b.content}\n"
 
         summary = {
@@ -469,6 +587,8 @@ class ChapterCommitService:
             "source_version_id": phase_b.source_version_id,
             "source_hash": phase_b.source_hash,
         }
+        if approval_provenance:
+            canon_metadata["approval_provenance"] = dict(approval_provenance)
 
         warnings = []
         if self._chapter_path(chapter_id).exists():
@@ -666,6 +786,7 @@ class ChapterCommitService:
                 summary_path=run.summary_path,
                 source_path=phase_b.source_path,
                 warnings=run.warnings or ["Previous commit failed"],
+                approval_provenance=run.approval_provenance,
             )
 
         # Core completed. Check if we need post-commit compensation.
@@ -691,6 +812,7 @@ class ChapterCommitService:
                 core_commit=run.core_commit,
                 post_commit={k: v.status for k, v in run.post_commit.items()},
                 warnings=["Already committed with same content"],
+                approval_provenance=run.approval_provenance,
             )
 
         # Default: return already committed
@@ -709,6 +831,7 @@ class ChapterCommitService:
             core_commit=run.core_commit,
             post_commit={k: v.status for k, v in run.post_commit.items()},
             warnings=["Already committed with same content"],
+            approval_provenance=run.approval_provenance,
         )
 
     def resume_post_commit(self, commit_id: str, policy: PostCommitPolicy | None = None) -> CommitResult:

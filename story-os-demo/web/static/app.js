@@ -21,10 +21,42 @@ let latestEdited = null;
 let latestManual = null;
 let selectedVersion = null;
 let currentManualSource = null;
+let pendingRevisionTransition = null;
 let projectAssets = [];
 let currentAssetId = "story_spec";
 let storyosRequestGeneration = 0;
 const storyosActiveRequests = new Set();
+let reviewEvidenceRequestEpoch = 0;
+let currentReviewEvidenceRequest = null;
+let selectionTransitionEpoch = 0;
+let currentProjectScope = { project: "", timeline: "main", branch: "main", chapter: 1 };
+
+function beginReviewEvidenceRequest(sourceType, version) {
+  const request = {
+    epoch: ++reviewEvidenceRequestEpoch,
+    projectGeneration: storyosRequestGeneration,
+    project: String(currentProjectScope.project || ""),
+    timeline: String(currentProjectScope.timeline || "main"),
+    branch: String(currentProjectScope.branch || "main"),
+    chapter: Number(currentVersion?.chapter_id || currentProjectScope.chapter || 1),
+    sourceType: String(sourceType || ""),
+    version: Number(version || 0),
+  };
+  currentReviewEvidenceRequest = request;
+  return request;
+}
+
+function reviewEvidenceRequestOwnsCurrentView(request) {
+  return currentReviewEvidenceRequest === request
+    && request.projectGeneration === storyosRequestGeneration
+    && request.project === String(currentProjectScope.project || "")
+    && request.timeline === String(currentProjectScope.timeline || "main")
+    && request.branch === String(currentProjectScope.branch || "main")
+    && request.chapter === Number(currentVersion?.chapter_id || currentProjectScope.chapter || 1)
+    && currentVersion != null
+    && String(currentVersion.source_type || "") === request.sourceType
+    && Number(currentVersion.version || 0) === request.version;
+}
 
 function cancelProjectScopedRequests() {
   storyosRequestGeneration += 1;
@@ -161,6 +193,12 @@ async function refreshStatus() {
   const foreshadows = status.foreshadows || {};
   const memory = status.memory || {};
   const actions = status.next_actions || [];
+  currentProjectScope = {
+    project: project.project_id || project.id || project.project_root || "",
+    timeline: project.timeline_id || "main",
+    branch: project.branch_id || "main",
+    chapter: Number(progress.next_chapter || 1),
+  };
   updateShellContext(project, progress);
   renderKnowledgeStoreSummary(memory);
   document.getElementById("project-line").textContent =
@@ -278,27 +316,132 @@ function renderVersions(targetId, items, isCommitted = false) {
   }).join("");
 }
 
-async function loadVersionContent(sourceType, version) {
-  const data = await apiGet(`/api/versions/content?source_type=${encodeURIComponent(sourceType)}&version=${encodeURIComponent(version)}`);
+function clearPreviewForSelection(sourceType, version, chapterId = 1) {
+  currentVersion = { chapter_id: Number(chapterId || 1), source_type: String(sourceType || ""), version: Number(version || 0) };
+  currentText = "";
+  const label = versionLabel(currentVersion);
+  const meta = document.getElementById("preview-meta");
+  const preview = document.getElementById("text-preview");
+  const toggle = document.getElementById("preview-toggle");
+  if (meta) { meta.className = "empty-state"; meta.textContent = `Loading ${label} preview…`; }
+  if (preview) { preview.textContent = `Loading ${label} content…`; preview.classList.remove("expanded"); }
+  if (toggle) toggle.style.display = "none";
+  const quality = document.getElementById("quality-output");
+  if (quality) { quality.className = "empty-state"; quality.textContent = `Loading ${label} quality state…`; }
+  const continuity = document.getElementById("continuity-output");
+  if (continuity) { continuity.className = "empty-state"; continuity.textContent = `Loading ${label} continuity state…`; }
+  const transition = document.getElementById("review-transition");
+  if (transition) transition.textContent = `Loading review state for ${label}…`;
+  const panel = document.getElementById("review-assembly-evidence");
+  const status = document.getElementById("review-assembly-evidence-status");
+  const details = document.getElementById("review-assembly-evidence-details");
+  if (panel) panel.className = "review-assembly-evidence is-loading";
+  if (status) status.textContent = `Loading assembly evidence for ${label}…`;
+  if (details) details.innerHTML = "";
+  return beginReviewEvidenceRequest(sourceType, version);
+}
+
+function showPreviewUnavailable(sourceType, version, message = "Unable to load the selected version.") {
+  const label = versionLabel({ source_type: sourceType, version });
+  const meta = document.getElementById("preview-meta");
+  const preview = document.getElementById("text-preview");
+  if (meta) { meta.className = "empty-state"; meta.textContent = `${label} unavailable`; }
+  if (preview) preview.textContent = `${label} unavailable: ${message}`;
+  const transition = document.getElementById("review-transition");
+  if (transition) transition.textContent = `Review state for ${label} is unavailable.`;
+  const panel = document.getElementById("review-assembly-evidence");
+  const status = document.getElementById("review-assembly-evidence-status");
+  if (panel) panel.className = "review-assembly-evidence is-invalid";
+  if (status) status.textContent = `Evidence for ${label} is unavailable.`;
+}
+
+async function legacyLoadVersionContent(sourceType, version, request = null) {
+  const evidenceRequest = request || clearPreviewForSelection(sourceType, version, currentVersion?.chapter_id || selectedVersion?.chapter_id || 1);
+  let data;
+  try {
+    data = await apiGet(`/api/versions/content?source_type=${encodeURIComponent(sourceType)}&version=${encodeURIComponent(version)}`);
+  } catch (error) {
+    if (reviewEvidenceRequestOwnsCurrentView(evidenceRequest)) showPreviewUnavailable(sourceType, version, error.message || "request failed");
+    return;
+  }
   if (!data.ok) return logApiResult("查看版本", data);
+  if (currentReviewEvidenceRequest !== evidenceRequest || evidenceRequest.projectGeneration !== storyosRequestGeneration) return;
   currentContinuityReport = null;
   renderVersionContent(data.result);
   await loadQualityReport(sourceType, version);
   await loadContinuityReport(sourceType, version);
-  await loadReviewAssemblyEvidence(sourceType, version);
+  await loadReviewAssemblyEvidence(sourceType, version, evidenceRequest);
+  await loadReviewDecisionState(sourceType, version, evidenceRequest);
   navigateToSection("preview-panel");
 }
 
-async function loadReviewAssemblyEvidence(sourceType, version) {
+async function loadVersionContent(sourceType, version, request = null) {
+  const evidenceRequest = request || clearPreviewForSelection(sourceType, version, currentVersion?.chapter_id || selectedVersion?.chapter_id || 1);
+  let data;
+  try {
+    data = await apiGet(`/api/versions/content?source_type=${encodeURIComponent(sourceType)}&version=${encodeURIComponent(version)}`);
+  } catch (error) {
+    if (reviewEvidenceRequestOwnsCurrentView(evidenceRequest)) showPreviewUnavailable(sourceType, version, error.message || "request failed");
+    return;
+  }
+  if (!data.ok) {
+    if (reviewEvidenceRequestOwnsCurrentView(evidenceRequest)) showPreviewUnavailable(sourceType, version, data.message || "request failed");
+    return logApiResult("鏌ョ湅鐗堟湰", data);
+  }
+  if (!reviewEvidenceRequestOwnsCurrentView(evidenceRequest)) return;
+  currentContinuityReport = null;
+  renderVersionContent(data.result);
+  await loadQualityReport(sourceType, version, evidenceRequest);
+  await loadContinuityReport(sourceType, version, evidenceRequest);
+  await loadReviewAssemblyEvidence(sourceType, version, evidenceRequest);
+  await loadReviewDecisionState(sourceType, version, evidenceRequest);
+  navigateToSection("preview-panel");
+}
+
+async function loadReviewDecisionState(sourceType, version, request = beginReviewEvidenceRequest(sourceType, version)) {
+  const target = document.getElementById("review-transition");
+  if (!target || !reviewEvidenceRequestOwnsCurrentView(request)) return null;
+  target.textContent = "正在读取当前版本的人类审核与修订状态…";
+  try {
+    const data = await apiGet(`/api/review/decisions?chapter_id=${encodeURIComponent(currentVersion?.chapter_id || 1)}&source_type=${encodeURIComponent(sourceType)}&version=${encodeURIComponent(version)}`);
+    if (!reviewEvidenceRequestOwnsCurrentView(request)) return null;
+    const result = data.result || {};
+    const lineage = result.lineage || {};
+    const transition = lineage.transition || {};
+    const source = transition.source_identity || {};
+    const decisionStatus = String(result.status || "MISSING");
+    const decision = result.decision || {};
+    const approvedIdentity = decision.identity || {};
+    if (decisionStatus === "CURRENT" && String(decision.decision_type || "").toUpperCase() === "APPROVED") {
+      const fingerprint = String(approvedIdentity.content_fingerprint || "");
+      target.textContent = `Approved exact ${approvedIdentity.source_version_id || "this version"} · ${fingerprint ? `fingerprint ${fingerprint.slice(0, 12)}… · ` : ""}Commit requires the same selected identity.`;
+      return result;
+    }
+    if (lineage.is_revision_target && source.source_version_id) {
+      target.textContent = `Revised from ${source.source_version_id} · Fresh review required · no decision inherited (${decisionStatus})`;
+    } else if (transition.status === "REQUESTED") {
+      target.textContent = `Changes requested for ${transition.source_identity?.source_version_id || "this version"}; revised version not created yet.`;
+    } else {
+      target.textContent = `Human decision: ${decisionStatus}`;
+    }
+    return result;
+  } catch (_error) {
+    if (reviewEvidenceRequestOwnsCurrentView(request)) target.textContent = "审核修订状态暂不可用；请重新读取。";
+    return null;
+  }
+}
+
+async function loadReviewAssemblyEvidence(sourceType, version, request = beginReviewEvidenceRequest(sourceType, version)) {
   const panel = document.getElementById("review-assembly-evidence");
   const status = document.getElementById("review-assembly-evidence-status");
   const details = document.getElementById("review-assembly-evidence-details");
-  if (!panel || !status || !details) return;
+  if (!panel || !status || !details || !reviewEvidenceRequestOwnsCurrentView(request)) return;
   panel.className = "review-assembly-evidence is-loading";
   status.textContent = "正在核对该精确版本的组装证据…";
   details.innerHTML = "";
   try {
     const data = await apiGet(`/api/review/assembly-evidence?source_type=${encodeURIComponent(sourceType)}&version=${encodeURIComponent(version)}`);
+    if (!reviewEvidenceRequestOwnsCurrentView(request)) return;
     const result = data.result || {};
     const evidence = result.evidence || null;
     const state = String(result.status || "INVALID").toLowerCase();
@@ -314,6 +457,7 @@ async function loadReviewAssemblyEvidence(sourceType, version) {
     ];
     details.innerHTML = rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("");
   } catch (_error) {
+    if (!reviewEvidenceRequestOwnsCurrentView(request)) return;
     panel.className = "review-assembly-evidence is-invalid";
     status.textContent = "无法读取该版本的组装证据；它不会被当作当前审核证据。";
   }
@@ -337,7 +481,7 @@ async function compareWithOpposite(sourceType, version) { const other = sourceTy
 async function loadVersionDiff(leftType, leftVersion, rightType, rightVersion) { const data = await apiGet(`/api/versions/diff?left_type=${leftType}&left_version=${leftVersion}&right_type=${rightType}&right_version=${rightVersion}`); if (!data.ok) return logApiResult("Diff 对比", data); renderDiff(data.result); }
 async function loadQualityReport(sourceType, version) { const data = await apiGet(`/api/quality-report?source_type=${encodeURIComponent(sourceType)}&version=${encodeURIComponent(version)}`); if (!data.ok) return logApiResult("质量报告", data); renderQualityReport(data.result); }
 
-async function loadContinuityReport(sourceType, version) {
+async function legacyLoadContinuityReport(sourceType, version) {
   const output = document.getElementById("continuity-output");
   const url = "/api/continuity-report?source_type=" + encodeURIComponent(sourceType) + "&version=" + encodeURIComponent(version);
   const data = await apiGet(url);
@@ -360,7 +504,7 @@ async function loadContinuityReport(sourceType, version) {
   }
 }
 function renderVersionContent(data) {
-  currentVersion = { source_type: data.source_type, version: data.version };
+  currentVersion = { chapter_id: data.chapter_id, source_type: data.source_type, version: data.version };
   currentText = data.text || "";
   const generation = data.generation || {};
   const quality = data.quality || {};
@@ -537,6 +681,7 @@ async function saveManualVersion() {
       chapter_id: currentManualSource.chapter_id,
       source_type: currentManualSource.source_type,
       source_version: currentManualSource.version,
+      revision_transition_id: currentManualSource.revision_transition_id || pendingRevisionTransition?.transition_id || document.body.dataset.reviewTransitionId || null,
       text,
     });
     if (result.ok && result.result) {
@@ -1992,6 +2137,49 @@ async function pollStoryJob() { if (!storyJobCenter.jobId) return; try { const r
 async function createStoryJob(jobType) { const response = await apiPost("/api/jobs", {job_type: jobType, parameters: {}}); if (response.ok === false) { const existing = response.result?.job_id; if (existing) { logMessage("A matching task is already active; opening it.", "warning"); return openStoryJob(existing); } throw new Error(response.message || "Could not create task"); } const job = response.result?.job; storyJobCenter.jobId = job?.job_id; renderJobCenter(job); setJobButtonsBusy(jobType === "run_chapter"); await refreshJobHistory(); await pollStoryJob(); }
 async function cancelStoryJob(jobId) { const response = await apiPost(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, {}); if (response.ok === false) throw new Error(response.message || "Could not cancel task"); renderJobCenter(response.result?.job); await pollStoryJob(); }
 async function retryStoryJob(jobId) { const response = await apiPost(`/api/jobs/${encodeURIComponent(jobId)}/retry`, {}); if (response.ok === false) throw new Error(response.message || "Could not retry task"); storyJobCenter.jobId = response.result?.job?.job_id; await pollStoryJob(); }
+
+async function loadQualityReport(sourceType, version, request = null) {
+  if (request && !reviewEvidenceRequestOwnsCurrentView(request)) return;
+  let data;
+  try { data = await apiGet(`/api/quality-report?source_type=${encodeURIComponent(sourceType)}&version=${encodeURIComponent(version)}`); }
+  catch (error) { if (request && !reviewEvidenceRequestOwnsCurrentView(request)) return; logMessage(error.message || "Quality report unavailable", "warning"); return; }
+  if (request && !reviewEvidenceRequestOwnsCurrentView(request)) return;
+  if (!data.ok) return logApiResult("璐ㄩ噺鎶ュ憡", data);
+  renderQualityReport(data.result);
+}
+
+async function loadContinuityReport(sourceType, version, request = null) {
+  if (request && !reviewEvidenceRequestOwnsCurrentView(request)) return;
+  const output = document.getElementById("continuity-output");
+  let data;
+  try { data = await apiGet(`/api/continuity-report?source_type=${encodeURIComponent(sourceType)}&version=${encodeURIComponent(version)}`); }
+  catch (error) { if (request && !reviewEvidenceRequestOwnsCurrentView(request)) return; if (output) { output.classList.add("empty-state"); output.textContent = `${versionLabel({ source_type: sourceType, version })} continuity unavailable.`; } return; }
+  if (request && !reviewEvidenceRequestOwnsCurrentView(request)) return;
+  if (!data.ok) { if (output) { output.classList.add("empty-state"); output.textContent = `${versionLabel({ source_type: sourceType, version })} continuity unavailable.`; } return; }
+  const result = data.result || {};
+  if (request && !reviewEvidenceRequestOwnsCurrentView(request)) return;
+  currentContinuityReport = result;
+  renderContinuityScoreCard(result);
+  if (!result.exists) { if (output) { output.classList.add("empty-state"); output.textContent = "No continuity report for the selected version."; } return; }
+  if (output) { output.classList.remove("empty-state"); output.textContent = result.summary || "Continuity report loaded."; }
+}
+
+async function selectVersion(sourceType, version) {
+  const transition = ++selectionTransitionEpoch;
+  let result;
+  await runWithBusy(async () => {
+    result = await apiPost("/api/versions/select", { source_type: sourceType, version });
+    logApiResult("閫夋嫨鐗堟湰", result);
+  });
+  if (!result || result.ok === false || transition !== selectionTransitionEpoch) return;
+  const chapterId = Number(result.result?.chapter_id || selectedVersion?.chapter_id || currentVersion?.chapter_id || 1);
+  const evidenceRequest = clearPreviewForSelection(sourceType, version, chapterId);
+  selectedVersion = { ...(selectedVersion || {}), chapter_id: chapterId, source_type: sourceType, version: Number(version) };
+  document.getElementById("selected-version").textContent = `Selected: ${versionLabel(selectedVersion)}`;
+  await refreshAll();
+  if (transition !== selectionTransitionEpoch) return;
+  await loadVersionContent(sourceType, version, evidenceRequest);
+}
 runChapter = async function runChapterAsJob() { try { await createStoryJob("run_chapter"); } catch (error) { logMessage(error.message || "Could not create chapter task", "error"); } };
 syncObsidian = async function syncObsidianAsJob() { try { await createStoryJob("sync_obsidian"); } catch (error) { logMessage(error.message || "Could not create sync task", "error"); } };
 indexVault = async function indexVaultAsJob() { try { await createStoryJob("index_vault"); } catch (error) { logMessage(error.message || "Could not create indexing task", "error"); } };
@@ -1999,3 +2187,110 @@ const stage4OpenProject = window.openProject;
 if (typeof stage4OpenProject === "function") window.openProject = async function stage4ProjectSwitch(...args) { stopJobPolling(); storyJobCenter.jobId = null; renderJobCenter(null); return stage4OpenProject(...args); };
 document.addEventListener("visibilitychange", () => { if (!document.hidden && storyJobCenter.jobId && !storyJobCenter.timer) pollStoryJob(); });
 window.setTimeout(refreshJobCenter, 0);
+
+async function requestReviewChanges() {
+  if (!currentVersion) return logMessage("请先打开一个精确版本。", "warning");
+  const state = await apiGet(`/api/review/decisions?chapter_id=${encodeURIComponent(currentVersion.chapter_id || 1)}&source_type=${encodeURIComponent(currentVersion.source_type)}&version=${encodeURIComponent(currentVersion.version)}`);
+  const identity = state.result?.identity || {};
+  if (!identity.content_fingerprint) return logApiResult("请求修改", state);
+  const operationId = (globalThis.crypto && crypto.randomUUID) ? crypto.randomUUID() : `request-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const result = await apiPost("/api/review/request-changes", {
+    chapter_id: Number(identity.chapter_id || currentVersion.chapter_id || 1), source_type: identity.source_type || currentVersion.source_type,
+    version: Number(currentVersion.version), content_fingerprint: identity.content_fingerprint, operation_id: operationId, actor: "local-author",
+  });
+  logApiResult("请求修改", result);
+  if (!result.ok) return;
+  pendingRevisionTransition = result.result?.transition || null;
+  document.body.dataset.reviewTransitionId = pendingRevisionTransition?.transition_id || "";
+  currentManualSource = { ...currentVersion, revision_transition_id: pendingRevisionTransition?.transition_id || "" };
+  await loadManualSource(currentVersion.source_type, Number(currentVersion.version));
+  if (pendingRevisionTransition) currentManualSource.revision_transition_id = pendingRevisionTransition.transition_id;
+  const marker = document.getElementById("review-transition");
+  if (marker) marker.textContent = "已冻结当前版本的请求修改；请在编辑器中保存一个新的 manual 版本完成修订。";
+}
+
+/* RC4: exact-version review projection and frozen Commit attribution. */
+let rc4ExactReviewState = null;
+function rc4ExactReviewOwnsCurrentView(sourceType, version) {
+  return rc4ExactReviewState
+    && currentVersion
+    && String(rc4ExactReviewState.sourceType) === String(sourceType)
+    && Number(rc4ExactReviewState.version) === Number(version)
+    && String(currentVersion.source_type) === String(sourceType)
+    && Number(currentVersion.version) === Number(version);
+}
+function rc4RenderExactReviewState(sourceType, version, result) {
+  if (!rc4ExactReviewOwnsCurrentView(sourceType, version)) return;
+  const status = String(result?.status || "MISSING").toUpperCase();
+  const decision = result?.decision || {};
+  const label = versionLabel({ source_type: sourceType, version });
+  const statusTarget = document.getElementById("review-status");
+  const versionTarget = document.getElementById("review-version");
+  const displayStatus = status === "CURRENT" && String(decision.decision_type || "").toUpperCase() === "APPROVED"
+    ? "approved" : status;
+  if (statusTarget) statusTarget.textContent = `当前审核状态：${displayStatus}`;
+  if (versionTarget) versionTarget.textContent = `当前审核版本：${label} · 精确状态：${displayStatus}`;
+}
+const rc4RefreshStatusBase = refreshStatus;
+refreshStatus = async function refreshStatusRc4() {
+  await rc4RefreshStatusBase();
+  if (rc4ExactReviewState) rc4RenderExactReviewState(rc4ExactReviewState.sourceType, rc4ExactReviewState.version, rc4ExactReviewState.result);
+};
+const rc4ClearPreviewBase = clearPreviewForSelection;
+clearPreviewForSelection = function clearPreviewForSelectionRc4(sourceType, version, chapterId = 1) {
+  rc4ExactReviewState = null;
+  return rc4ClearPreviewBase(sourceType, version, chapterId);
+};
+const rc4LoadReviewDecisionStateBase = loadReviewDecisionState;
+loadReviewDecisionState = async function loadReviewDecisionStateRc4(sourceType, version, request = beginReviewEvidenceRequest(sourceType, version)) {
+  const result = await rc4LoadReviewDecisionStateBase(sourceType, version, request);
+  if (result && reviewEvidenceRequestOwnsCurrentView(request)) {
+    rc4ExactReviewState = { sourceType: String(sourceType), version: Number(version), result };
+    rc4RenderExactReviewState(sourceType, version, result);
+  }
+  return result;
+};
+function rc4CommitContext() {
+  const source = currentVersion || selectedVersion;
+  if (!source) return null;
+  return {
+    chapterId: Number(source.chapter_id || currentProjectScope.chapter || 1),
+    sourceType: String(source.source_type || ""),
+    version: Number(source.version || 0),
+    label: versionLabel(source),
+  };
+}
+function rc4LogApprovalResult(result, context) {
+  const provenance = result?.result?.approval_provenance || {};
+  const committed = provenance.identity?.source_version_id
+    || result?.result?.approved_identity?.source_version_id
+    || context?.label;
+  if (result?.ok && (result?.result?.commit_id || result?.result?.canon_revision_id)) {
+    logMessage(`提交完成：${committed}（第 ${context?.chapterId || 1} 章）`, "success");
+  } else if (result?.ok && result?.polish_available) {
+    logMessage(`审核通过：${context?.label || "当前版本"}，等待提交。`, "success");
+  } else if (result?.ok === false && context) {
+    logMessage(`提交操作 ${context.label} 失败：${result.message || (result.errors || []).join(" ") || "操作失败"}`, "error");
+  } else {
+    logApiResult("审核通过", result || {});
+  }
+  (result?.warnings || []).forEach((item) => logMessage(`warning: ${item}`, "warning"));
+  (result?.errors || []).forEach((item) => logMessage(`error: ${item}`, "error"));
+}
+approveReview = async function approveReviewRc4(force = false, polish = null) {
+  const operationContext = rc4CommitContext();
+  let result;
+  await runWithBusy(async () => {
+    result = await apiPost("/api/review/approve", { force, polish });
+    if (result.need_confirm && !force) {
+      const confirmed = window.confirm(result.message || "当前版本质量评分较低，是否仍然继续？");
+      if (confirmed) result = await apiPost("/api/review/approve", { force: true, polish });
+    }
+    rc4LogApprovalResult(result, operationContext);
+  });
+  if (result && result.ok && result.polish_available && polish === null) {
+    const continuePolish = window.confirm("审核已通过。是否继续 AI 润色？\n\n确定：AI 润色后提交章节。\n取消：直接提交当前审核版本。");
+    return approveReview(true, continuePolish);
+  }
+  if (result && !result.need_confirm) await refreshAll();
+};
