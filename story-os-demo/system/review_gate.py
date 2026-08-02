@@ -6,6 +6,12 @@ from pathlib import Path
 from typing import Any
 
 from system.version_manager import get_selected_version, load_versions_index
+from core.project_context import get_project_context
+from system.review_decision_service import (
+    capture_identity,
+    content_fingerprint,
+    create_decision,
+)
 
 
 VALID_REVIEW_STATUSES = {"pending", "approved", "rejected"}
@@ -55,6 +61,7 @@ def create_review_record(target: dict[str, Any], status: str = "pending") -> dic
         "source_version": int(target.get("version", 0) or 0),
         "version_label": str(target.get("version_label", "")),
         "source_path": str(target.get("json_path", "")),
+        "content_fingerprint": content_fingerprint(str(target.get("text", ""))),
         "status": status,
         "decision": "",
         "review_notes": "",
@@ -84,12 +91,40 @@ def update_review_status(
     decision: str = "",
     notes: str = "",
     data_dir: str | Path = "data",
+    authoritative_decision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     _validate_status(status)
     record = load_review_record(chapter_id, data_dir)
-    if not record:
+    target: dict[str, Any] | None = None
+    try:
         target = find_current_review_target(data_dir)
+    except FileNotFoundError:
+        target = None
+    if not record:
+        if target is None:
+            raise FileNotFoundError("无法确定当前审核版本")
         record = create_review_record(target)
+
+    # The legacy chapter review JSON remains a compatibility projection.  When
+    # an authoritative source file is available, every terminal human decision
+    # is additionally persisted in the append-only, exact-version decision log.
+    if status in {"approved", "rejected"} and target is not None:
+        source_path = Path(str(target.get("json_path") or ""))
+        if not source_path.is_absolute():
+            data_root = Path(data_dir).resolve()
+            project_root = data_root.parent if data_root.name == "data" else data_root
+            source_path = project_root / source_path
+        if source_path.exists() and int(target.get("version", 0) or 0) >= 1 and target.get("version_label"):
+            root = Path(data_dir).resolve()
+            project_root = root.parent if root.name == "data" else root
+            identity = capture_identity(get_project_context(project_root), target)
+            decision_record = authoritative_decision or create_decision(
+                get_project_context(project_root), identity,
+                "APPROVED" if status == "approved" else "REJECTED", note=notes,
+            )
+            record["review_decision_id"] = decision_record["decision_id"]
+            record["review_identity"] = decision_record["identity"]
+            record["content_fingerprint"] = identity.content_fingerprint
     record["status"] = status
     record["decision"] = decision
     record["review_notes"] = notes
@@ -139,10 +174,19 @@ def prepare_review_record(data_dir: str | Path = "data") -> dict[str, Any]:
     if not record:
         record = create_review_record(target)
     else:
-        record["source_type"] = target.get("source_type", record.get("source_type", ""))
-        record["source_version"] = int(target.get("version", record.get("source_version", 0)) or 0)
-        record["version_label"] = target.get("version_label", record.get("version_label", ""))
-        record["source_path"] = target.get("json_path", record.get("source_path", ""))
+        current_fingerprint = content_fingerprint(str(target.get("text", "")))
+        same_identity = (
+            record.get("source_type") == target.get("source_type")
+            and record.get("version_label") == target.get("version_label")
+            and record.get("content_fingerprint") == current_fingerprint
+        )
+        if not same_identity:
+            # Never retarget a prior approval/rejection to a newly selected or
+            # edited work version.  Start a fresh compatibility projection;
+            # durable authority is stored by review_decision_service.
+            record = create_review_record(target)
+        else:
+            record["source_path"] = target.get("json_path", record.get("source_path", ""))
     json_path = save_review_record(record, data_dir)
     markdown_path = save_review_markdown(record, target, data_dir)
     return {

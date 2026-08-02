@@ -1,6 +1,6 @@
 # Phase 0D7 Implementation Brief — Version-Bound Chapter Quality Evidence and Human Review Closure
 
-**Status:** PLANNING AUTHORITY ONLY — implementation not started  
+**Status:** **SEALED – PHASE 0D7 COMPLETE** (final authority: `PHASE_0D7_SEAL.md`)
 **Entry gate:** Phase 0D6-D SEALED  
 **Authority source:** `POST_0D6_ROADMAP_AUDIT_REPORT.md` (2026-07-30)
 
@@ -128,7 +128,8 @@ authority, or approve/commit a chapter.
 | 0D7-FV | Terra | Medium | 1 | Focused verification | Repeatable authority regression |
 | 0D7-SEAL | Terra | Medium | 1 | Evidence audit | Material record conflict |
 
-## Next
+## Final phase state
 
-Await explicit Owner authorization for **0D7-A only**. This brief does not
-authorize implementation.
+Phase 0D7 is sealed after 0D7-A, 0D7-B, 0D7-B-RC1, and the successful 0D7-FV
+re-run. This brief remains the historical implementation-scope authority; the
+final status and reconciliation ledger are in `PHASE_0D7_SEAL.md`.

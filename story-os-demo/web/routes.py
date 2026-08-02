@@ -34,7 +34,28 @@ from system.llm_health import build_llm_health_report
 from system.memory_health import run_memory_health_check
 from system.obsidian_sync import load_local_config, save_local_config
 from system.quality_checker import load_quality_report, quality_report_paths, quality_summary_from_report
-from system.review_gate import prepare_review_record, save_review_markdown, update_review_status
+from system.review_gate import find_current_review_target, prepare_review_record, save_review_markdown, update_review_status
+from system.review_decision_service import (
+    ReviewDecisionConflict,
+    ReviewDecisionError,
+    ReviewDecisionInvalid,
+    ReviewDecisionIdentity,
+    capture_identity,
+    capture_identity_for_version,
+    create_decision,
+    list_decisions,
+    read_decision_state,
+)
+from system.review_transition_service import (
+    ReviewTransitionConflict,
+    ReviewTransitionDrift,
+    ReviewTransitionError,
+    ReviewTransitionInvalid,
+    attach_revision,
+    get_transition,
+    request_changes,
+    transition_state_for_version,
+)
 from system.status_dashboard import build_status_dashboard
 from system.story_qa import answer_from_memory, answer_from_state, answer_from_story
 from system.text_diff import build_text_diff
@@ -61,7 +82,7 @@ from agents.workflow import WorkflowEngine
 from agents.executor import AgentExecutor
 from agents.memory_scope import scoped_context
 from system.context_assembly_service import ContextAssemblyService
-from web.schemas import AskRequest, ManualSaveRequest, ProjectCreateRequest, ReviewApproveRequest, TodoCreateRequest, VersionArchiveRequest, VersionSelectRequest
+from web.schemas import AskRequest, ManualSaveRequest, ProjectCreateRequest, ReviewApproveRequest, ReviewChangesRequest, ReviewDecisionRequest, ReviewRevisionAttachRequest, TodoCreateRequest, VersionArchiveRequest, VersionSelectRequest
 from web.view_models import api_error, api_ok
 from web.api_registry import compatibility_headers
 from web.api_support import ApiRequestError, parse_pagination
@@ -776,6 +797,97 @@ def api_review_assembly_evidence(
         })
 
 
+@router.post("/api/review/decisions")
+def api_review_decision(request: ReviewDecisionRequest) -> JSONResponse:
+    """Persist one exact work-version human decision; never uses selection state."""
+    try:
+        context = get_project_context()
+        identity = capture_identity_for_version(context, request.chapter_id, request.source_type, request.version)
+        if identity.content_fingerprint != request.content_fingerprint:
+            raise ReviewDecisionConflict("CONTENT_FINGERPRINT_MISMATCH")
+        record = create_decision(context, identity, request.decision_type, actor=request.actor, note=request.note, consulted_evidence=request.consulted_evidence)
+        return JSONResponse(api_ok("Review decision recorded.", {"decision": record}))
+    except ReviewDecisionInvalid as exc:
+        return JSONResponse(api_error(str(exc), ["REVIEW_DECISION_INVALID"]), status_code=409)
+    except ReviewDecisionConflict as exc:
+        return JSONResponse(api_error(str(exc), ["REVIEW_DECISION_CONFLICT"]), status_code=409)
+    except ReviewDecisionError as exc:
+        return JSONResponse(api_error(str(exc), ["REVIEW_DECISION_ERROR"]), status_code=409)
+
+
+@router.get("/api/review/decisions")
+def api_review_decision_state(
+    chapter_id: int = Query(..., ge=1),
+    source_type: str = Query(..., pattern="^(draft|edited|manual)$"),
+    version: int = Query(..., ge=1),
+    content_fingerprint: str | None = Query(default=None, min_length=64, max_length=64),
+) -> JSONResponse:
+    try:
+        context = get_project_context()
+        identity = capture_identity_for_version(context, chapter_id, source_type, version)
+        if content_fingerprint is not None:
+            identity = type(identity)(**{**identity.__dict__, "content_fingerprint": content_fingerprint})
+        state = read_decision_state(context, identity)
+        lineage = transition_state_for_version(context, identity)
+        return JSONResponse(api_ok("Review decision state.", {"identity": identity.__dict__, **state, "lineage": lineage, "re_review_required": bool(lineage.get("re_review_required"))}))
+    except ReviewDecisionInvalid as exc:
+        return JSONResponse(api_error(str(exc), ["REVIEW_DECISION_INVALID"]), status_code=409)
+    except ReviewTransitionInvalid as exc:
+        return JSONResponse(api_error(str(exc), ["REVIEW_TRANSITION_INVALID"]), status_code=409)
+
+
+@router.post("/api/review/request-changes")
+def api_review_request_changes(request: ReviewChangesRequest) -> JSONResponse:
+    """Persist an exact-X request-changes transition; no decision is created."""
+    try:
+        context = get_project_context()
+        identity = capture_identity_for_version(context, request.chapter_id, request.source_type, request.version)
+        if identity.content_fingerprint != request.content_fingerprint:
+            raise ReviewTransitionDrift("CONTENT_FINGERPRINT_MISMATCH")
+        transition = request_changes(
+            context,
+            identity,
+            operation_id=request.operation_id,
+            actor=request.actor,
+            note=request.note,
+            consulted_evidence=request.consulted_evidence,
+        )
+        return JSONResponse(api_ok("Request changes recorded for the exact work version.", {"transition": transition}))
+    except ReviewTransitionDrift as exc:
+        return JSONResponse(api_error(str(exc), ["REVIEW_TRANSITION_DRIFT"]), status_code=409)
+    except ReviewTransitionConflict as exc:
+        return JSONResponse(api_error(str(exc), ["REVIEW_TRANSITION_CONFLICT"]), status_code=409)
+    except ReviewTransitionInvalid as exc:
+        return JSONResponse(api_error(str(exc), ["REVIEW_TRANSITION_INVALID"]), status_code=409)
+
+
+@router.get("/api/review/transitions/{transition_id}")
+def api_review_transition(transition_id: str) -> JSONResponse:
+    try:
+        transition = get_transition(get_project_context(), transition_id)
+        return JSONResponse(api_ok("Review transition state.", {"transition": transition}))
+    except ReviewTransitionInvalid as exc:
+        return JSONResponse(api_error(str(exc), ["REVIEW_TRANSITION_INVALID"]), status_code=409)
+
+
+@router.post("/api/review/transitions/{transition_id}/attach")
+def api_attach_review_revision(transition_id: str, request: ReviewRevisionAttachRequest) -> JSONResponse:
+    """Attach an already-created exact Y; this never creates or commits it."""
+    try:
+        context = get_project_context()
+        result_identity = capture_identity_for_version(context, request.chapter_id, request.source_type, request.version)
+        if result_identity.content_fingerprint != request.content_fingerprint:
+            raise ReviewTransitionDrift("CONTENT_FINGERPRINT_MISMATCH")
+        transition = attach_revision(context, transition_id, result_identity)
+        return JSONResponse(api_ok("Revision lineage attached.", {"transition": transition}))
+    except ReviewTransitionDrift as exc:
+        return JSONResponse(api_error(str(exc), ["REVIEW_TRANSITION_DRIFT"]), status_code=409)
+    except ReviewTransitionConflict as exc:
+        return JSONResponse(api_error(str(exc), ["REVIEW_TRANSITION_CONFLICT"]), status_code=409)
+    except ReviewTransitionInvalid as exc:
+        return JSONResponse(api_error(str(exc), ["REVIEW_TRANSITION_INVALID"]), status_code=409)
+
+
 def _assembly_evidence_message(status: str) -> str:
     return {
         "CURRENT": "证据与当前查看的精确版本一致，可供人工审核参考。",
@@ -980,6 +1092,27 @@ def api_archive_version(request: VersionArchiveRequest) -> JSONResponse:
 @router.post("/api/manual/save")
 def api_manual_save(request: ManualSaveRequest) -> JSONResponse:
     def action() -> dict[str, Any]:
+        transition = None
+        transition_id = request.revision_transition_id
+        source: dict[str, Any] = {}
+        if transition_id:
+            context = get_project_context()
+            transition = get_transition(context, transition_id)
+            source = transition.get("source_identity") or {}
+            if transition.get("status") == "REVISION_CREATED" and transition.get("result_identity"):
+                return api_ok("Revision already created; replay returned the durable lineage.", {
+                    "revision_transition_id": transition_id,
+                    "lineage": transition,
+                    "replayed": True,
+                })
+            if transition.get("status") != "REQUESTED":
+                raise ReviewTransitionConflict("Transition is not awaiting a revised version")
+            if (
+                int(source.get("chapter_id", 0) or 0) != request.chapter_id
+                or str(source.get("source_type")) != request.source_type
+                or str(source.get("source_version_id")) != f"{request.source_type}_v{request.source_version:03d}"
+            ):
+                raise ReviewTransitionConflict("Revision source does not match the frozen transition")
         try:
             result = create_manual_version(
                 request.chapter_id,
@@ -987,9 +1120,15 @@ def api_manual_save(request: ManualSaveRequest) -> JSONResponse:
                 request.source_version,
                 request.text,
                 "data",
+                expected_source_fingerprint=(source.get("content_fingerprint") if transition else None),
+                revision_transition_id=transition_id,
+                revision_source_identity=(source if transition else None),
             )
         except ValueError as exc:
             return api_error("正文无效，未保存。", [part.strip() for part in str(exc).split(";") if part.strip()])
+        if transition:
+            result_identity = capture_identity_for_version(get_project_context(), request.chapter_id, "manual", result["version"])
+            transition = attach_revision(get_project_context(), transition_id, result_identity)
         payload = {
             "chapter_id": result["chapter_id"],
             "source_type": "manual",
@@ -999,6 +1138,8 @@ def api_manual_save(request: ManualSaveRequest) -> JSONResponse:
             "markdown_path": result["markdown_path"],
             "selected": True,
         }
+        if transition:
+            payload.update({"revision_transition_id": transition_id, "lineage": transition, "re_review_required": True})
         return api_ok("人工修改版已保存。", payload)
 
     return guarded(action)
@@ -1558,9 +1699,93 @@ def risk_level(score: Any) -> str:
     return "high"
 
 
+def _approval_authority_guard(
+    context: Any,
+    target: dict[str, Any],
+    record: dict[str, Any],
+) -> tuple[ReviewDecisionIdentity | None, dict[str, Any] | None, str | None, dict[str, Any]]:
+    """Classify exact approval authority before touching legacy review state."""
+    if not target.get("version_label") or not target.get("json_path"):
+        return None, None, None, {}
+    identity = capture_identity(context, target)
+    state = read_decision_state(context, identity)
+    status = str(state.get("status") or "MISSING").upper()
+    codes = {
+        "INVALID": "APPROVAL_INVALID",
+        "CONFLICTING": "APPROVAL_CONFLICTING",
+    }
+    if status in codes:
+        return identity, None, str(state.get("error_code") or codes[status]), {}
+
+    # A related decision for the same exact version label but a different
+    # fingerprint means the file was mutated in place. That is an integrity
+    # anomaly, not the legitimate cross-version STALE lifecycle.
+    for item in state.get("history", []):
+        item_identity = item.get("identity") if isinstance(item, dict) else None
+        if not isinstance(item_identity, dict):
+            continue
+        same_version = all(
+            item_identity.get(field) == getattr(identity, field)
+            for field in ("project_id", "timeline_id", "branch_id", "chapter_id", "source_type", "source_version_id")
+        )
+        approved_fingerprint = str(item_identity.get("content_fingerprint") or "")
+        if same_version and approved_fingerprint and approved_fingerprint != identity.content_fingerprint:
+            return identity, None, "APPROVAL_FINGERPRINT_MISMATCH", {
+                "source_version_id": identity.source_version_id,
+                "decision_id": str(item.get("decision_id") or ""),
+                "approved_fingerprint": approved_fingerprint,
+                "current_fingerprint": identity.content_fingerprint,
+            }
+
+    decision = state.get("decision") if isinstance(state.get("decision"), dict) else None
+    expected_id = str(record.get("review_decision_id") or "")
+    if expected_id:
+        expected_record = next(
+            (item for item in list_decisions(context) if str(item.get("decision_id") or "") == expected_id),
+            None,
+        )
+        if expected_record is None:
+            return identity, None, "APPROVAL_DECISION_ID_MISMATCH", {}
+        if expected_record.get("identity") != identity.__dict__:
+            return identity, None, "APPROVAL_PROVENANCE_MISMATCH", {}
+    if decision and expected_id and str(decision.get("decision_id") or "") != expected_id:
+        return identity, None, "APPROVAL_DECISION_ID_MISMATCH", {}
+
+    stored_identity = record.get("review_identity")
+    if isinstance(stored_identity, dict):
+        try:
+            if ReviewDecisionIdentity(**stored_identity) != identity:
+                return identity, None, "APPROVAL_PROVENANCE_MISMATCH", {}
+        except (TypeError, ValueError):
+            return identity, None, "APPROVAL_PROVENANCE_MISMATCH", {}
+
+    if decision and decision.get("identity") != identity.__dict__:
+        return identity, None, "APPROVAL_PROVENANCE_MISMATCH", {}
+
+    # MISSING/STALE and an exact REJECTED decision remain legitimate lifecycle
+    # states for an explicit later human approval. An exact APPROVED decision
+    # is reused so re-approval cannot mint a replacement authority.
+    if decision and str(decision.get("decision_type") or "").upper() == "APPROVED":
+        return identity, decision, None, {}
+    return identity, None, None, {}
+
+
 def approve_review(force: bool = False, polish: bool | None = None) -> dict[str, Any]:
     prepared = prepare_review_record("data")
     target = prepared["target"]
+    record = prepared["record"]
+    context = get_project_context()
+    try:
+        identity, existing_decision, integrity_error, integrity_details = _approval_authority_guard(context, target, record)
+    except (ReviewDecisionError, KeyError, TypeError, ValueError) as exc:
+        return api_response(False, f"APPROVAL_INVALID: 无法读取精确审批状态：{exc}", {"review": record}, errors=["APPROVAL_INVALID"])
+    if integrity_error:
+        return api_response(
+            False,
+            f"{integrity_error}: exact approval authority requires explicit repair.",
+            {"review": record, "approved_identity": identity.__dict__, "integrity": integrity_details},
+            errors=[integrity_error],
+        )
     quality_summary_data = commands.quality_summary_for_target(target)
     score = float(quality_summary_data.get("overall_score", 1.0) or 1.0) if quality_summary_data else 1.0
     if score < 0.65 and not force:
@@ -1571,28 +1796,83 @@ def approve_review(force: bool = False, polish: bool | None = None) -> dict[str,
             extra={"need_confirm": True},
         )
 
-    record = update_review_status(int(target["chapter_id"]), "approved", decision="approve")
+    if existing_decision is None:
+        record = update_review_status(int(target["chapter_id"]), "approved", decision="approve")
+    else:
+        record = update_review_status(
+            int(target["chapter_id"]), "approved", decision="approve",
+            authoritative_decision=existing_decision,
+        )
     save_review_markdown(record, target, "data")
 
+    # The legacy review JSON is only a compatibility projection.  If a test or
+    # older caller returns a projection without the immutable identity, recover
+    # the exact approval target from authoritative storage and create the
+    # append-only decision now; never let the mutable projection authorize the
+    # Commit by itself.
+    identity_payload = record.get("review_identity") if isinstance(record, dict) else None
+    try:
+        if isinstance(identity_payload, dict):
+            identity = ReviewDecisionIdentity(**identity_payload)
+        else:
+            exact_target = target
+            if not exact_target.get("version_label") or not exact_target.get("json_path"):
+                # This is only recovery during an explicit approval action;
+                # Commit itself never uses this fallback.  Prefer the exact
+                # selected entry from the version index so compatibility tests
+                # without a next-chapter plan can still create an immutable
+                # decision.
+                version_index = list_versions(int(target.get("chapter_id", 0) or 0), "data")
+                selected = version_index.get("selected") if isinstance(version_index.get("selected"), dict) else {}
+                exact_target = dict(selected) if selected else find_current_review_target("data")
+                if exact_target and not exact_target.get("json_path"):
+                    collection = "drafts" if exact_target.get("source_type") == "draft" else str(exact_target.get("source_type") or "")
+                    matches = version_index.get(collection, []) if isinstance(version_index.get(collection, []), list) else []
+                    exact_target = next(
+                        (dict(item) for item in matches if int(item.get("version", 0) or 0) == int(exact_target.get("version", 0) or 0)),
+                        exact_target,
+                    )
+                exact_target["chapter_id"] = int(target.get("chapter_id", 0) or exact_target.get("chapter_id", 0) or 0)
+            identity = capture_identity(context, exact_target)
+            decision_record = create_decision(context, identity, "APPROVED", note="approve")
+            record["review_decision_id"] = decision_record["decision_id"]
+            record["review_identity"] = decision_record["identity"]
+    except (ReviewDecisionError, KeyError, TypeError, ValueError) as exc:
+        return api_response(False, f"APPROVAL_INVALID: 无法恢复精确审批身份：{exc}", {"review": record})
+
     if polish is None:
-        return api_response(True, "", {"review": record}, extra={"polish_available": True})
+        return api_response(
+            True,
+            "",
+            {
+                "review": record,
+                "approved_identity": record.get("review_identity"),
+                "approval_decision_id": record.get("review_decision_id"),
+            },
+            extra={"polish_available": True},
+        )
 
     if polish:
         edit_result = commands.edit_draft_command()
         if edit_result.get("status") != "success":
             return api_response(False, "AI polish failed.", {"review": record})
 
-    from core.project_context import get_project_context
     from system.chapter_commit_service import ChapterCommitService, PostCommitPolicy
-    context = get_project_context()
     commit_service = ChapterCommitService(context)
     commit_result = commit_service.commit_chapter(
         int(target["chapter_id"]),
+        source_version_id=identity.source_version_id,
         post_commit_policy=PostCommitPolicy.FULL,
+        approved_identity=identity,
+        approval_decision_id=str(record.get("review_decision_id") or "") or None,
     )
 
     if commit_result.status == "failed":
-        return api_response(False, "\n".join(commit_result.warnings), {"review": record})
+        return api_response(
+            False,
+            "\n".join(commit_result.warnings),
+            {"review": record, "approved_identity": record.get("review_identity")},
+        )
 
     if commit_result.status == "already_committed":
         return api_response(
@@ -1603,6 +1883,7 @@ def approve_review(force: bool = False, polish: bool | None = None) -> dict[str,
                 "chapter_id": commit_result.chapter_id,
                 "canon_revision_id": commit_result.canon_revision_id,
                 "post_commit": commit_result.post_commit,
+                "approval_provenance": commit_result.approval_provenance,
             },
             warnings=commit_result.warnings,
         )
@@ -1620,6 +1901,7 @@ def approve_review(force: bool = False, polish: bool | None = None) -> dict[str,
             "canon_revision_id": commit_result.canon_revision_id,
             "source_type": commit_result.source_type.value,
             "post_commit": commit_result.post_commit,
+            "approval_provenance": commit_result.approval_provenance,
             "archived_versions": archived,
         },
         warnings=commit_result.warnings,

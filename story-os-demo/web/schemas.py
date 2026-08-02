@@ -29,11 +29,41 @@ class ManualSaveRequest(BaseModel):
     source_type: Literal["draft", "edited", "manual", "committed"]
     source_version: int
     text: str
+    revision_transition_id: str | None = None
 
 
 class ReviewApproveRequest(BaseModel):
     force: bool = False
     polish: bool | None = None
+
+
+class ReviewDecisionRequest(BaseModel):
+    chapter_id: int = Field(ge=1)
+    source_type: Literal["draft", "edited", "manual"]
+    version: int = Field(ge=1)
+    content_fingerprint: str = Field(min_length=64, max_length=64)
+    decision_type: Literal["APPROVED", "REJECTED"]
+    actor: str = "user"
+    note: str = ""
+    consulted_evidence: dict[str, Any] | None = None
+
+
+class ReviewChangesRequest(BaseModel):
+    chapter_id: int = Field(ge=1)
+    source_type: Literal["draft", "edited", "manual"]
+    version: int = Field(ge=1)
+    content_fingerprint: str = Field(min_length=64, max_length=64)
+    operation_id: str = Field(min_length=1, max_length=160)
+    actor: str = "user"
+    note: str = ""
+    consulted_evidence: dict[str, Any] | None = None
+
+
+class ReviewRevisionAttachRequest(BaseModel):
+    chapter_id: int = Field(ge=1)
+    source_type: Literal["draft", "edited", "manual"]
+    version: int = Field(ge=1)
+    content_fingerprint: str = Field(min_length=64, max_length=64)
 
 
 class TodoCreateRequest(BaseModel):

@@ -419,6 +419,10 @@ class RevisionService:
             new_record["active"] = True
             new_record["activated_at"] = _now()
             new_record["source_hash"] = metadata.get("source_hash", "")
+            if isinstance(metadata.get("approval_provenance"), dict):
+                # Immutable provenance is copied onto this append-only Canon
+                # record; it is never used as a mutable approval pointer.
+                new_record["approval_provenance"] = dict(metadata["approval_provenance"])
 
             original = self.store.read_markdown(_chapter_path(chapter), default="")
 
