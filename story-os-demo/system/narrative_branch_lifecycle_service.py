@@ -359,6 +359,10 @@ class BranchLifecycleService:
         owner_fingerprint: str,
         owner_nonce: str,
     ) -> bool:
+        identity = claim.get("process_start_identity") if claim else None
+        identity_valid = identity is None or (
+            type(identity) is str and bool(identity)
+        )
         return bool(
             claim
             and claim.get("schema_version") == "1.0"
@@ -367,10 +371,9 @@ class BranchLifecycleService:
             and claim.get("owner_nonce") == owner_nonce
             and isinstance(claim.get("claim_nonce"), str)
             and claim.get("claim_nonce")
-            and isinstance(claim.get("pid"), int)
+            and type(claim.get("pid")) is int
             and claim.get("pid") > 0
-            and isinstance(claim.get("process_start_identity"), str)
-            and claim.get("process_start_identity")
+            and identity_valid
         )
 
     def _retire_lock_directory(self, path: Path, expected_owner: dict[str, Any]) -> bool:
@@ -397,18 +400,8 @@ class BranchLifecycleService:
                     owner_nonce=owner_nonce,
                 ):
                     return False
-                if self._lock_owner_alive(
-                    {
-                        "pid": existing["pid"],
-                        "process_start_identity": existing["process_start_identity"],
-                    }
-                ):
-                    return False
-
             claim_nonce = secrets.token_hex(16)
             claimant_start_identity = self._process_start_identity(os.getpid())
-            if not claimant_start_identity:
-                return False
             claim = {
                 "schema_version": "1.0",
                 "lock_identity": lock_identity,
@@ -439,6 +432,7 @@ class BranchLifecycleService:
                 try:
                     current_claim = self._read_lock_owner(claim_path)
                     if current_claim == claim:
+                        self._fault("registry_reclaim_claim_unlink")
                         claim_path.unlink(missing_ok=True)
                 except OSError:
                     pass
