@@ -552,6 +552,113 @@ def test_claimant_identity_is_optional_but_schema_remains_strict(tmp_path: Path)
     )
 
 
+@pytest.mark.parametrize("identity", [None, "valid-identity"])
+def test_live_pid_claim_without_guard_is_replaced(tmp_path: Path, identity):
+    service = _service(tmp_path)
+    owner = _released_owner(service)
+    lock = _write_lock(service, owner)
+    claim = _claim(service, lock, owner, pid=os.getpid(), process_start_identity=identity)
+    (lock / "reclaim.claim").write_text(json.dumps(claim), encoding="utf-8")
+    with service._registry_lock("main", timeout=1):
+        pass
+    assert not lock.exists()
+
+
+@pytest.mark.parametrize("identity", ["", 123, True, [], {}])
+def test_invalid_optional_claim_identity_fails_closed(tmp_path: Path, identity):
+    service = _service(tmp_path)
+    owner = _released_owner(service)
+    lock = _write_lock(service, owner)
+    claim = _claim(service, lock, owner, process_start_identity=identity)
+    (lock / "reclaim.claim").write_text(json.dumps(claim), encoding="utf-8")
+    with pytest.raises(NarrativeTurnError):
+        with service._registry_lock("main", timeout=0.08):
+            pass
+    assert lock.exists()
+
+
+def test_boolean_claim_pid_is_rejected(tmp_path: Path):
+    service = _service(tmp_path)
+    owner = _released_owner(service)
+    lock = _write_lock(service, owner)
+    claim = _claim(service, lock, owner, pid=True)
+    (lock / "reclaim.claim").write_text(json.dumps(claim), encoding="utf-8")
+    with pytest.raises(NarrativeTurnError):
+        with service._registry_lock("main", timeout=0.08):
+            pass
+    assert lock.exists()
+
+
+def test_handoff_and_claim_cleanup_failure_is_recoverable(tmp_path: Path):
+    points = {"registry_lock_handoff", "registry_reclaim_claim_unlink"}
+
+    def fail_once(point: str) -> None:
+        if point in points:
+            points.remove(point)
+            raise OSError(point)
+
+    service = _service(tmp_path, fail_once)
+    owner = _released_owner(service)
+    lock = _write_lock(service, owner)
+    assert service._retire_lock_directory(lock, owner) is False
+    assert (lock / "reclaim.claim").exists()
+    with _service(tmp_path)._registry_lock("main", timeout=1):
+        pass
+    assert not lock.exists()
+
+
+def test_cross_process_double_reclaimer_uses_kernel_guard_authority(tmp_path: Path):
+    service = _service(tmp_path)
+    lock = _write_lock(service, _released_owner(service, "shared-released-owner"))
+    barrier = tmp_path / "start"
+    journal = tmp_path / "reclaim.log"
+    child = """
+import os, sys, time
+from pathlib import Path
+from core.project_context import get_project_context
+from system.narrative_branch_lifecycle_service import BranchLifecycleService
+root=Path(sys.argv[1]); barrier=Path(sys.argv[2]); journal=Path(sys.argv[3])
+BranchLifecycleService._process_start_identity=staticmethod(lambda pid: None)
+class ObservedService(BranchLifecycleService):
+    def _retire_lock_directory(self, path, expected_owner):
+        result=super()._retire_lock_directory(path, expected_owner)
+        if result and expected_owner.get('nonce') == 'shared-released-owner':
+            with open(journal, 'a', encoding='utf-8') as h: h.write('handoff '+str(os.getpid())+'\\n')
+        return result
+s=ObservedService(get_project_context(root))
+while not barrier.exists(): time.sleep(.002)
+with s._registry_lock('main', timeout=3):
+    with open(journal, 'a', encoding='utf-8') as h: h.write('enter '+str(os.getpid())+'\\n')
+    time.sleep(.03)
+    with open(journal, 'a', encoding='utf-8') as h: h.write('exit '+str(os.getpid())+'\\n')
+"""
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", child, str(tmp_path), str(barrier), str(journal)],
+            env=_child_env(),
+        )
+        for _ in range(2)
+    ]
+    barrier.write_text("start", encoding="utf-8")
+    assert [process.wait(timeout=10) for process in processes] == [0, 0]
+    active: set[str] = set()
+    maximum = 0
+    handoffs = 0
+    for line in journal.read_text(encoding="utf-8").splitlines():
+        action, pid = line.split()
+        if action == "handoff":
+            handoffs += 1
+        elif action == "enter":
+            active.add(pid)
+            maximum = max(maximum, len(active))
+        else:
+            active.remove(pid)
+    assert handoffs == 1
+    assert maximum == 1
+    assert not active
+    assert not lock.exists()
+
+
 def test_windows_identity_available_path_keeps_start_identity_when_available(tmp_path: Path):
     service = _service(tmp_path)
     identity = service._process_start_identity(os.getpid())
