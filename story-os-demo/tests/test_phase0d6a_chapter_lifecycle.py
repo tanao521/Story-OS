@@ -18,9 +18,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
+import traceback
 from pathlib import Path
 
 import pytest
@@ -478,35 +480,87 @@ class TestRecovery:
 # ── Concurrency: first-writer-wins ───────────────────────────
 
 
+def _run_two_thread_chapter_create(context, create_operation, *, fail_on_worker_error=True):
+    barrier = threading.Barrier(2)
+    results: list[dict[str, object]] = []
+    failures: list[dict[str, object]] = []
+    alive_threads: list[dict[str, object]] = []
+    results_lock = threading.Lock()
+    operation_ids = ("op-thread-a", "op-thread-b")
+
+    def create(operation_id: str) -> None:
+        thread_name = threading.current_thread().name
+        try:
+            barrier.wait(timeout=5)
+            result = create_operation(operation_id)
+            with results_lock:
+                results.append(result)
+        except BaseException as exc:
+            formatted = "".join(
+                traceback.TracebackException.from_exception(
+                    exc,
+                    capture_locals=False,
+                ).format()
+            )
+            record = {
+                "operation_id": operation_id,
+                "thread_name": thread_name,
+                "exception_type": type(exc).__name__,
+                "exception_repr": repr(exc),
+                "errno": getattr(exc, "errno", None),
+                "winerror": getattr(exc, "winerror", None),
+                "filename": getattr(exc, "filename", None),
+                "filename2": getattr(exc, "filename2", None),
+                "traceback": formatted,
+            }
+            with results_lock:
+                failures.append(record)
+
+    threads = [
+        threading.Thread(
+            target=create,
+            args=(operation_id,),
+            name=f"chapter-create-{operation_id}",
+        )
+        for operation_id in operation_ids
+    ]
+    for thread in threads:
+        thread.start()
+
+    for thread, operation_id in zip(threads, operation_ids):
+        thread.join(timeout=10)
+        if thread.is_alive():
+            frame = sys._current_frames().get(thread.ident)
+            stack = "".join(traceback.format_stack(frame)) if frame else None
+            alive_threads.append(
+                {
+                    "operation_id": operation_id,
+                    "thread_name": thread.name,
+                    "thread_ident": thread.ident,
+                    "stack": stack,
+                }
+            )
+
+    if alive_threads:
+        pytest.fail(f"Chapter worker thread(s) did not finish: {alive_threads!r}")
+    if failures and fail_on_worker_error:
+        evidence = "\n\n".join(repr(record) for record in failures)
+        pytest.fail(f"Chapter worker failure evidence:\n{evidence}")
+    return results, failures, alive_threads
+
+
 class TestConcurrency:
     def test_two_threads_create_first_writer_wins(self, isolated_project):
         root, _before = isolated_project
         context = get_project_context(root)
-        barrier = threading.Barrier(2)
-        results: list[dict[str, object]] = []
-        failures: list[BaseException] = []
-
-        def create(operation_id: str) -> None:
-            try:
-                barrier.wait(timeout=5)
-                results.append(
-                    ChapterLifecycleService(context).create_next_chapter(
-                        operation_id=operation_id
-                    )
-                )
-            except BaseException as exc:  # surface worker failures in the test thread
-                failures.append(exc)
-
-        threads = [
-            threading.Thread(target=create, args=("op-thread-a",)),
-            threading.Thread(target=create, args=("op-thread-b",)),
-        ]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(timeout=10)
-
+        results, failures, alive_threads = _run_two_thread_chapter_create(
+            context,
+            lambda operation_id: ChapterLifecycleService(context).create_next_chapter(
+                operation_id=operation_id
+            ),
+        )
         assert not failures
+        assert not alive_threads
         assert len(results) == 2
         assert sum(item["status"] == "CHAPTER_CREATED" for item in results) == 1
         assert sum(item["status"] == "NEXT_CHAPTER_ALREADY_EXISTS" for item in results) == 1
@@ -530,6 +584,39 @@ class TestConcurrency:
 
 
 # ── Previous chapter immutability ────────────────────────────
+
+
+def test_worker_failure_preserves_traceback_and_oserror_metadata():
+    synthetic = PermissionError(
+        13,
+        "synthetic permission denied",
+        "synthetic-source-path",
+        "synthetic-target-path",
+    )
+
+    def fail(operation_id: str):
+        raise synthetic
+
+    results, failures, alive_threads = _run_two_thread_chapter_create(
+        None,
+        fail,
+        fail_on_worker_error=False,
+    )
+
+    assert results == []
+    assert alive_threads == []
+    assert len(failures) == 2
+    for record in failures:
+        assert record["exception_type"] == "PermissionError"
+        assert record["errno"] == 13
+        assert record["filename"] == "synthetic-source-path"
+        if record["filename2"] is not None:
+            assert record["filename2"] == "synthetic-target-path"
+        assert record["operation_id"] in {"op-thread-a", "op-thread-b"}
+        assert record["thread_name"].startswith("chapter-create-")
+        assert "PermissionError" in record["traceback"]
+        assert "synthetic-source-path" in record["traceback"]
+        assert "create" in record["traceback"]
 
 
 class TestPreviousChapterImmutability:
