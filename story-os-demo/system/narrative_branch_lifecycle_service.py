@@ -369,8 +369,6 @@ class BranchLifecycleService:
             and claim.get("claim_nonce")
             and isinstance(claim.get("pid"), int)
             and claim.get("pid") > 0
-            and isinstance(claim.get("process_start_identity"), str)
-            and claim.get("process_start_identity")
         )
 
     def _retire_lock_directory(self, path: Path, expected_owner: dict[str, Any]) -> bool:
@@ -400,15 +398,13 @@ class BranchLifecycleService:
                 if self._lock_owner_alive(
                     {
                         "pid": existing["pid"],
-                        "process_start_identity": existing["process_start_identity"],
+                        "process_start_identity": existing.get("process_start_identity"),
                     }
                 ):
                     return False
 
             claim_nonce = secrets.token_hex(16)
             claimant_start_identity = self._process_start_identity(os.getpid())
-            if not claimant_start_identity:
-                return False
             claim = {
                 "schema_version": "1.0",
                 "lock_identity": lock_identity,

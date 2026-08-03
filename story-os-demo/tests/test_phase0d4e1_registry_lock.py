@@ -444,3 +444,116 @@ def test_old_claimer_cannot_retire_successor_authority(tmp_path: Path):
     _write_lock(service, successor)
     assert service._retire_lock_directory(lock, old_owner) is False
     assert json.loads((lock / "owner.json").read_text(encoding="utf-8")) == successor
+
+
+def test_identity_unavailable_normal_release_and_repeated_acquire(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(BranchLifecycleService, "_process_start_identity", staticmethod(lambda pid: None))
+    service = _service(tmp_path)
+    lock = service._lock_path("main")
+    for _ in range(2):
+        with service._registry_lock("main", timeout=1):
+            pass
+        assert not lock.exists()
+
+
+def test_released_owner_reclaims_without_claimant_identity(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(BranchLifecycleService, "_process_start_identity", staticmethod(lambda pid: None))
+    service = _service(tmp_path)
+    lock = _write_lock(service, _released_owner(service))
+    with service._registry_lock("main", timeout=1):
+        pass
+    assert not lock.exists()
+
+
+def test_dead_owner_reclaims_without_process_identity(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(BranchLifecycleService, "_process_start_identity", staticmethod(lambda pid: None))
+    service = _service(tmp_path)
+    lock = _write_lock(service, _owner(service, pid=2_147_483_647, process_start_identity=None))
+    with service._registry_lock("main", timeout=1):
+        pass
+    assert not lock.exists()
+
+
+def test_live_held_owner_fails_closed_without_process_identity(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(BranchLifecycleService, "_process_start_identity", staticmethod(lambda pid: None))
+    service = _service(tmp_path)
+    lock = _write_lock(service, _owner(service, process_start_identity=None))
+    with pytest.raises(NarrativeTurnError):
+        with service._registry_lock("main", timeout=0.08):
+            pass
+    assert lock.exists()
+
+
+def test_orphan_claim_recovery_without_claimant_identity(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(BranchLifecycleService, "_process_start_identity", staticmethod(lambda pid: None))
+    service = _service(tmp_path)
+    owner = _released_owner(service)
+    lock = _write_lock(service, owner)
+    claim = _claim(service, lock, owner)
+    claim.pop("process_start_identity")
+    (lock / "reclaim.claim").write_text(json.dumps(claim), encoding="utf-8")
+    with service._registry_lock("main", timeout=1):
+        pass
+    assert not lock.exists()
+
+
+def test_consecutive_orphan_claimers_recover_without_identity(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(BranchLifecycleService, "_process_start_identity", staticmethod(lambda pid: None))
+    service = _service(tmp_path)
+    owner = _released_owner(service)
+    lock = _write_lock(service, owner)
+    for index in range(2):
+        claim = _claim(service, lock, owner, claim_nonce=f"orphan-{index}")
+        claim.pop("process_start_identity")
+        (lock / "reclaim.claim").write_text(json.dumps(claim), encoding="utf-8")
+        with service._registry_lock("main", timeout=1):
+            pass
+        if index == 0:
+            owner = _released_owner(service, f"released-{index}")
+            lock = _write_lock(service, owner)
+    assert not lock.exists()
+
+
+def test_identity_unavailable_double_reclaimers_have_one_handoff(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(BranchLifecycleService, "_process_start_identity", staticmethod(lambda pid: None))
+    service = _service(tmp_path)
+    with service._registry_lock("main", timeout=1):
+        pass
+    calls: list[int] = []
+
+    def acquire(index: int):
+        with _service(tmp_path)._registry_lock("main", timeout=1):
+            calls.append(index)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(acquire, range(2)))
+    assert sorted(calls) == [0, 1]
+    assert not service._lock_path("main").exists()
+
+
+def test_claimant_identity_is_optional_but_schema_remains_strict(tmp_path: Path):
+    service = _service(tmp_path)
+    owner = _released_owner(service)
+    lock = service._lock_path("main")
+    claim = _claim(service, lock, owner)
+    claim.pop("process_start_identity")
+    assert service._valid_reclaim_claim(
+        claim,
+        lock_identity=service._lock_identity(lock),
+        owner_fingerprint=__import__("system.narrative_branch_lifecycle_service", fromlist=["_fingerprint"])._fingerprint(owner),
+        owner_nonce=owner["nonce"],
+    )
+    claim.pop("claim_nonce")
+    assert not service._valid_reclaim_claim(
+        claim,
+        lock_identity=service._lock_identity(lock),
+        owner_fingerprint=__import__("system.narrative_branch_lifecycle_service", fromlist=["_fingerprint"])._fingerprint(owner),
+        owner_nonce=owner["nonce"],
+    )
+
+
+def test_windows_identity_available_path_keeps_start_identity_when_available(tmp_path: Path):
+    service = _service(tmp_path)
+    identity = service._process_start_identity(os.getpid())
+    if os.name == "nt":
+        assert identity is not None
