@@ -38,6 +38,54 @@ def _write_lock(service: BranchLifecycleService, owner) -> Path:
     return lock
 
 
+def _child_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
+def _released_owner(service: BranchLifecycleService, nonce: str = "released-owner") -> dict:
+    return _owner(service, nonce=nonce, state="released")
+
+
+def _claim(service: BranchLifecycleService, lock: Path, owner: dict, **values) -> dict:
+    return {
+        "schema_version": "1.0",
+        "lock_identity": values.get("lock_identity", service._lock_identity(lock)),
+        "owner_fingerprint": values.get(
+            "owner_fingerprint",
+            __import__("system.narrative_branch_lifecycle_service", fromlist=["_fingerprint"])._fingerprint(owner),
+        ),
+        "owner_nonce": values.get("owner_nonce", owner["nonce"]),
+        "claim_nonce": values.get("claim_nonce", "orphan-claim"),
+        "pid": values.get("pid", 2_147_483_647),
+        "process_start_identity": values.get("process_start_identity", "dead-claimer"),
+    }
+
+
+def _spawn_crashing_reclaimer(tmp_path: Path, exit_point: str) -> subprocess.Popen:
+    child = """
+import json, os, sys
+from core.project_context import get_project_context
+from system.narrative_branch_lifecycle_service import BranchLifecycleService
+ctx=get_project_context(sys.argv[1])
+point=sys.argv[2]
+def crash(actual):
+    if actual == point:
+        os._exit(73)
+s=BranchLifecycleService(ctx, fault_injector=crash)
+lock=s._lock_path('main')
+owner=json.loads((lock/'owner.json').read_text(encoding='utf-8'))
+s._retire_lock_directory(lock, owner)
+"""
+    return subprocess.Popen(
+        [sys.executable, "-c", child, str(tmp_path), exit_point],
+        env=_child_env(),
+    )
+
+
 def test_normal_release_removes_authoritative_directory(tmp_path: Path):
     service = _service(tmp_path)
     lock = service._lock_path("main")
@@ -230,3 +278,169 @@ def test_thread_contention_never_has_two_critical_section_owners(tmp_path: Path)
             list(pool.map(mutate, range(8)))
         assert sorted(mutations) == list(range(8))
     assert maximum == 1
+
+
+def test_orphan_claim_after_claimer_process_death_is_recovered(tmp_path: Path):
+    service = _service(tmp_path)
+    lock = _write_lock(service, _released_owner(service))
+    proc = _spawn_crashing_reclaimer(tmp_path, "after_registry_reclaim_claim_publish")
+    assert proc.wait(timeout=10) == 73
+    assert (lock / "reclaim.claim").exists()
+
+    with _service(tmp_path)._registry_lock("main", timeout=1):
+        pass
+    assert not lock.exists()
+
+
+def test_live_claim_claimer_is_not_replaced(tmp_path: Path):
+    service = _service(tmp_path)
+    lock = _write_lock(service, _released_owner(service))
+    child = """
+import json, sys, time
+from pathlib import Path
+from core.project_context import get_project_context
+from system.narrative_branch_lifecycle_service import BranchLifecycleService
+ctx=get_project_context(sys.argv[1]); signal=Path(sys.argv[2])
+def pause(point):
+    if point == 'after_registry_reclaim_claim_publish':
+        signal.write_text('ready', encoding='utf-8'); time.sleep(30)
+s=BranchLifecycleService(ctx, fault_injector=pause); lock=s._lock_path('main')
+s._retire_lock_directory(lock, json.loads((lock/'owner.json').read_text(encoding='utf-8')))
+"""
+    signal = tmp_path / "claimer-ready"
+    proc = subprocess.Popen([sys.executable, "-c", child, str(tmp_path), str(signal)], env=_child_env())
+    try:
+        for _ in range(200):
+            if signal.exists():
+                break
+            time.sleep(0.01)
+        assert signal.exists()
+        original = json.loads((lock / "reclaim.claim").read_text(encoding="utf-8"))
+        with pytest.raises(NarrativeTurnError):
+            with _service(tmp_path)._registry_lock("main", timeout=0.08):
+                pass
+        assert json.loads((lock / "reclaim.claim").read_text(encoding="utf-8")) == original
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
+def test_reused_claimant_pid_identity_is_replaced(tmp_path: Path):
+    service = _service(tmp_path)
+    owner = _released_owner(service)
+    lock = _write_lock(service, owner)
+    claim = _claim(
+        service,
+        lock,
+        owner,
+        pid=os.getpid(),
+        process_start_identity="different-process",
+    )
+    (lock / "reclaim.claim").write_text(json.dumps(claim), encoding="utf-8")
+    with service._registry_lock("main", timeout=1):
+        pass
+    assert not lock.exists()
+
+
+@pytest.mark.parametrize("mismatch", ["owner_nonce", "owner_fingerprint"])
+def test_claim_authority_mismatch_fails_closed(tmp_path: Path, mismatch: str):
+    service = _service(tmp_path)
+    owner = _released_owner(service)
+    lock = _write_lock(service, owner)
+    values = {mismatch: "different-authority"}
+    claim = _claim(service, lock, owner, **values)
+    (lock / "reclaim.claim").write_text(json.dumps(claim), encoding="utf-8")
+    with pytest.raises(NarrativeTurnError):
+        with service._registry_lock("main", timeout=0.08):
+            pass
+    assert json.loads((lock / "owner.json").read_text(encoding="utf-8")) == owner
+    assert json.loads((lock / "reclaim.claim").read_text(encoding="utf-8")) == claim
+
+
+def test_two_reclaimers_of_orphan_claim_never_overlap(tmp_path: Path):
+    service = _service(tmp_path)
+    lock = _write_lock(service, _released_owner(service))
+    crashing = _spawn_crashing_reclaimer(tmp_path, "after_registry_reclaim_claim_publish")
+    assert crashing.wait(timeout=10) == 73
+    journal = tmp_path / "critical.log"
+    child = """
+import os, sys, time
+from core.project_context import get_project_context
+from system.narrative_branch_lifecycle_service import BranchLifecycleService
+s=BranchLifecycleService(get_project_context(sys.argv[1]))
+with s._registry_lock('main', timeout=3):
+    with open(sys.argv[2], 'a', encoding='utf-8') as h: h.write('enter '+str(os.getpid())+'\\n')
+    time.sleep(.05)
+    with open(sys.argv[2], 'a', encoding='utf-8') as h: h.write('exit '+str(os.getpid())+'\\n')
+"""
+    processes = [
+        subprocess.Popen([sys.executable, "-c", child, str(tmp_path), str(journal)], env=_child_env())
+        for _ in range(2)
+    ]
+    assert [proc.wait(timeout=10) for proc in processes] == [0, 0]
+    active: set[str] = set()
+    maximum = 0
+    for line in journal.read_text(encoding="utf-8").splitlines():
+        action, pid = line.split()
+        if action == "enter":
+            active.add(pid)
+            maximum = max(maximum, len(active))
+        else:
+            active.remove(pid)
+    assert maximum == 1
+    assert not lock.exists()
+
+
+def test_consecutive_orphan_claimers_eventually_recover(tmp_path: Path):
+    service = _service(tmp_path)
+    lock = _write_lock(service, _released_owner(service))
+    for _ in range(2):
+        proc = _spawn_crashing_reclaimer(tmp_path, "after_registry_reclaim_claim_publish")
+        assert proc.wait(timeout=10) == 73
+        assert lock.exists()
+    with service._registry_lock("main", timeout=1):
+        pass
+    assert not lock.exists()
+
+
+@pytest.mark.parametrize("contents", ["not-json", json.dumps({"pid": 1})])
+def test_corrupt_or_incomplete_reclaim_claim_fails_closed(tmp_path: Path, contents: str):
+    service = _service(tmp_path)
+    owner = _released_owner(service)
+    lock = _write_lock(service, owner)
+    (lock / "reclaim.claim").write_text(contents, encoding="utf-8")
+    with pytest.raises(NarrativeTurnError):
+        with service._registry_lock("main", timeout=0.08):
+            pass
+    assert lock.exists()
+
+
+def test_death_after_handoff_does_not_block_successor(tmp_path: Path):
+    service = _service(tmp_path)
+    lock = _write_lock(service, _released_owner(service))
+    proc = _spawn_crashing_reclaimer(tmp_path, "after_registry_reclaim_handoff")
+    assert proc.wait(timeout=10) == 73
+    assert not lock.exists()
+    with service._registry_lock("main", timeout=1):
+        pass
+
+
+def test_orphan_claims_are_isolated_by_timeline(tmp_path: Path):
+    service = _service(tmp_path)
+    main_owner = _released_owner(service, "main-owner")
+    main_lock = _write_lock(service, main_owner)
+    (main_lock / "reclaim.claim").write_text("not-json", encoding="utf-8")
+    with service._registry_lock("other", timeout=0.2):
+        pass
+    assert main_lock.exists()
+
+
+def test_old_claimer_cannot_retire_successor_authority(tmp_path: Path):
+    service = _service(tmp_path)
+    old_owner = _released_owner(service, "old-owner")
+    lock = _write_lock(service, old_owner)
+    assert service._retire_lock_directory(lock, old_owner) is True
+    successor = _owner(service, nonce="successor", state="held")
+    _write_lock(service, successor)
+    assert service._retire_lock_directory(lock, old_owner) is False
+    assert json.loads((lock / "owner.json").read_text(encoding="utf-8")) == successor

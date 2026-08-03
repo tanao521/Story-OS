@@ -232,9 +232,13 @@ class BranchLifecycleService:
                 import ctypes
 
                 kernel32 = ctypes.windll.kernel32
+                kernel32.SetLastError(0)
                 handle = kernel32.OpenProcess(0x1000, False, pid)
                 if not handle:
-                    return False
+                    # ERROR_INVALID_PARAMETER proves that the PID does not
+                    # exist. Access denial and unknown query failures are not
+                    # evidence of death and therefore fail closed.
+                    return kernel32.GetLastError() != 87
                 exit_code = ctypes.c_ulong()
                 if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
                     kernel32.CloseHandle(handle)
@@ -275,38 +279,150 @@ class BranchLifecycleService:
                 if attempt < 7:
                     time.sleep(0.002 * (attempt + 1))
 
+    @staticmethod
+    def _lock_identity(path: Path) -> str:
+        normalized = os.path.normcase(os.path.abspath(str(path)))
+        return sha256(normalized.encode("utf-8")).hexdigest()
+
+    @contextmanager
+    def _reclaim_guard(self, path: Path, timeout: float = 0.05) -> Iterator[bool]:
+        """Serialize reclaimers with a kernel lock that is released on process death."""
+        guard_root = Path(tempfile.gettempdir()) / "storyos-registry-reclaim-guards"
+        guard_path = guard_root / f"{self._lock_identity(path)}.guard"
+        guard_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(guard_path, "a+b")
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        deadline = time.monotonic() + timeout
+        acquired = False
+        try:
+            while not acquired:
+                try:
+                    handle.seek(0)
+                    if os.name == "nt":
+                        import msvcrt
+
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                except (OSError, BlockingIOError):
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.005)
+            yield acquired
+        finally:
+            if acquired:
+                try:
+                    handle.seek(0)
+                    if os.name == "nt":
+                        import msvcrt
+
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            handle.close()
+
+    def _valid_reclaim_claim(
+        self,
+        claim: dict[str, Any] | None,
+        *,
+        lock_identity: str,
+        owner_fingerprint: str,
+        owner_nonce: str,
+    ) -> bool:
+        return bool(
+            claim
+            and claim.get("schema_version") == "1.0"
+            and claim.get("lock_identity") == lock_identity
+            and claim.get("owner_fingerprint") == owner_fingerprint
+            and claim.get("owner_nonce") == owner_nonce
+            and isinstance(claim.get("claim_nonce"), str)
+            and claim.get("claim_nonce")
+            and isinstance(claim.get("pid"), int)
+            and claim.get("pid") > 0
+            and isinstance(claim.get("process_start_identity"), str)
+            and claim.get("process_start_identity")
+        )
+
     def _retire_lock_directory(self, path: Path, expected_owner: dict[str, Any]) -> bool:
         """Conditionally move one exact released/dead authority out of the namespace."""
-        claim_path = path / "reclaim.claim"
-        claim_nonce = secrets.token_hex(16)
-        claim = {"pid": os.getpid(), "nonce": claim_nonce}
-        try:
-            if not _publish_if_absent(claim_path, claim):
+        with self._reclaim_guard(path) as guarded:
+            if not guarded:
                 return False
-        except OSError:
-            return False
-
-        moved = False
-        try:
             current = self._read_lock_owner(path / "owner.json")
             if current != expected_owner:
                 return False
-            tombstone = path.parent / f".{path.name}.{claim_nonce}.released"
-            self._fault("registry_lock_handoff")
-            os.replace(str(path), str(tombstone))
-            moved = True
-            self._cleanup_retired_lock(tombstone)
-            return True
-        except OSError:
-            return False
-        finally:
-            if not moved:
+
+            claim_path = path / "reclaim.claim"
+            lock_identity = self._lock_identity(path)
+            owner_fingerprint = _fingerprint(expected_owner)
+            owner_nonce = expected_owner.get("nonce")
+            if not isinstance(owner_nonce, str) or not owner_nonce:
+                return False
+            existing = self._read_lock_owner(claim_path) if claim_path.exists() else None
+            if claim_path.exists():
+                if not self._valid_reclaim_claim(
+                    existing,
+                    lock_identity=lock_identity,
+                    owner_fingerprint=owner_fingerprint,
+                    owner_nonce=owner_nonce,
+                ):
+                    return False
+                if self._lock_owner_alive(
+                    {
+                        "pid": existing["pid"],
+                        "process_start_identity": existing["process_start_identity"],
+                    }
+                ):
+                    return False
+
+            claim_nonce = secrets.token_hex(16)
+            claimant_start_identity = self._process_start_identity(os.getpid())
+            if not claimant_start_identity:
+                return False
+            claim = {
+                "schema_version": "1.0",
+                "lock_identity": lock_identity,
+                "owner_fingerprint": owner_fingerprint,
+                "owner_nonce": owner_nonce,
+                "claim_nonce": claim_nonce,
+                "pid": os.getpid(),
+                "process_start_identity": claimant_start_identity,
+            }
+            try:
+                if existing is None:
+                    if not _publish_if_absent(claim_path, claim):
+                        return False
+                else:
+                    _atomic_json(claim_path, claim)
+                self._fault("after_registry_reclaim_claim_publish")
+                if self._read_lock_owner(path / "owner.json") != expected_owner:
+                    return False
+                if self._read_lock_owner(claim_path) != claim:
+                    return False
+                tombstone = path.parent / f".{path.name}.{claim_nonce}.released"
+                self._fault("registry_lock_handoff")
+                os.replace(str(path), str(tombstone))
+                self._fault("after_registry_reclaim_handoff")
+                self._cleanup_retired_lock(tombstone)
+                return True
+            except OSError:
                 try:
                     current_claim = self._read_lock_owner(claim_path)
                     if current_claim == claim:
                         claim_path.unlink(missing_ok=True)
                 except OSError:
                     pass
+                return False
 
     @classmethod
     def _local_registry_lock(cls, path: Path) -> threading.Lock:
