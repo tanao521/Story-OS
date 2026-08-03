@@ -7,8 +7,10 @@ import subprocess
 import sys
 import time
 
+import pytest
+
 from core.project_context import get_project_context
-from core.contracts.narrative_turn import TimelineContext
+from core.contracts.narrative_turn import NarrativeTurnError, TimelineContext
 from system.narrative_branch_lifecycle_service import BranchLifecycleService
 
 
@@ -203,6 +205,86 @@ except Exception as exc:
     active = next(item for item in final["branches"] if item["is_active"])
     assert active["branch_id"] in {"a", "c"}
     assert len(BranchLifecycleService(ctx).store.get_lifecycle_events(TimelineContext(project_id=ctx.root.name, timeline_id="main"), "b")) == 2
+
+
+def _setup_restore_select_ordering(tmp_path: Path):
+    ctx = get_project_context(tmp_path)
+    service = BranchLifecycleService(ctx)
+    scope = {"project_id": ctx.root.name, "timeline_id": "main"}
+    for branch_id in ("a", "b", "c"):
+        service.create(f"seed-{branch_id}", {**scope, "branch_id": branch_id})
+    revision = service.list_branches(**scope)["registry_revision"]
+    service.select("seed-active", {**scope, "branch_id": "a", "expected_registry_revision": revision})
+    revision = service.list_branches(**scope)["registry_revision"]
+    service.archive("seed-archive", {**scope, "branch_id": "b", "expected_registry_revision": revision})
+    return ctx, service, scope, service.list_branches(**scope)["registry_revision"]
+
+
+def test_select_then_restore_accepts_original_activity_revision(tmp_path: Path):
+    ctx, service, scope, revision = _setup_restore_select_ordering(tmp_path)
+
+    service.select("ordered-select", {**scope, "branch_id": "c", "expected_registry_revision": revision})
+    service.restore("ordered-restore", {**scope, "branch_id": "b", "expected_registry_revision": revision})
+
+    final = service.list_branches(**scope)
+    branch_b = next(item for item in final["branches"] if item["branch_id"] == "b")
+    assert branch_b["lifecycle_status"] == "open"
+    assert branch_b["is_active"] is False
+    assert final["active_branch_id"] == "c"
+    assert len(service.store.get_lifecycle_events(TimelineContext(project_id=ctx.root.name, timeline_id="main"), "b")) == 2
+
+
+def test_restore_then_select_accepts_original_activity_revision(tmp_path: Path):
+    ctx, service, scope, revision = _setup_restore_select_ordering(tmp_path)
+
+    service.restore("ordered-restore", {**scope, "branch_id": "b", "expected_registry_revision": revision})
+    service.select("ordered-select", {**scope, "branch_id": "c", "expected_registry_revision": revision})
+
+    final = service.list_branches(**scope)
+    branch_b = next(item for item in final["branches"] if item["branch_id"] == "b")
+    assert branch_b["lifecycle_status"] == "open"
+    assert branch_b["is_active"] is False
+    assert final["active_branch_id"] == "c"
+    assert len(service.store.get_lifecycle_events(TimelineContext(project_id=ctx.root.name, timeline_id="main"), "b")) == 2
+
+
+def test_competing_restore_operation_still_fails_closed(tmp_path: Path):
+    _, service, scope, revision = _setup_restore_select_ordering(tmp_path)
+    values = {**scope, "branch_id": "b", "expected_registry_revision": revision}
+
+    service.restore("restore-winner", values)
+    with pytest.raises(NarrativeTurnError) as exc_info:
+        service.restore("restore-loser", values)
+
+    assert exc_info.value.code == NarrativeTurnError.BRANCH_OPERATION_STALE_REVISION
+
+
+def test_restore_rejects_non_selection_registry_drift(tmp_path: Path):
+    _, service, scope, revision = _setup_restore_select_ordering(tmp_path)
+
+    service.archive(
+        "archive-active",
+        {**scope, "branch_id": "a", "replacement_branch_id": "c", "expected_registry_revision": revision},
+    )
+    with pytest.raises(NarrativeTurnError) as exc_info:
+        service.restore(
+            "restore-after-active-archive",
+            {**scope, "branch_id": "b", "expected_registry_revision": revision},
+        )
+
+    assert exc_info.value.code == NarrativeTurnError.BRANCH_OPERATION_STALE_REVISION
+
+
+def test_restore_replay_does_not_duplicate_lifecycle_event(tmp_path: Path):
+    ctx, service, scope, revision = _setup_restore_select_ordering(tmp_path)
+    values = {**scope, "branch_id": "b", "expected_registry_revision": revision}
+
+    service.restore("restore-replay", values)
+    replay = service.restore("restore-replay", values)
+
+    assert replay["idempotent_replay"] is True
+    events = service.store.get_lifecycle_events(TimelineContext(project_id=ctx.root.name, timeline_id="main"), "b")
+    assert len(events) == 2
 
 
 def test_real_processes_different_timelines_use_independent_locks(tmp_path: Path):

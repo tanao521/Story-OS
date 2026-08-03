@@ -10,6 +10,7 @@ import os
 import re
 import secrets
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -99,6 +100,9 @@ def _publish_if_absent(path: Path, payload: dict[str, Any]) -> bool:
 class BranchLifecycleService:
     """Idempotent, scope-checked facade over ``NarrativeBranchStore``."""
 
+    _local_lock_guard = threading.Lock()
+    _local_locks: dict[str, threading.Lock] = {}
+
     def __init__(
         self,
         context: ProjectContext,
@@ -151,6 +155,26 @@ class BranchLifecycleService:
         revision = data.get("revision")
         return revision if isinstance(revision, str) and revision else "0"
 
+    def _registry_advanced_only_by_selection(
+        self,
+        timeline: TimelineContext,
+        expected_revision: str,
+        current_revision: str,
+    ) -> bool:
+        """Prove that an old active-pointer revision drifted only via selects."""
+        cursor = "0"
+        expected_seen = expected_revision == cursor
+        for event in self.store._read_registry_events(timeline):
+            if event.expected_revision != cursor:
+                return False
+            if event.resulting_revision != cursor:
+                if expected_seen and event.event_type != "branch_selected":
+                    return False
+                cursor = event.resulting_revision
+            if cursor == expected_revision:
+                expected_seen = True
+        return expected_seen and cursor == current_revision
+
     def _read_registry_projection(self, timeline: TimelineContext) -> dict[str, Any]:
         """Read registry for GET endpoints without creating missing state."""
         path = self.context.data_dir / "branches" / timeline.timeline_id / "registry.json"
@@ -169,118 +193,326 @@ class BranchLifecycleService:
         _validate_local_containment(self.context.data_dir, path)
         return path
 
+    @staticmethod
+    def _process_start_identity(pid: int) -> str | None:
+        """Return a PID-reuse-resistant process start identity."""
+        if pid <= 0:
+            return None
+        if os.name == "nt":
+            try:
+                import ctypes
+                from ctypes import wintypes
+
+                kernel32 = ctypes.windll.kernel32
+                kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+                kernel32.OpenProcess.restype = wintypes.HANDLE
+                kernel32.GetProcessTimes.argtypes = [
+                    wintypes.HANDLE,
+                    ctypes.POINTER(wintypes.FILETIME),
+                    ctypes.POINTER(wintypes.FILETIME),
+                    ctypes.POINTER(wintypes.FILETIME),
+                    ctypes.POINTER(wintypes.FILETIME),
+                ]
+                kernel32.GetProcessTimes.restype = wintypes.BOOL
+                kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+                kernel32.CloseHandle.restype = wintypes.BOOL
+                handle = kernel32.OpenProcess(0x1000, False, pid)
+                if not handle:
+                    return None
+                creation = wintypes.FILETIME()
+                exit_time = wintypes.FILETIME()
+                kernel_time = wintypes.FILETIME()
+                user_time = wintypes.FILETIME()
+                ok = kernel32.GetProcessTimes(
+                    handle,
+                    ctypes.byref(creation),
+                    ctypes.byref(exit_time),
+                    ctypes.byref(kernel_time),
+                    ctypes.byref(user_time),
+                )
+                kernel32.CloseHandle(handle)
+                if not ok:
+                    return None
+                return str((creation.dwHighDateTime << 32) | creation.dwLowDateTime)
+            except Exception:
+                return None
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+            return stat.rsplit(")", 1)[1].split()[19]
+        except (OSError, IndexError):
+            return None
+
+    @classmethod
+    def _lock_owner_alive(cls, owner: dict[str, Any]) -> bool:
+        pid = owner.get("pid")
+        if not isinstance(pid, int) or pid <= 0:
+            return False
+        if os.name == "nt":
+            try:
+                import ctypes
+
+                kernel32 = ctypes.windll.kernel32
+                kernel32.SetLastError(0)
+                handle = kernel32.OpenProcess(0x1000, False, pid)
+                if not handle:
+                    # ERROR_INVALID_PARAMETER proves that the PID does not
+                    # exist. Access denial and unknown query failures are not
+                    # evidence of death and therefore fail closed.
+                    return kernel32.GetLastError() != 87
+                exit_code = ctypes.c_ulong()
+                if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    kernel32.CloseHandle(handle)
+                    return True
+                kernel32.CloseHandle(handle)
+                if exit_code.value != 259:
+                    return False
+            except Exception:
+                return True
+        else:
+            try:
+                os.kill(pid, 0)
+            except (OSError, ValueError):
+                return False
+        expected = owner.get("process_start_identity")
+        current = cls._process_start_identity(pid)
+        return not (isinstance(expected, str) and expected and current and current != expected)
+
+    def _read_lock_owner(self, owner_path: Path) -> dict[str, Any] | None:
+        try:
+            owner = _load_json(owner_path)
+        except NarrativeTurnError:
+            return None
+        return owner if isinstance(owner, dict) else None
+
+    def _cleanup_retired_lock(self, path: Path) -> None:
+        """Best-effort cleanup of a non-authoritative retired lock directory."""
+        for attempt in range(8):
+            try:
+                for child in path.iterdir():
+                    if child.is_file():
+                        self._fault("registry_lock_owner_unlink")
+                        child.unlink(missing_ok=True)
+                self._fault("registry_lock_directory_rmdir")
+                path.rmdir()
+                return
+            except OSError:
+                if attempt < 7:
+                    time.sleep(0.002 * (attempt + 1))
+
+    @staticmethod
+    def _lock_identity(path: Path) -> str:
+        normalized = os.path.normcase(os.path.abspath(str(path)))
+        return sha256(normalized.encode("utf-8")).hexdigest()
+
+    @contextmanager
+    def _reclaim_guard(self, path: Path, timeout: float = 0.05) -> Iterator[bool]:
+        """Serialize reclaimers with a kernel lock that is released on process death."""
+        guard_root = Path(tempfile.gettempdir()) / "storyos-registry-reclaim-guards"
+        guard_path = guard_root / f"{self._lock_identity(path)}.guard"
+        guard_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(guard_path, "a+b")
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        deadline = time.monotonic() + timeout
+        acquired = False
+        try:
+            while not acquired:
+                try:
+                    handle.seek(0)
+                    if os.name == "nt":
+                        import msvcrt
+
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                except (OSError, BlockingIOError):
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.005)
+            yield acquired
+        finally:
+            if acquired:
+                try:
+                    handle.seek(0)
+                    if os.name == "nt":
+                        import msvcrt
+
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            handle.close()
+
+    def _valid_reclaim_claim(
+        self,
+        claim: dict[str, Any] | None,
+        *,
+        lock_identity: str,
+        owner_fingerprint: str,
+        owner_nonce: str,
+    ) -> bool:
+        identity = claim.get("process_start_identity") if claim else None
+        identity_valid = identity is None or (
+            type(identity) is str and bool(identity)
+        )
+        return bool(
+            claim
+            and claim.get("schema_version") == "1.0"
+            and claim.get("lock_identity") == lock_identity
+            and claim.get("owner_fingerprint") == owner_fingerprint
+            and claim.get("owner_nonce") == owner_nonce
+            and isinstance(claim.get("claim_nonce"), str)
+            and claim.get("claim_nonce")
+            and type(claim.get("pid")) is int
+            and claim.get("pid") > 0
+            and identity_valid
+        )
+
+    def _retire_lock_directory(self, path: Path, expected_owner: dict[str, Any]) -> bool:
+        """Conditionally move one exact released/dead authority out of the namespace."""
+        with self._reclaim_guard(path) as guarded:
+            if not guarded:
+                return False
+            current = self._read_lock_owner(path / "owner.json")
+            if current != expected_owner:
+                return False
+
+            claim_path = path / "reclaim.claim"
+            lock_identity = self._lock_identity(path)
+            owner_fingerprint = _fingerprint(expected_owner)
+            owner_nonce = expected_owner.get("nonce")
+            if not isinstance(owner_nonce, str) or not owner_nonce:
+                return False
+            existing = self._read_lock_owner(claim_path) if claim_path.exists() else None
+            if claim_path.exists():
+                if not self._valid_reclaim_claim(
+                    existing,
+                    lock_identity=lock_identity,
+                    owner_fingerprint=owner_fingerprint,
+                    owner_nonce=owner_nonce,
+                ):
+                    return False
+            claim_nonce = secrets.token_hex(16)
+            claimant_start_identity = self._process_start_identity(os.getpid())
+            claim = {
+                "schema_version": "1.0",
+                "lock_identity": lock_identity,
+                "owner_fingerprint": owner_fingerprint,
+                "owner_nonce": owner_nonce,
+                "claim_nonce": claim_nonce,
+                "pid": os.getpid(),
+                "process_start_identity": claimant_start_identity,
+            }
+            try:
+                if existing is None:
+                    if not _publish_if_absent(claim_path, claim):
+                        return False
+                else:
+                    _atomic_json(claim_path, claim)
+                self._fault("after_registry_reclaim_claim_publish")
+                if self._read_lock_owner(path / "owner.json") != expected_owner:
+                    return False
+                if self._read_lock_owner(claim_path) != claim:
+                    return False
+                tombstone = path.parent / f".{path.name}.{claim_nonce}.released"
+                self._fault("registry_lock_handoff")
+                os.replace(str(path), str(tombstone))
+                self._fault("after_registry_reclaim_handoff")
+                self._cleanup_retired_lock(tombstone)
+                return True
+            except OSError:
+                try:
+                    current_claim = self._read_lock_owner(claim_path)
+                    if current_claim == claim:
+                        self._fault("registry_reclaim_claim_unlink")
+                        claim_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return False
+
+    @classmethod
+    def _local_registry_lock(cls, path: Path) -> threading.Lock:
+        key = os.path.normcase(os.path.abspath(str(path)))
+        with cls._local_lock_guard:
+            return cls._local_locks.setdefault(key, threading.Lock())
+
     @contextmanager
     def _registry_lock(self, timeline_id: str, timeout: float = 15.0) -> Iterator[None]:
+        deadline = time.monotonic() + timeout
+        local_lock = self._local_registry_lock(self._lock_path(timeline_id))
+        if not local_lock.acquire(timeout=max(0.0, timeout)):
+            raise NarrativeTurnError(NarrativeTurnError.CONFIRM_RECOVERY_REQUIRED, "Registry lock timed out")
+        try:
+            remaining = max(0.0, deadline - time.monotonic())
+            with self._registry_filesystem_lock(timeline_id, timeout=remaining):
+                yield
+        finally:
+            local_lock.release()
+
+    @contextmanager
+    def _registry_filesystem_lock(self, timeline_id: str, timeout: float = 15.0) -> Iterator[None]:
         path = self._lock_path(timeline_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         nonce = secrets.token_hex(16)
         owner_path = path / "owner.json"
 
-        def process_start_identity(pid: int) -> str | None:
-            """Return a PID-reuse-resistant process start identity."""
-            if pid <= 0:
-                return None
-            if os.name == "nt":
-                try:
-                    import ctypes
-                    from ctypes import wintypes
-                    kernel32 = ctypes.windll.kernel32
-                    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-                    kernel32.OpenProcess.restype = wintypes.HANDLE
-                    kernel32.GetProcessTimes.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.FILETIME), ctypes.POINTER(wintypes.FILETIME), ctypes.POINTER(wintypes.FILETIME), ctypes.POINTER(wintypes.FILETIME)]
-                    kernel32.GetProcessTimes.restype = wintypes.BOOL
-                    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-                    kernel32.CloseHandle.restype = wintypes.BOOL
-                    handle = kernel32.OpenProcess(0x1000, False, pid)
-                    if not handle:
-                        return None
-                    creation = wintypes.FILETIME()
-                    exit_time = wintypes.FILETIME()
-                    kernel_time = wintypes.FILETIME()
-                    user_time = wintypes.FILETIME()
-                    ok = kernel32.GetProcessTimes(handle, ctypes.byref(creation), ctypes.byref(exit_time), ctypes.byref(kernel_time), ctypes.byref(user_time))
-                    kernel32.CloseHandle(handle)
-                    if not ok:
-                        return None
-                    value = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
-                    return str(value)
-                except Exception:
-                    return None
-            try:
-                stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-                return stat.rsplit(")", 1)[1].split()[19]
-            except (OSError, IndexError):
-                return None
-
-        owner_start_identity = process_start_identity(os.getpid())
-
-        def pid_alive(pid: int, expected_start_identity: str | None) -> bool:
-            if pid <= 0:
-                return False
-            if os.name == "nt":
-                try:
-                    import ctypes
-                    kernel32 = ctypes.windll.kernel32
-                    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-                    if not handle:
-                        return False
-                    exit_code = ctypes.c_ulong()
-                    if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-                        kernel32.CloseHandle(handle)
-                        return False
-                    kernel32.CloseHandle(handle)
-                    if exit_code.value != 259:  # STILL_ACTIVE
-                        return False
-                except Exception:
-                    return True
-            else:
-                try:
-                    os.kill(pid, 0)
-                except (OSError, ValueError):
-                    return False
-            current_start_identity = process_start_identity(pid)
-            if expected_start_identity and current_start_identity:
-                return current_start_identity == expected_start_identity
-            return True
+        owner_start_identity = self._process_start_identity(os.getpid())
+        held_owner = {
+            "pid": os.getpid(),
+            "nonce": nonce,
+            "process_start_identity": owner_start_identity,
+            "state": "held",
+        }
 
         deadline = time.monotonic() + timeout
         while True:
             try:
                 path.mkdir()
-                _atomic_json(owner_path, {"pid": os.getpid(), "nonce": nonce, "process_start_identity": owner_start_identity})
-                break
-            except FileExistsError:
-                owner: dict[str, Any] = {}
                 try:
-                    owner = _load_json(owner_path)
-                except NarrativeTurnError:
-                    pass
-                owner_pid = owner.get("pid") if isinstance(owner.get("pid"), int) else 0
-                if owner_pid and not pid_alive(owner_pid, owner.get("process_start_identity")):
-                    # Reclaim only a lock whose recorded owner is no longer
-                    # alive. A live owner's directory is never removed here.
+                    self._fault("before_registry_lock_owner_publish")
+                    _atomic_json(owner_path, held_owner)
+                except Exception:
                     try:
-                        owner_path.unlink(missing_ok=True)
                         path.rmdir()
-                        continue
                     except OSError:
                         pass
+                    raise
+                break
+            except FileExistsError:
+                owner = self._read_lock_owner(owner_path)
+                if owner is not None:
+                    state = owner.get("state", "held")
+                    reclaimable = state == "released" or (state == "held" and not self._lock_owner_alive(owner))
+                    if reclaimable and self._retire_lock_directory(path, owner):
+                        continue
                 if time.monotonic() >= deadline:
                     raise NarrativeTurnError(NarrativeTurnError.CONFIRM_RECOVERY_REQUIRED, "Registry lock timed out")
                 time.sleep(0.01)
         try:
             yield
         finally:
-            try:
-                owner = _load_json(owner_path)
-                # PID+nonce is sufficient for releasing our own lock; the
-                # process-start identity is used only when reclaiming another
-                # owner's lock, where PID reuse is a concern.
-                if owner.get("pid") == os.getpid() and owner.get("nonce") == nonce:
-                    owner_path.unlink(missing_ok=True)
-                    path.rmdir()
-            except (OSError, NarrativeTurnError):
-                pass
+            owner = self._read_lock_owner(owner_path)
+            if owner == held_owner:
+                released_owner = {**held_owner, "state": "released"}
+                published = False
+                for attempt in range(8):
+                    try:
+                        _atomic_json(owner_path, released_owner)
+                        published = True
+                        break
+                    except OSError:
+                        if attempt < 7:
+                            time.sleep(0.002 * (attempt + 1))
+                if published:
+                    self._retire_lock_directory(path, released_owner)
 
     def _request_payload(self, operation_type: str, values: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -537,9 +769,20 @@ class BranchLifecycleService:
             if branch is None:
                 raise NarrativeTurnError(NarrativeTurnError.BRANCH_NOT_FOUND, "Branch not found")
             if branch.lifecycle_status != BranchLifecycleStatus.ARCHIVED:
+                phase_path = self._phase_path(operation_id)
+                phase = _load_json(phase_path) if phase_path.exists() else {}
+                if phase.get("phase") == BranchOperationPhase.INTENT.value:
+                    raise NarrativeTurnError(
+                        NarrativeTurnError.BRANCH_OPERATION_STALE_REVISION,
+                        "Restore lost lifecycle race",
+                    )
                 return self._complete(operation_id, authority, timeline, values["branch_id"], recovery_performed=True)
             expected = values.get("expected_registry_revision")
-            if expected and expected != current["revision"]:
+            if (
+                expected
+                and expected != current["revision"]
+                and not self._registry_advanced_only_by_selection(timeline, expected, current["revision"])
+            ):
                 raise NarrativeTurnError(NarrativeTurnError.BRANCH_OPERATION_STALE_REVISION, "Revision conflict")
             self.store.restore_branch(timeline, values["branch_id"])
             self._phase(operation_id, "lifecycle_event_published")
