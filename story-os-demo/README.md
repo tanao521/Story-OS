@@ -5,8 +5,10 @@ historical source-directory name; the public project name is **Story OS**.
 
 For the project overview, installation instructions, supported entry points,
 and contribution workflow, start with the [repository root README](../README.md).
-Run installation, tests, and normal commands from the repository root rather
-than treating this directory as a separate project.
+Installation and normal CLI or Web commands run from the repository root.
+The test suite uses `story-os-demo` as its working directory because of the
+historical source layout. This directory is not installed as a separate
+project.
 
 ## Source Areas
 
@@ -26,9 +28,15 @@ From the repository root:
 
 ```bash
 python -m pip install -e ".[dev]"
-python -m pytest -q
 python main.py self-check
 python main.py web
+```
+
+Run the complete test suite from `story-os-demo`:
+
+```bash
+cd story-os-demo
+python -m pytest -q
 ```
 
 The local configuration template is [`.env.example`](.env.example). Copy it
