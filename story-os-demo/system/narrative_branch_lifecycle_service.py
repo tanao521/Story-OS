@@ -155,6 +155,26 @@ class BranchLifecycleService:
         revision = data.get("revision")
         return revision if isinstance(revision, str) and revision else "0"
 
+    def _registry_advanced_only_by_selection(
+        self,
+        timeline: TimelineContext,
+        expected_revision: str,
+        current_revision: str,
+    ) -> bool:
+        """Prove that an old active-pointer revision drifted only via selects."""
+        cursor = "0"
+        expected_seen = expected_revision == cursor
+        for event in self.store._read_registry_events(timeline):
+            if event.expected_revision != cursor:
+                return False
+            if event.resulting_revision != cursor:
+                if expected_seen and event.event_type != "branch_selected":
+                    return False
+                cursor = event.resulting_revision
+            if cursor == expected_revision:
+                expected_seen = True
+        return expected_seen and cursor == current_revision
+
     def _read_registry_projection(self, timeline: TimelineContext) -> dict[str, Any]:
         """Read registry for GET endpoints without creating missing state."""
         path = self.context.data_dir / "branches" / timeline.timeline_id / "registry.json"
@@ -755,9 +775,20 @@ class BranchLifecycleService:
             if branch is None:
                 raise NarrativeTurnError(NarrativeTurnError.BRANCH_NOT_FOUND, "Branch not found")
             if branch.lifecycle_status != BranchLifecycleStatus.ARCHIVED:
+                phase_path = self._phase_path(operation_id)
+                phase = _load_json(phase_path) if phase_path.exists() else {}
+                if phase.get("phase") == BranchOperationPhase.INTENT.value:
+                    raise NarrativeTurnError(
+                        NarrativeTurnError.BRANCH_OPERATION_STALE_REVISION,
+                        "Restore lost lifecycle race",
+                    )
                 return self._complete(operation_id, authority, timeline, values["branch_id"], recovery_performed=True)
             expected = values.get("expected_registry_revision")
-            if expected and expected != current["revision"]:
+            if (
+                expected
+                and expected != current["revision"]
+                and not self._registry_advanced_only_by_selection(timeline, expected, current["revision"])
+            ):
                 raise NarrativeTurnError(NarrativeTurnError.BRANCH_OPERATION_STALE_REVISION, "Revision conflict")
             self.store.restore_branch(timeline, values["branch_id"])
             self._phase(operation_id, "lifecycle_event_published")
